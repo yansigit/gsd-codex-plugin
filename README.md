@@ -1,4 +1,4 @@
-# GSD for Codex — Community
+# GSD Core for Codex
 
 A community-maintained Codex plugin distribution of [GSD Core](https://github.com/open-gsd/gsd-core).
 

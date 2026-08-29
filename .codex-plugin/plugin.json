@@ -1,6 +1,6 @@
 {
   "name": "gsd-codex-plugin",
-  "version": "1.11.0+gsd.529480b4a5d1",
+  "version": "1.11.0+gsd.529480b4a5d1.wrapper.1",
   "description": "Community-maintained Codex distribution of GSD Core.",
   "author": {
     "name": "SB Yoon",
@@ -19,7 +19,7 @@
   "skills": "./skills/",
   "mcpServers": "./.mcp.json",
   "interface": {
-    "displayName": "GSD for Codex — Community",
+    "displayName": "GSD Core",
     "shortDescription": "GSD workflows and project controls for Codex",
     "longDescription": "A community-maintained Codex plugin that packages GSD Core skills, project status, and guarded UAT result recording.",
     "developerName": "SB Yoon (Community)",

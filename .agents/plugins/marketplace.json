@@ -1,7 +1,7 @@
 {
   "name": "gsd-codex-community",
   "interface": {
-    "displayName": "GSD for Codex — Community"
+    "displayName": "GSD Core"
   },
   "plugins": [
     {

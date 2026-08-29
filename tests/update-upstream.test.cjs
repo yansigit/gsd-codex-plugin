@@ -88,8 +88,8 @@ test('sync builds upstream, replaces generated trees, and records the exact revi
   assert.match(skill, /\{\{GSD_PLUGIN_ROOT\}\}\/agents\/gsd-test\.md/);
   const lock = JSON.parse(fs.readFileSync(path.join(plugin, 'upstream.lock.json'), 'utf8'));
   assert.deepEqual(lock, { repo: upstream, ref: 'next', commit: git(upstream, 'rev-parse', 'HEAD'), version: '9.9.0' });
-  assert.equal(JSON.parse(fs.readFileSync(path.join(plugin, 'package.json'))).version, `9.9.0+gsd.${lock.commit.slice(0, 12)}`);
-  assert.equal(JSON.parse(fs.readFileSync(path.join(plugin, '.codex-plugin', 'plugin.json'))).version, `9.9.0+gsd.${lock.commit.slice(0, 12)}`);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(plugin, 'package.json'))).version, `9.9.0+gsd.${lock.commit.slice(0, 12)}.wrapper.1`);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(plugin, '.codex-plugin', 'plugin.json'))).version, `9.9.0+gsd.${lock.commit.slice(0, 12)}.wrapper.1`);
 });
 
 test('a failed upstream build leaves every generated file unchanged', (t) => {

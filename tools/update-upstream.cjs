@@ -10,6 +10,7 @@ const ROOT = path.resolve(__dirname, '..');
 const DEFAULT_REPO = 'https://github.com/open-gsd/gsd-core.git';
 const DEFAULT_REF = 'next';
 const PLUGIN_ROOT = '{{GSD_PLUGIN_ROOT}}';
+const WRAPPER_VERSION = 1;
 const GENERATED_DIRS = ['gsd-core', 'agents', 'skills', 'bin', 'commands', 'hooks', 'scripts'];
 const GENERATED_FILES = ['UPSTREAM-LICENSE', 'upstream-modes.txt', 'upstream.lock.json'];
 
@@ -153,7 +154,7 @@ function replaceGeneratedTrees(checkout, lock) {
 }
 
 function syncPluginVersion(lock) {
-  const version = `${lock.version.split('+')[0]}+gsd.${lock.commit.slice(0, 12)}`;
+  const version = `${lock.version.split('+')[0]}+gsd.${lock.commit.slice(0, 12)}.wrapper.${WRAPPER_VERSION}`;
   for (const relative of ['package.json', '.codex-plugin/plugin.json']) {
     const file = path.join(ROOT, relative);
     const data = JSON.parse(fs.readFileSync(file, 'utf8'));
