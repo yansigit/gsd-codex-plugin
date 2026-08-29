@@ -11,7 +11,7 @@ const DEFAULT_REPO = 'https://github.com/open-gsd/gsd-core.git';
 const DEFAULT_REF = 'next';
 const PLUGIN_ROOT = '{{GSD_PLUGIN_ROOT}}';
 const GENERATED_DIRS = ['gsd-core', 'agents', 'skills', 'bin', 'commands', 'hooks', 'scripts'];
-const GENERATED_FILES = ['UPSTREAM-LICENSE', 'upstream.lock.json'];
+const GENERATED_FILES = ['UPSTREAM-LICENSE', 'upstream-modes.txt', 'upstream.lock.json'];
 
 function run(command, args, cwd) {
   execFileSync(command, args, { cwd, stdio: 'inherit', timeout: 10 * 60 * 1000 });
@@ -78,6 +78,20 @@ function transformSkills(skillsDir) {
   }
 }
 
+function executablePaths(root) {
+  const paths = [];
+  const pending = GENERATED_DIRS.map((dir) => path.join(root, dir));
+  while (pending.length) {
+    const current = pending.pop();
+    for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
+      const file = path.join(current, entry.name);
+      if (entry.isDirectory()) pending.push(file);
+      else if (entry.isFile() && (fs.statSync(file).mode & 0o111)) paths.push(path.relative(root, file).split(path.sep).join('/'));
+    }
+  }
+  return paths.sort();
+}
+
 function prepareUpstream(checkout) {
   run('npm', ['ci'], checkout);
   run('npm', ['run', 'build:lib'], checkout);
@@ -106,6 +120,7 @@ function replaceGeneratedTrees(checkout, lock) {
     for (const dir of GENERATED_DIRS) fs.cpSync(path.join(checkout, dir), path.join(next, dir), { recursive: true });
     fs.copyFileSync(path.join(checkout, 'LICENSE'), path.join(next, 'UPSTREAM-LICENSE'));
     transformSkills(path.join(next, 'skills'));
+    fs.writeFileSync(path.join(next, 'upstream-modes.txt'), `${executablePaths(next).join('\n')}\n`);
     fs.writeFileSync(path.join(next, 'upstream.lock.json'), `${JSON.stringify(lock, null, 2)}\n`);
 
     const moved = [];

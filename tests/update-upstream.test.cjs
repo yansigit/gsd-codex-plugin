@@ -43,6 +43,7 @@ function makeUpstream(root, broken = false) {
   write(path.join(repo, 'agents', 'gsd-test.md'), 'fixture agent\n');
   write(path.join(repo, 'skills', 'gsd-test', 'SKILL.md'), 'stale generated skill\n');
   for (const dir of ['bin', 'commands', 'hooks', 'scripts']) write(path.join(repo, dir, 'fixture.txt'), `${dir}\n`);
+  fs.chmodSync(path.join(repo, 'scripts', 'fixture.txt'), 0o755);
   git(repo, 'add', '.');
   git(repo, 'commit', '--quiet', '-m', 'fixture');
   return repo;
@@ -55,6 +56,7 @@ function makePlugin(root) {
   write(path.join(plugin, '.codex-plugin', 'plugin.json'), '{"name":"gsd-codex-plugin","version":"0.1.0"}\n');
   for (const dir of ['gsd-core', 'agents', 'skills', 'bin', 'commands', 'hooks', 'scripts']) write(path.join(plugin, dir, 'old.txt'), `old ${dir}\n`);
   write(path.join(plugin, 'upstream.lock.json'), '{"old":true}\n');
+  write(path.join(plugin, 'upstream-modes.txt'), 'old-mode\n');
   return plugin;
 }
 
@@ -80,6 +82,7 @@ test('sync builds upstream, replaces generated trees, and records the exact revi
   assert.equal(fs.readFileSync(path.join(plugin, 'agents', 'gsd-test.md'), 'utf8'), 'fixture agent\n');
   for (const dir of ['bin', 'commands', 'hooks', 'scripts']) assert.equal(fs.readFileSync(path.join(plugin, dir, 'fixture.txt'), 'utf8'), `${dir}\n`);
   assert.equal(fs.readFileSync(path.join(plugin, 'UPSTREAM-LICENSE'), 'utf8'), 'fixture license\n');
+  assert.equal(fs.readFileSync(path.join(plugin, 'upstream-modes.txt'), 'utf8'), 'scripts/fixture.txt\n');
   const skill = fs.readFileSync(path.join(plugin, 'skills', 'gsd-test', 'SKILL.md'), 'utf8');
   assert.match(skill, /\{\{GSD_PLUGIN_ROOT\}\}\/gsd-core\/workflows\/test\.md/);
   assert.match(skill, /\{\{GSD_PLUGIN_ROOT\}\}\/agents\/gsd-test\.md/);
@@ -101,4 +104,5 @@ test('a failed upstream build leaves every generated file unchanged', (t) => {
     assert.equal(fs.readFileSync(path.join(plugin, dir, 'old.txt'), 'utf8'), `old ${dir}\n`);
   }
   assert.equal(fs.readFileSync(path.join(plugin, 'upstream.lock.json'), 'utf8'), '{"old":true}\n');
+  assert.equal(fs.readFileSync(path.join(plugin, 'upstream-modes.txt'), 'utf8'), 'old-mode\n');
 });
