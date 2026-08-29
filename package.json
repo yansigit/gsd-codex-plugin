@@ -1,0 +1,11 @@
+{
+  "name": "gsd-codex-plugin",
+  "version": "1.11.0+gsd.400db94e02b3",
+  "private": true,
+  "description": "Community-maintained Codex distribution of GSD Core",
+  "license": "MIT",
+  "scripts": {
+    "sync": "node tools/update-upstream.cjs",
+    "test": "node --test"
+  }
+}

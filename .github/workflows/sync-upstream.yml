@@ -1,0 +1,82 @@
+name: Sync upstream GSD
+
+on:
+  schedule:
+    - cron: "17 8 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: sync-upstream
+  cancel-in-progress: false
+
+jobs:
+  generate:
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Generate from upstream
+        run: npm run sync
+      - name: Verify plugin
+        run: npm test
+      - uses: actions/upload-artifact@v4
+        with:
+          name: verified-upstream
+          include-hidden-files: true
+          path: |
+            gsd-core
+            agents
+            skills
+            bin
+            commands
+            hooks
+            scripts
+            UPSTREAM-LICENSE
+            upstream.lock.json
+            package.json
+            .codex-plugin/plugin.json
+
+  publish:
+    needs: generate
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: verified-upstream
+          path: .sync
+      - name: Install verified files
+        shell: bash
+        run: |
+          if find .sync -type l -print -quit | grep -q .; then
+            echo "Refusing symlinks in generated artifact" >&2
+            exit 1
+          fi
+          for dir in gsd-core agents skills bin commands hooks scripts; do
+            rm -rf "$dir"
+            mv ".sync/$dir" "$dir"
+          done
+          cp .sync/UPSTREAM-LICENSE .sync/upstream.lock.json .sync/package.json .
+          cp .sync/.codex-plugin/plugin.json .codex-plugin/plugin.json
+      - name: Commit verified update
+        shell: bash
+        run: |
+          if git diff --quiet; then
+            echo "Already current"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add gsd-core agents skills bin commands hooks scripts UPSTREAM-LICENSE upstream.lock.json package.json .codex-plugin/plugin.json
+          version="$(jq -r .version upstream.lock.json)"
+          revision="$(jq -r .commit upstream.lock.json | cut -c1-12)"
+          git commit -m "chore(upstream): sync GSD ${version} (${revision})"
+          git push origin HEAD:main

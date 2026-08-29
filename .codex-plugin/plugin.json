@@ -1,0 +1,29 @@
+{
+  "name": "gsd-codex-plugin",
+  "version": "1.11.0+gsd.400db94e02b3",
+  "description": "Community-maintained Codex distribution of GSD Core.",
+  "author": {
+    "name": "SB Yoon",
+    "url": "https://github.com/yansigit"
+  },
+  "homepage": "https://github.com/yansigit/gsd-codex-plugin",
+  "repository": "https://github.com/yansigit/gsd-codex-plugin",
+  "license": "MIT",
+  "keywords": ["gsd", "codex", "spec-driven-development", "planning", "workflow"],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "GSD for Codex — Community",
+    "shortDescription": "GSD workflows and project controls for Codex",
+    "longDescription": "A community-maintained Codex plugin that packages GSD Core skills, project status, and guarded UAT result recording.",
+    "developerName": "SB Yoon (Community)",
+    "category": "Productivity",
+    "capabilities": ["Interactive", "Write"],
+    "websiteURL": "https://github.com/yansigit/gsd-codex-plugin",
+    "defaultPrompt": [
+      "Show my GSD project control center.",
+      "Review outstanding UAT checks.",
+      "What is blocking this milestone?"
+    ]
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "gsd": {
+      "command": "node",
+      "args": ["./plugin/gsd-mcp-server.cjs"],
+      "cwd": "."
+    }
+  }
+}
