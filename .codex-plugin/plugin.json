@@ -9,7 +9,13 @@
   "homepage": "https://github.com/yansigit/gsd-codex-plugin",
   "repository": "https://github.com/yansigit/gsd-codex-plugin",
   "license": "MIT",
-  "keywords": ["gsd", "codex", "spec-driven-development", "planning", "workflow"],
+  "keywords": [
+    "gsd",
+    "codex",
+    "spec-driven-development",
+    "planning",
+    "workflow"
+  ],
   "skills": "./skills/",
   "mcpServers": "./.mcp.json",
   "interface": {
@@ -18,7 +24,10 @@
     "longDescription": "A community-maintained Codex plugin that packages GSD Core skills, project status, and guarded UAT result recording.",
     "developerName": "SB Yoon (Community)",
     "category": "Productivity",
-    "capabilities": ["Interactive", "Write"],
+    "capabilities": [
+      "Interactive",
+      "Write"
+    ],
     "websiteURL": "https://github.com/yansigit/gsd-codex-plugin",
     "defaultPrompt": [
       "Show my GSD project control center.",
