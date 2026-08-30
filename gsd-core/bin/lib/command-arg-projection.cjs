@@ -13,6 +13,7 @@
  * typed named values and multi-word segments.
  */
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.isFlagToken = isFlagToken;
 exports.parseNamedArgs = parseNamedArgs;
 exports.parseNamedArgsOrExit = parseNamedArgsOrExit;
 exports.parseMultiwordArg = parseMultiwordArg;
@@ -47,6 +48,9 @@ function assertValidSpec(spec) {
 }
 // Single predicate reused for both extraction (a value beginning with a
 // single `-` is a value, not a flag) and validation (negative space N5).
+// Exported for init-command-router's #3865 --phase alias normalization,
+// which needs the same flag-shape test before deciding whether args[2] is a
+// phase positional or a flag token.
 function isFlagToken(tok) {
     return tok.startsWith('--');
 }

@@ -1,6 +1,6 @@
 {
   "name": "gsd-codex-plugin",
-  "version": "1.11.0+gsd.529480b4a5d1.wrapper.1",
+  "version": "1.12.0+gsd.86452da7cb4d.wrapper.1",
   "private": true,
   "description": "Community-maintained Codex distribution of GSD Core",
   "license": "MIT",

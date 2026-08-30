@@ -99,6 +99,23 @@ function _getNestedConfigDefault(section, field) {
     }
     return undefined;
 }
+/** Shared flat-then-nested config lookup; exported for parity tests. */
+function _getConfigValue(parsed, key, nested) {
+    if (parsed[key] !== undefined)
+        return parsed[key];
+    if (nested && parsed[nested.section] && typeof parsed[nested.section] === 'object' && parsed[nested.section] !== null) {
+        return parsed[nested.section][nested.field];
+    }
+    return undefined;
+}
+/** Shared nested-only config lookup; exported for parity tests. */
+function _getConfigNested(parsed, section, field) {
+    const sec = parsed[section];
+    if (sec !== null && typeof sec === 'object' && !Array.isArray(sec)) {
+        return sec[field];
+    }
+    return undefined;
+}
 const CONFIG_DEFAULTS = {
     model_profile: _getConfigDefault('model_profile'),
     commit_docs: _getConfigDefault('commit_docs'),
@@ -575,8 +592,18 @@ function _warnUnusableConfig(fault) {
  * diagnostic names the file. Before this, a trailing comma in config.json was
  * byte-identical to the file not existing: builtin defaults, degraded:false,
  * and the user's entire configuration silently discarded.
+ *
+ * `options.persist: false` (#3648) suppresses the two normalize-then-write-back
+ * side effects below. Resolution is otherwise identical — same precedence, same
+ * returned object — the migrated shape simply stays in memory. Callers that only
+ * ASK the config something (a predicate, a status readout) pass it so that a read
+ * cannot dirty the working tree; the ~30 callers that omit it keep persisting, so
+ * a legacy config is still migrated exactly once by ordinary use.
  */
 function loadConfigResolved(cwd, options = {}) {
+    // Opt-OUT, not opt-in: omitting the option must preserve the historical
+    // write-back for every existing caller.
+    const persist = options['persist'] !== false;
     // NOTE: loadConfigResolved resolves from cwd AS-IS (no walk-up).
     // Callers that need ancestor-anchoring (e.g. cmdAgentSkills) must do so
     // themselves via findProjectRoot() before calling this function.
@@ -654,10 +681,12 @@ function loadConfigResolved(cwd, options = {}) {
                     }
                 }
                 rootParsed = rootNormalized;
-                try {
-                    (0, shell_command_projection_cjs_1.platformWriteSync)(rootConfigPath, JSON.stringify(rootParsed, null, 2));
+                if (persist) {
+                    try {
+                        (0, shell_command_projection_cjs_1.platformWriteSync)(rootConfigPath, JSON.stringify(rootParsed, null, 2));
+                    }
+                    catch { /* ignore */ }
                 }
-                catch { /* ignore */ }
             }
             else {
                 rootParsed = rootNormalized;
@@ -722,7 +751,7 @@ function loadConfigResolved(cwd, options = {}) {
                 }
             }
         }
-        if (configDirty) {
+        if (configDirty && persist) {
             try {
                 (0, shell_command_projection_cjs_1.platformWriteSync)(configPath, JSON.stringify(fileData, null, 2));
             }
@@ -767,17 +796,19 @@ function loadConfigResolved(cwd, options = {}) {
             }
         }
         _warnUnknownProfileOverrides(parsed, '.planning/config.json');
-        const get = (key, nested) => {
-            if (parsed[key] !== undefined)
-                return parsed[key];
-            if (nested && parsed[nested.section] && typeof parsed[nested.section] === 'object' && parsed[nested.section] !== null) {
-                const sec = parsed[nested.section];
-                if (sec[nested.field] !== undefined) {
-                    return sec[nested.field];
-                }
-            }
-            return undefined;
-        };
+        const get = (key, nested) => _getConfigValue(parsed, key, nested);
+        /**
+         * Nested-ONLY read — no top-level fallback (#3648).
+         *
+         * `get()`'s flat-then-nested order exists for keys that have a legacy flat
+         * spelling `normalizeLegacyKeys` migrates (`branching_strategy`,
+         * `base_branch`, …); for those, honouring the flat key is back-compat. A key
+         * introduced with no legacy form has nothing to be compatible WITH, so
+         * routing it through `get()` would invent an undocumented top-level alias
+         * that silently outranks the canonical nested key. Use this instead for new
+         * `<section>.<field>` keys (round-4 external review).
+         */
+        const getNested = (section, field) => _getConfigNested(parsed, section, field);
         const parallelization = (() => {
             const val = get('parallelization');
             if (typeof val === 'boolean')
@@ -798,6 +829,8 @@ function loadConfigResolved(cwd, options = {}) {
             })(),
             search_gitignored: get('search_gitignored', { section: 'planning', field: 'search_gitignored' }) ?? defaults.search_gitignored,
             branching_strategy: get('branching_strategy', { section: 'git', field: 'branching_strategy' }) ?? defaults.branching_strategy,
+            base_branch: get('base_branch', { section: 'git', field: 'base_branch' }),
+            protected_branches: getNested('git', 'protected_branches'),
             phase_branch_template: get('phase_branch_template', { section: 'git', field: 'phase_branch_template' }) ?? defaults.phase_branch_template,
             milestone_branch_template: get('milestone_branch_template', { section: 'git', field: 'milestone_branch_template' }) ?? defaults.milestone_branch_template,
             quick_branch_template: get('quick_branch_template', { section: 'git', field: 'quick_branch_template' }) ?? defaults.quick_branch_template,
@@ -914,8 +947,15 @@ function loadConfigResolved(cwd, options = {}) {
         // Fix 2: Early intercept — workstream requested but ws config.json absent (or dir absent)
         // AND root config was loaded. Covers BOTH "dir exists, no config.json" AND "dir absent".
         // This delivers the #1366 acceptance criterion: nonexistent GSD_WORKSTREAM yields root, degraded.
+        //
+        // Both fallback recursions below forward `options` and override ONLY `workstream`.
+        // A bare `{ workstream: null }` silently dropped every other option, so a caller's
+        // `persist: false` was discarded on exactly this path and the root config was
+        // rewritten by a read (#3648, found by external review). The explicit
+        // `workstream: null` still wins the `hasOwnProperty` check at the top of this
+        // function, so spreading cannot let `workstreamContext` reintroduce a workstream.
         if (wsRequested && rootParsed) {
-            const fb = loadConfigResolved(cwd, { workstream: null });
+            const fb = loadConfigResolved(cwd, { ...options, workstream: null });
             return fallback({ config: fb.config, source: 'root', degraded: true });
         }
         // Branch B, C, D, E
@@ -923,7 +963,7 @@ function loadConfigResolved(cwd, options = {}) {
             if (rootParsed) {
                 // Branch B: workstream requested but ws config.json absent; root config present.
                 // (Only reached when wsRequested is false — e.g. ws='' with .planning/workstreams//config.json)
-                const fb = loadConfigResolved(cwd, { workstream: null });
+                const fb = loadConfigResolved(cwd, { ...options, workstream: null });
                 return fallback({ config: fb.config, source: 'root', degraded: true });
             }
             // Branch C: .planning/ exists but no config.json and no root config — federated/builtin defaults
@@ -1026,6 +1066,8 @@ module.exports = {
     CONFIG_DEFAULTS,
     _getConfigDefault,
     _getNestedConfigDefault,
+    _getConfigValue,
+    _getConfigNested,
     _deepMergeConfig,
     _warnedUnknownConfigKeys,
     _warnedShadowedGlobalKeys,

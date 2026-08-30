@@ -21,6 +21,51 @@ const cjsCommandRouterAdapter = require("./cjs-command-router-adapter.cjs");
 const { routeCjsCommandFamily } = cjsCommandRouterAdapter;
 const command_arg_projection_cjs_1 = require("./command-arg-projection.cjs");
 // ─── Implementation ───────────────────────────────────────────────────────────
+/**
+ * #3865: `--phase <N>` / `--phase=<N>` alias for the positional phase token
+ * the phase-taking init.* queries read at args[2]. Normalizes the pair into
+ * that caller-owned slot so (a) the handler's own args[2] read sees the
+ * value, and (b) the strict flag validation it runs sees exactly the argv
+ * the positional form produces (a bare `--phase 60` at index 2-3 would
+ * otherwise leave `60` as a rejected stray positional — or, pre-ADR-3473
+ * §8.4, silently answer `phase_found:false, plan_count:0` for a phase with
+ * plans on disk). A valueless `--phase` is a usage error naming the flag.
+ * Any other flag-shaped args[2] resolves to `undefined` — the commands'
+ * no-position-given input (execute-phase/plan-phase/verify-work usage-error
+ * "phase required"; the find-based queries answer phase_found:false; todos
+ * drops its area filter) — instead of passing the flag text down as a phase
+ * name.
+ */
+function normalizePhaseAlias(args, error) {
+    const tok = args[2];
+    if (tok === undefined)
+        return { args, phase: undefined };
+    if (tok === '--phase=') {
+        error('--phase requires a value: use --phase <N> (or the positional form <N>)');
+        // Fail-closed backstop, mirroring parseNamedArgsOrExit: the wired error()
+        // exits, but a returning fail() must not fall through to the splices below.
+        throw new Error('normalizePhaseAlias: error() returned instead of exiting');
+    }
+    if (tok.startsWith('--phase=')) {
+        const value = tok.slice('--phase='.length);
+        const out = args.slice();
+        out.splice(2, 1, value);
+        return { args: out, phase: value };
+    }
+    if (tok === '--phase') {
+        const next = args[3];
+        if (next === undefined || (0, command_arg_projection_cjs_1.isFlagToken)(next)) {
+            error('--phase requires a value: use --phase <N> (or the positional form <N>)');
+            throw new Error('normalizePhaseAlias: error() returned instead of exiting');
+        }
+        const out = args.slice();
+        out.splice(2, 2, next);
+        return { args: out, phase: next };
+    }
+    if ((0, command_arg_projection_cjs_1.isFlagToken)(tok))
+        return { args, phase: undefined };
+    return { args, phase: tok };
+}
 function routeInitCommand({ init, args, cwd, raw, error }) {
     routeCjsCommandFamily({
         args,
@@ -34,26 +79,37 @@ function routeInitCommand({ init, args, cwd, raw, error }) {
             // `buildSectionManifestField`'s flags-Set builder (src/init.cts) is the
             // single source of truth for flag ABSENCE and gates on value truthiness,
             // so `namedArgs` is passed through here uncoerced.
+            //
+            // #3865: the phase-taking init.* queries accept `--phase <N>` /
+            // `--phase=<N>` as an alias for the positional form (matching
+            // `phase list-plans`, which accepts both). Pre-normalizing here moves
+            // the value into the caller-owned args[2] slot every handler below
+            // already reads, so the strict flag validation those handlers run sees
+            // exactly the argv the positional form produces. A valueless --phase is
+            // a usage error naming the flag — never a silent `phase_found:false`
+            // for a phase that has plans (the reported incident: 7 plans read as 0).
             'execute-phase': () => {
+                const norm = normalizePhaseAlias(args, error);
                 // `wave` is an optionalValueFlags entry, not a booleanFlags entry:
                 // `--wave N` is a documented, shipped form (commands/gsd/execute-phase.md:4,48)
                 // whose value is consumed by the workflow layer
                 // (gsd-core/workflows/execute-phase.md:84), not by this CLI seam — see
                 // NamedArgSpec.optionalValueFlags in command-arg-projection.cts.
-                const namedArgs = (0, command_arg_projection_cjs_1.parseNamedArgsOrExit)(args, { booleanFlags: ['validate', 'tdd'], optionalValueFlags: ['wave'], positionals: 3 }, error);
-                init.cmdInitExecutePhase(cwd, args[2], raw, {
+                const namedArgs = (0, command_arg_projection_cjs_1.parseNamedArgsOrExit)(norm.args, { booleanFlags: ['validate', 'tdd'], optionalValueFlags: ['wave'], positionals: 3 }, error);
+                init.cmdInitExecutePhase(cwd, norm.phase, raw, {
                     validate: namedArgs['validate'],
                     tdd: namedArgs['tdd'],
                     wave: namedArgs['wave'],
                 });
             },
             'plan-phase': () => {
-                const namedArgs = (0, command_arg_projection_cjs_1.parseNamedArgsOrExit)(args, {
+                const norm = normalizePhaseAlias(args, error);
+                const namedArgs = (0, command_arg_projection_cjs_1.parseNamedArgsOrExit)(norm.args, {
                     valueFlags: ['granularity', 'prd', 'ingest', 'research-phase'],
                     booleanFlags: ['validate', 'tdd', 'reviews', 'chunked'],
                     positionals: 3,
                 }, error);
-                init.cmdInitPlanPhase(cwd, args[2], raw, {
+                init.cmdInitPlanPhase(cwd, norm.phase, raw, {
                     validate: namedArgs['validate'],
                     tdd: namedArgs['tdd'],
                     granularity: namedArgs['granularity'],
@@ -112,28 +168,34 @@ function routeInitCommand({ init, args, cwd, raw, error }) {
             // separate `query init.verify-work` seam and is stripped before
             // reaching `init verify-work` (gsd-core/workflows/verify-work.md:42-45).
             'verify-work': () => {
-                (0, command_arg_projection_cjs_1.parseNamedArgsOrExit)(args, { positionals: 3 }, error);
-                init.cmdInitVerifyWork(cwd, args[2], raw);
+                const norm = normalizePhaseAlias(args, error);
+                (0, command_arg_projection_cjs_1.parseNamedArgsOrExit)(norm.args, { positionals: 3 }, error);
+                init.cmdInitVerifyWork(cwd, norm.phase, raw);
             },
             'phase-op': () => {
-                (0, command_arg_projection_cjs_1.parseNamedArgsOrExit)(args, { positionals: 3 }, error);
-                init.cmdInitPhaseOp(cwd, args[2], raw);
+                const norm = normalizePhaseAlias(args, error);
+                (0, command_arg_projection_cjs_1.parseNamedArgsOrExit)(norm.args, { positionals: 3 }, error);
+                init.cmdInitPhaseOp(cwd, norm.phase, raw);
             },
             'code-review': () => {
-                const namedArgs = (0, command_arg_projection_cjs_1.parseNamedArgsOrExit)(args, { booleanFlags: ['fix'], positionals: 3 }, error);
-                init.cmdInitCodeReview(cwd, args[2], raw, { fix: namedArgs['fix'] });
+                const norm = normalizePhaseAlias(args, error);
+                const namedArgs = (0, command_arg_projection_cjs_1.parseNamedArgsOrExit)(norm.args, { booleanFlags: ['fix'], positionals: 3 }, error);
+                init.cmdInitCodeReview(cwd, norm.phase, raw, { fix: namedArgs['fix'] });
             },
             review: () => {
-                (0, command_arg_projection_cjs_1.parseNamedArgsOrExit)(args, { positionals: 3 }, error);
-                init.cmdInitReview(cwd, args[2], raw, {});
+                const norm = normalizePhaseAlias(args, error);
+                (0, command_arg_projection_cjs_1.parseNamedArgsOrExit)(norm.args, { positionals: 3 }, error);
+                init.cmdInitReview(cwd, norm.phase, raw, {});
             },
             'discuss-phase-assumptions': () => {
-                const namedArgs = (0, command_arg_projection_cjs_1.parseNamedArgsOrExit)(args, { booleanFlags: ['auto'], positionals: 3 }, error);
-                init.cmdInitDiscussPhaseAssumptions(cwd, args[2], raw, { auto: namedArgs['auto'] });
+                const norm = normalizePhaseAlias(args, error);
+                const namedArgs = (0, command_arg_projection_cjs_1.parseNamedArgsOrExit)(norm.args, { booleanFlags: ['auto'], positionals: 3 }, error);
+                init.cmdInitDiscussPhaseAssumptions(cwd, norm.phase, raw, { auto: namedArgs['auto'] });
             },
             todos: () => {
-                (0, command_arg_projection_cjs_1.parseNamedArgsOrExit)(args, { positionals: 3 }, error);
-                init.cmdInitTodos(cwd, args[2], raw);
+                const norm = normalizePhaseAlias(args, error);
+                (0, command_arg_projection_cjs_1.parseNamedArgsOrExit)(norm.args, { positionals: 3 }, error);
+                init.cmdInitTodos(cwd, norm.phase, raw);
             },
             'milestone-op': () => init.cmdInitMilestoneOp(cwd, raw),
             'map-codebase': () => init.cmdInitMapCodebase(cwd, raw),

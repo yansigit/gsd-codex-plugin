@@ -1064,7 +1064,11 @@ function _normalizeMd(content) {
             if (i === 0 || !insideFence[i - 1])
                 result.push('');
         }
-        if (/^(\s*[-*+]\s|\s*\d+\.\s)/.test(line) && i > 0 && prevTrimmed !== '' && !/^(\s*[-*+]\s|\s*\d+\.\s)/.test(prev) && prevTrimmed !== '---')
+        // #3854: the `!/^\s/.test(prev)` guard mirrors the after-a-bullet rule below —
+        // an indented non-bullet line is a CONTINUATION of the previous list item, not a
+        // preceding paragraph, so no separating blank may be injected before this bullet
+        // (that injection converted every tight multi-line list to a loose one on write).
+        if (/^(\s*[-*+]\s|\s*\d+\.\s)/.test(line) && i > 0 && prevTrimmed !== '' && !/^(\s*[-*+]\s|\s*\d+\.\s)/.test(prev) && !/^\s/.test(prev) && prevTrimmed !== '---')
             result.push('');
         result.push(line);
         if (/^#{1,6}\s/.test(trimmed) && i < lines.length - 1 && (lines[i + 1] ?? '').trimEnd() !== '')

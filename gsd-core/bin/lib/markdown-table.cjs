@@ -658,6 +658,54 @@ function escapeCell(value) {
  */
 exports.QUICK_TASKS_SECTION_ABSENT = 'no Quick Tasks Completed section';
 /**
+ * #3860: heading predicate for STATE.md's Quick Tasks Completed section(s).
+ * The heading is a section LABEL, not data — milestone-scoped files
+ * legitimately carry suffixed headings (`### Quick Tasks Completed (v1.1+)`
+ * beside an archived `(v1.0)`), so the match is prefix-anchored with a word
+ * boundary, never exact: `Quick Tasks Completedness` must NOT match. Hoisted
+ * beside QUICK_TASKS_SECTION_ABSENT so `appendQuickTaskRow` and
+ * `resetQuickTaskRows` cannot drift apart again.
+ */
+const isQuickTasksHeading = (h) => /^quick tasks completed\b/i.test(h.text.trim());
+/**
+ * #3860: among ALL heading-matching sections, pick the first whose body is a
+ * table with a recognized Quick Tasks schema — a legacy/unparseable table
+ * first in document order no longer shadows a usable one further down. When
+ * NO section is usable, return the FIRST match so the caller's downstream
+ * error describes the real problem (unparseable/legacy table) instead of a
+ * false QUICK_TASKS_SECTION_ABSENT.
+ *
+ * Bounding: `collectSections` ends a candidate's body only at the NEXT
+ * matching heading — far too wide for splicing (it would swallow an
+ * intervening `## Deferred Items` table into the Quick Tasks body, and
+ * `appendQuickTaskRow`'s last-table-line scan would then splice the new row
+ * into that WRONG table). Each candidate is therefore re-collected through
+ * `collectSection` with an offset-precise predicate, whose default
+ * level-bounded stop (next heading of the same or higher level) is exactly
+ * the semantics the pre-#3860 single-section lookup had.
+ *
+ * Convention: "first" is document order — the newest-on-top layout the issue
+ * itself demonstrates (`(v1.1+)` above an archived `(v1.0)`). When several
+ * suffixed sections all carry recognized schemas, this layer has no signal
+ * for which milestone is active, so document order is the pinned tie-break.
+ */
+function selectQuickTasksSection(stateContent) {
+    const candidates = (0, markdown_sectionizer_cjs_1.collectSections)(stateContent, isQuickTasksHeading);
+    if (candidates.length === 0)
+        return null;
+    const boundedOf = (cand) => (0, markdown_sectionizer_cjs_1.collectSection)(stateContent, (h) => h.offset === cand.heading.offset);
+    const firstBounded = boundedOf(candidates[0]);
+    for (const cand of candidates) {
+        const bounded = boundedOf(cand);
+        if (!bounded)
+            continue;
+        const parsed = parseMarkdownTable(bounded.body);
+        if (parsed.ok && matchTableSchema(parsed.value.columns)?.id === 'QuickTasks')
+            return bounded;
+    }
+    return firstBounded;
+}
+/**
  * Append one row to STATE.md's "Quick Tasks Completed" table.
  *
  * Pure, schema-driven replacement for fast.md's inline `awk NF-2` column-count
@@ -677,7 +725,7 @@ exports.QUICK_TASKS_SECTION_ABSENT = 'no Quick Tasks Completed section';
  * rows), preserving any surrounding blank lines/trailing content in the section.
  */
 function appendQuickTaskRow(stateContent, fields) {
-    const section = (0, markdown_sectionizer_cjs_1.collectSection)(stateContent, (h) => /^quick tasks completed$/i.test(h.text.trim()));
+    const section = selectQuickTasksSection(stateContent);
     if (!section) {
         return { ok: false, reason: exports.QUICK_TASKS_SECTION_ABSENT };
     }
@@ -736,7 +784,7 @@ function appendQuickTaskRow(stateContent, fields) {
  * directories out from under the table (see `src/milestone.cts`'s
  * `archiveQuickTaskDirectories` / `cmdMilestoneComplete` wiring).
  *
- * Mirrors `appendQuickTaskRow`'s exact contract (same `collectSection` ->
+ * Mirrors `appendQuickTaskRow`'s exact contract (same `selectQuickTasksSection` ->
  * `parseMarkdownTable` -> `matchTableSchema` pipeline, same fail-loud posture,
  * same EOL-detect-before-split handling) rather than inventing a second one:
  *   - no "Quick Tasks Completed" heading -> `{ok:false, reason:
@@ -758,7 +806,7 @@ function resetQuickTaskRows(stateContent) {
     if (typeof stateContent !== 'string' || stateContent.trim() === '') {
         return { ok: false, reason: 'empty or non-string input' };
     }
-    const section = (0, markdown_sectionizer_cjs_1.collectSection)(stateContent, (h) => /^quick tasks completed$/i.test(h.text.trim()));
+    const section = selectQuickTasksSection(stateContent);
     if (!section) {
         return { ok: false, reason: exports.QUICK_TASKS_SECTION_ABSENT };
     }
