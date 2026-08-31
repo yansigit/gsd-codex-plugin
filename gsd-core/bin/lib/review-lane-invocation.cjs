@@ -26,6 +26,8 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.LANE_UNAVAILABLE = void 0;
 exports.configString = configString;
 exports.normalizeHost = normalizeHost;
+exports.resolveTimeoutMs = resolveTimeoutMs;
+exports.nativeTimeoutToken = nativeTimeoutToken;
 exports.isEmptyReview = isEmptyReview;
 exports.fileRefPrompt = fileRefPrompt;
 exports.resolveLanePlan = resolveLanePlan;
@@ -123,6 +125,37 @@ function normalizeHost(raw) {
     return `${scheme}//${host}${port ? `:${port}` : ''}${pathPart}`;
 }
 /**
+ * Resolve a lane's outer wall-clock timeout in milliseconds (#3274).
+ *
+ * `timeoutConfigKey` resolves in SECONDS — the user-facing convention this repo already uses for
+ * timeout-shaped config keys (`workflow.cross_ai_timeout`, `graphify.build_timeout`), distinct from
+ * the internal millisecond unit `timeoutFloorMs` carries. Anything that is not a positive finite
+ * number is treated as unset and falls back to `floorMs`, never coerced: a wrong-typed config value
+ * silently becoming a wrong-but-plausible timeout is worse than falling back cleanly. `0` and
+ * negative values are deliberately treated as unset too — a timeout has no legitimate zero or
+ * negative value, so no second sentinel (unlike the prompt-budget keys, which use -1) is needed.
+ */
+function resolveTimeoutMs(timeoutConfigKey, floorMs, configGet) {
+    const configuredSeconds = typeof timeoutConfigKey === 'string' ? configGet(timeoutConfigKey) : undefined;
+    return typeof configuredSeconds === 'number' && Number.isFinite(configuredSeconds) && configuredSeconds > 0
+        ? configuredSeconds * 1000
+        : floorMs;
+}
+/** Buffer (seconds) a lane's native inner timeout sits under its resolved outer wall-clock cap
+ * (#3274). Matches the shipped 600s outer / 540s native relationship exactly when unconfigured:
+ * floor(600000/1000) - 60 = 540. */
+const NATIVE_TIMEOUT_BUFFER_SECONDS = 60;
+/**
+ * Render the `{{nativeTimeout}}` argv placeholder from a lane's resolved outer timeout (#3274).
+ *
+ * Clamped to a 1-second floor so a very small configured (or, today, only-ever-default) outer
+ * timeout never produces a zero or negative duration string a CLI would reject or misinterpret.
+ */
+function nativeTimeoutToken(timeoutMs) {
+    const seconds = Math.max(1, Math.floor(timeoutMs / 1000) - NATIVE_TIMEOUT_BUFFER_SECONDS);
+    return `${seconds}s`;
+}
+/**
  * Classify a lane's output as a review or as empty.
  *
  * WHITESPACE-ONLY COUNTS AS EMPTY, for every lane. The bash tested `[ ! -s file ]`, which counts
@@ -212,9 +245,10 @@ function resolveLanePlan(input) {
         return fail(exports.LANE_UNAVAILABLE.UNKNOWN_HANDLER, `lane '${slug}' names handler '${String(handler)}', which this GSD version does not provide`);
     }
     const { promptPath, reviewPath, errPath } = artifactPaths(input.runDir, slug);
-    const timeoutMs = typeof lane.timeoutFloorMs === 'number' && Number.isFinite(lane.timeoutFloorMs) && lane.timeoutFloorMs > 0
+    const floorMs = typeof lane.timeoutFloorMs === 'number' && Number.isFinite(lane.timeoutFloorMs) && lane.timeoutFloorMs > 0
         ? lane.timeoutFloorMs
         : 900_000;
+    const timeoutMs = resolveTimeoutMs(lane.timeoutConfigKey, floorMs, input.configGet);
     const emptyOutput = lane.emptyOutput === 'handler-owned' ? 'handler-owned' : 'stub-with-stderr';
     // #3194: only an EXACT 'diff-only' declaration exempts a lane from evidence verification.
     // Anything else — including a missing or garbage value on a third-party overlay body —
@@ -319,6 +353,7 @@ function resolveLanePlan(input) {
         '{{effort}}': effortExpansion,
         '{{output}}': outputExpansion,
         '{{prompt}}': promptExpansion,
+        '{{nativeTimeout}}': [nativeTimeoutToken(timeoutMs)],
     };
     const template = Array.isArray(inv.args)
         ? inv.args.filter((a) => typeof a === 'string')
