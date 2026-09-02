@@ -1737,6 +1737,36 @@ function applySettingsJsonHooks(settings, opts) {
         if (!settings.hooks.SessionStart) {
             settings.hooks.SessionStart = [];
         }
+        // #3981: Claude Code treats a timed-out hook as NON-blocking — the tool
+        // call continues through the normal permission flow. The blocking
+        // PreToolUse guards therefore need a budget a host stall cannot exceed,
+        // not one sized to the hook's own ~0.1 s runtime. Observed stalls reached
+        // 84.3 s; 120 s is the top of the issue's prescribed 60–120 range and
+        // returns every observed verdict. Registration below uses this constant,
+        // and the migration pass right here raises existing managed entries.
+        const BLOCKING_GUARD_TIMEOUT_S = 120;
+        const blockingGuardNames = [
+            'gsd-prompt-guard',
+            'gsd-workflow-guard',
+            'gsd-worktree-path-guard',
+            'gsd-agent-isolation-guard',
+            'gsd-write-guard',
+            'gsd-validate-commit',
+        ];
+        for (const entries of Object.values(settings.hooks)) {
+            if (!Array.isArray(entries))
+                continue;
+            for (const entry of entries) {
+                if (!entry || !Array.isArray(entry.hooks))
+                    continue;
+                for (const h of entry.hooks) {
+                    if (blockingGuardNames.some((name) => referencesHook(h, name)) &&
+                        h.timeout === 5) {
+                        h.timeout = BLOCKING_GUARD_TIMEOUT_S;
+                    }
+                }
+            }
+        }
         const hasGsdUpdateHook = settings.hooks.SessionStart.some((entry) => entry.hooks && entry.hooks.some((h) => referencesHook(h, 'gsd-check-update')));
         // Guard: only register if the hook file was actually installed (#1754).
         // When hooks/dist/ is missing from the npm package (as in v1.32.0), the
@@ -1817,7 +1847,7 @@ function applySettingsJsonHooks(settings, opts) {
                     {
                         type: 'command',
                         command: promptGuardCommand,
-                        timeout: 5
+                        timeout: BLOCKING_GUARD_TIMEOUT_S
                     }
                 ]
             });
@@ -1894,7 +1924,7 @@ function applySettingsJsonHooks(settings, opts) {
                     {
                         type: 'command',
                         command: workflowGuardCommand,
-                        timeout: 5
+                        timeout: BLOCKING_GUARD_TIMEOUT_S
                     }
                 ]
             });
@@ -1919,7 +1949,7 @@ function applySettingsJsonHooks(settings, opts) {
                     {
                         type: 'command',
                         command: worktreePathGuardCommand,
-                        timeout: 5
+                        timeout: BLOCKING_GUARD_TIMEOUT_S
                     }
                 ]
             });
@@ -1949,7 +1979,7 @@ function applySettingsJsonHooks(settings, opts) {
                     {
                         type: 'command',
                         command: agentIsolationGuardCommand,
-                        timeout: 5
+                        timeout: BLOCKING_GUARD_TIMEOUT_S
                     }
                 ]
             });
@@ -1976,7 +2006,7 @@ function applySettingsJsonHooks(settings, opts) {
                     {
                         type: 'command',
                         command: writeGuardCommand,
-                        timeout: 5
+                        timeout: BLOCKING_GUARD_TIMEOUT_S
                     }
                 ]
             });
@@ -2001,7 +2031,7 @@ function applySettingsJsonHooks(settings, opts) {
                     {
                         type: 'command',
                         command: validateCommitCommand,
-                        timeout: 5
+                        timeout: BLOCKING_GUARD_TIMEOUT_S
                     }
                 ]
             });

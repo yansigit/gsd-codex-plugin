@@ -248,6 +248,14 @@ exports.VERIFY_COMMAND_ALIASES = [
         ],
         "subcommand": "codebase-drift",
         "mutation": false
+    },
+    {
+        "canonical": "verify.context-drift",
+        "aliases": [
+            "verify context-drift"
+        ],
+        "subcommand": "context-drift",
+        "mutation": false
     }
 ];
 exports.INIT_COMMAND_ALIASES = [

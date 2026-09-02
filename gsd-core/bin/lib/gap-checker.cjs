@@ -36,6 +36,9 @@ const { scanPhasePlans } = planScanMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const phaseIdMod = require("./phase-id.cjs");
 const { scopeToPhase } = phaseIdMod;
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const planningScopeMod = require("./planning-scope.cjs");
+const { SCOPE } = planningScopeMod;
 /**
  * Parse REQ-IDs from REQUIREMENTS.md content.
  *
@@ -303,6 +306,7 @@ function runGapAnalysis(cwd, phaseDir, options = {}) {
             summary: 'workflow.post_planning_gaps disabled — skipping post-planning gap analysis',
             counts: { total: 0, covered: 0, uncovered: 0 },
             phase_dir_read_error: null,
+            phase_dir_scope: SCOPE.COMPLETE,
         };
     }
     const absPhaseDir = node_path_1.default.isAbsolute(phaseDir) ? phaseDir : node_path_1.default.join(cwd, phaseDir);
@@ -325,19 +329,20 @@ function runGapAnalysis(cwd, phaseDir, options = {}) {
     }
     // Read the phase directory once; reuse the listing for both context detection
     // and plan-file enumeration (avoids redundant readdirSync calls).
-    let phaseDirFiles = [];
-    // #3885 (ADR-3473 §8.5): the existsSync guard above already means a catch
-    // here is NEVER "genuinely absent" (ENOENT) — this directory exists, so any
-    // failure to list it is a real read error (EACCES/EIO/...) and must be
-    // named, not folded into the same `[]` an absent directory produces.
-    let phaseDirReadError = null;
-    try {
-        if (node_fs_1.default.existsSync(absPhaseDir))
-            phaseDirFiles = node_fs_1.default.readdirSync(absPhaseDir);
-    }
-    catch (err) {
-        phaseDirReadError = `Could not read phase directory ${formatDiagnosticToken(absPhaseDir)}: ${formatDiagnosticToken(err?.message ?? String(err))}`;
-    }
+    //
+    // #4014 (epic #3473 B4): findContextMdIn's directory-string form now owns
+    // the listing + ENOENT-vs-other discrimination, retiring the local
+    // existsSync-guarded readdirSync try/catch — ENOENT (genuinely absent)
+    // and a successful-but-empty read both resolve to SCOPE.COMPLETE with an
+    // empty listing, exactly like the existsSync guard's short-circuit did.
+    const { files: phaseDirFiles, scope: phaseDirScope } = findContextMdIn(absPhaseDir);
+    // #3885 (ADR-3473 §8.5): `phaseDirReadError` stays additive for the
+    // shipped `phase_dir_read_error` JSON field — derived from `phaseDirScope`
+    // rather than from its own caught error, since findContextMdIn's
+    // directory-string form reports SCOPE, not the raw errno message.
+    const phaseDirReadError = phaseDirScope === SCOPE.UNREADABLE
+        ? `Could not read phase directory ${formatDiagnosticToken(absPhaseDir)}`
+        : null;
     // #3511-class: scope the raw listing to this phase dir before the
     // phase-numbered -CONTEXT.md predicate. `phaseDirFiles` itself stays raw —
     // it is also reused below only as a `.length > 0` guard ahead of
@@ -405,6 +410,7 @@ function runGapAnalysis(cwd, phaseDir, options = {}) {
                 summary: coverageSummary + '; extracted 0 of N — possible format mismatch',
                 counts: { total: rows.length, covered, uncovered },
                 phase_dir_read_error: phaseDirReadError,
+                phase_dir_scope: phaseDirScope,
             };
         }
         return {
@@ -414,6 +420,7 @@ function runGapAnalysis(cwd, phaseDir, options = {}) {
             summary: 'extracted 0 of N — possible format mismatch',
             counts: { total: 0, covered: 0, uncovered: 0 },
             phase_dir_read_error: phaseDirReadError,
+            phase_dir_scope: phaseDirScope,
         };
     }
     // #1365: if no items at all, surface a clean no-check message.
@@ -431,6 +438,7 @@ function runGapAnalysis(cwd, phaseDir, options = {}) {
             summary: 'no requirements or decisions to check',
             counts: { total: 0, covered: 0, uncovered: 0 },
             phase_dir_read_error: phaseDirReadError,
+            phase_dir_scope: phaseDirScope,
         };
     }
     const rows = sortRows([
@@ -449,6 +457,7 @@ function runGapAnalysis(cwd, phaseDir, options = {}) {
         summary,
         counts: { total: rows.length, covered, uncovered },
         phase_dir_read_error: phaseDirReadError,
+        phase_dir_scope: phaseDirScope,
     };
 }
 function cmdGapAnalysis(cwd, args, raw) {

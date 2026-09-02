@@ -16,7 +16,7 @@ const pattern_cjs_1 = require("./pattern.cjs");
 const text_lines_cjs_1 = require("./text-lines.cjs");
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const ioMod = require("./io.cjs");
-const { output, error, formatDiagnosticToken } = ioMod;
+const { output, error, formatDiagnosticToken, declineNoOp } = ioMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const phaseIdMod = require("./phase-id.cjs");
 const { normalizePhaseName, phaseMarkdownRegexSource, matchPhaseDirs, stripProjectCodePrefix, OPTIONAL_PHASE_TAG_SOURCE, roadmapPhaseLookupSources, phaseHeadingPrefixSrcFor, PHASE_HEADING_BASELINE, isSentinelPhaseId, scopeToPhase, bracketQualifiedKey, foldBracketId } = phaseIdMod;
@@ -93,22 +93,20 @@ function countPhasePlansAndSummaries(phaseDir) {
     const { planCount, summaryCount } = scanPhasePlans(phaseDir);
     // hasContext and hasResearch are not plan-scan concerns — read the directory
     // once and share the listing for all non-plan metadata that cmdRoadmapAnalyze needs.
-    let phaseFiles = [];
-    // #3885 (ADR-3473 §8.5): distinguish "genuinely absent" (ENOENT) from
-    // "could not read" (EACCES/EIO/...) — the collapse of both to an empty
-    // listing is exactly the defect class this item closes. Mirrors
-    // core-utils.cts's getPhaseFileStats / phase-locator.cts's
-    // listMilestonePhaseDirs SCOPE.UNREADABLE discriminator.
-    let contextReadError = null;
-    try {
-        phaseFiles = node_fs_1.default.readdirSync(phaseDir);
-    }
-    catch (err) {
-        const code = err?.code;
-        if (code !== 'ENOENT') {
-            contextReadError = `Could not read phase directory ${formatDiagnosticToken(phaseDir)}: ${formatDiagnosticToken(err?.message ?? String(err))}`;
-        }
-    }
+    //
+    // #4014 (epic #3473 B4): the listing + unreadable-vs-empty discrimination
+    // is now owned by findContextMdIn's directory-string form, retiring this
+    // function's own readdirSync try/catch (mirrors core-utils.cts's
+    // getPhaseFileStats / phase-locator.cts's listMilestonePhaseDirs
+    // SCOPE.UNREADABLE discriminator).
+    const { files: phaseFiles, scope } = findContextMdIn(phaseDir);
+    // #3885 (ADR-3473 §8.5): `contextReadError` stays additive for the shipped
+    // `AnalyzePhase.context_read_error` JSON field — derived from `scope`
+    // rather than from its own caught error, since findContextMdIn's
+    // directory-string form reports SCOPE, not the raw errno message.
+    const contextReadError = scope === SCOPE.UNREADABLE
+        ? `Could not read phase directory ${formatDiagnosticToken(phaseDir)}`
+        : null;
     // #3511: scope the raw listing to this phase dir before the
     // phase-numbered-artifact predicates (hasContext/hasResearch) — planCount/
     // summaryCount above stay on scanPhasePlans's own unscoped listing since a
@@ -121,6 +119,7 @@ function countPhasePlansAndSummaries(phaseDir) {
         hasContext: findContextMdIn(scopedFiles) !== null,
         hasResearch: scopedFiles.some(f => f.endsWith('-RESEARCH.md') || f === 'RESEARCH.md'),
         contextReadError,
+        scope,
     };
 }
 // `phaseMarkdownRegexSource` lives in phase-id.cjs (#3537) and is imported above.
@@ -393,6 +392,10 @@ function collectAnalyzePhases(content, phasesDir, phaseDirNames, convention) {
         // hit a non-ENOENT error — no directory at all is `disk_status:
         // 'no_directory'`, a real (if uninteresting) answer, not a read error.
         let contextReadError = null;
+        // #4014 (epic #3473 B4): additive sibling — SCOPE.COMPLETE by default
+        // (no directory at all is a genuine, not-unreadable answer), overwritten
+        // below only when dirMatch resolves.
+        let contextScope = SCOPE.COMPLETE;
         // DEAD catch removed (#2245 audit): matchPhaseDirs(...) is a pure
         // array lookup on an already-resolved string array, and
         // countPhasePlansAndSummaries is itself fully defensive (its own
@@ -423,6 +426,7 @@ function collectAnalyzePhases(content, phasesDir, phaseDirNames, convention) {
             hasContext = counts.hasContext;
             hasResearch = counts.hasResearch;
             contextReadError = counts.contextReadError;
+            contextScope = counts.scope;
             // ADR-3180 §7.4 (issue #3186, disk-strict, #3168 fix): route "is this
             // phase complete" through the canonical owner (`isPhaseComplete`),
             // which calls readVerificationStatus UNCONDITIONALLY — plan count is
@@ -473,6 +477,7 @@ function collectAnalyzePhases(content, phasesDir, phaseDirNames, convention) {
             disk_status: diskStatus,
             roadmap_complete: roadmapComplete,
             context_read_error: contextReadError,
+            context_scope: contextScope,
         });
     }
     // #3577: markdown-table row declarations join the enumeration — same
@@ -493,6 +498,9 @@ function collectAnalyzePhases(content, phasesDir, phaseDirNames, convention) {
         let tHasContext = false;
         let tHasResearch = false;
         let tContextReadError = null;
+        // #4014 (epic #3473 B4): additive sibling, same default rule as the
+        // heading-declared branch above.
+        let tContextScope = SCOPE.COMPLETE;
         if (dirMatchA) {
             const counts = countPhasePlansAndSummaries(node_path_1.default.join(phasesDir, dirMatchA));
             tPlanCount = counts.planCount;
@@ -504,6 +512,7 @@ function collectAnalyzePhases(content, phasesDir, phaseDirNames, convention) {
             // existsSync (which cannot itself distinguish EACCES from absent), but
             // an unreadable phase directory is still surfaced via the sibling call.
             tContextReadError = counts.contextReadError;
+            tContextScope = counts.scope;
         }
         phases.push({
             number: tr.id,
@@ -518,6 +527,7 @@ function collectAnalyzePhases(content, phasesDir, phaseDirNames, convention) {
             disk_status: dirMatchA ? 'ok' : 'no_directory',
             roadmap_complete: false,
             context_read_error: tContextReadError,
+            context_scope: tContextScope,
         });
     }
     return { phases, detailKeys };
@@ -815,7 +825,7 @@ function cmdRoadmapUpdatePlanProgress(cwd, phaseNum, raw) {
     // inflate summary_count and silently flip the phase to Complete.
     const summaryCount = countMatchedSummaries(phaseInfo.plans, phaseInfo.summaries);
     if (planCount === 0) {
-        output({ updated: false, reason: 'No plans found', plan_count: 0, summary_count: 0 }, raw, 'no plans');
+        declineNoOp(raw, 'updated', 'No plans found', 'roadmap update-plan-progress skipped — no plans found for this phase. ROADMAP.md was left unchanged.', { plan_count: 0, summary_count: 0 });
         return;
     }
     // Verification gate (#2022): do NOT check the phase checkbox or stamp a
@@ -857,12 +867,19 @@ function cmdRoadmapUpdatePlanProgress(cwd, phaseNum, raw) {
     const status = isComplete ? 'Complete' : summaryCount > 0 ? 'In Progress' : 'Planned';
     const today = clock_cjs_1.realClock.localToday();
     if (!node_fs_1.default.existsSync(roadmapPath)) {
-        output({ updated: false, reason: 'ROADMAP.md not found', plan_count: planCount, summary_count: summaryCount }, raw, 'no roadmap');
+        declineNoOp(raw, 'updated', 'ROADMAP.md not found', 'roadmap update-plan-progress skipped — ROADMAP.md not found.', { plan_count: planCount, summary_count: summaryCount });
         return;
     }
     // Wrap entire read-modify-write in lock to prevent concurrent corruption
+    let updated = false;
     withPlanningLock(cwd, () => {
-        let roadmapContent = node_fs_1.default.readFileSync(roadmapPath, 'utf-8');
+        // #3957 (B9.4): captured BEFORE any transform runs, so the write/report
+        // decision below reflects whether the transforms actually changed
+        // anything — not just that they ran. Every transform below still runs
+        // unconditionally exactly as before; only the final write-and-report
+        // step becomes conditional on `roadmapContent !== originalContent`.
+        const originalContent = node_fs_1.default.readFileSync(roadmapPath, 'utf-8');
+        let roadmapContent = originalContent;
         const phasePattern = phaseMarkdownRegexSource(phaseNum);
         // Progress table row: update Plans Complete/Status/Completed columns BY
         // COLUMN NAME (handles 4- or 5-column RoadmapProgress tables regardless of
@@ -1059,17 +1076,30 @@ function cmdRoadmapUpdatePlanProgress(cwd, phaseNum, raw) {
                 }
             }
         }
-        (0, shell_command_projection_cjs_1.platformWriteSync)(roadmapPath, roadmapContent);
+        // #3957 (B9.4): write and report an update only when the transforms
+        // above actually produced different bytes — mirroring the sibling
+        // `cmdRoadmapAnnotateDependencies`'s existing `nextContent !== content`
+        // gate. Previously this wrote and reported `updated: true`
+        // unconditionally, even on an idempotent re-run that changed nothing.
+        if (roadmapContent !== originalContent) {
+            (0, shell_command_projection_cjs_1.platformWriteSync)(roadmapPath, roadmapContent);
+            updated = true;
+        }
     });
-    output({
-        updated: true,
+    const computed = {
         phase: phaseNum,
         plan_count: planCount,
         summary_count: summaryCount,
         status,
         complete: isComplete,
         verification_stale_check_indeterminate: verificationStaleCheckIndeterminate,
-    }, raw, `${summaryCount}/${planCount} ${status}`);
+    };
+    if (updated) {
+        output({ updated: true, ...computed }, raw, `${summaryCount}/${planCount} ${status}`);
+    }
+    else {
+        declineNoOp(raw, 'updated', "no changes were needed — ROADMAP.md already reflects this phase's plan/summary counts and status", "roadmap update-plan-progress skipped — no changes were needed; ROADMAP.md already reflects this phase's plan/summary counts and status.", computed);
+    }
 }
 // ─── cmdRoadmapAnnotateDependencies ───────────────────────────────────────────
 /**
@@ -1091,12 +1121,20 @@ function cmdRoadmapAnnotateDependencies(cwd, phaseNum, raw) {
     }
     const roadmapPath = planningPaths(cwd).roadmap;
     if (!node_fs_1.default.existsSync(roadmapPath)) {
-        output({ updated: false, reason: 'ROADMAP.md not found' }, raw, 'no roadmap');
+        declineNoOp(raw, 'updated', 'ROADMAP.md not found', 'roadmap annotate-dependencies skipped — ROADMAP.md not found.');
         return;
     }
     const phaseInfo = findPhaseInternal(cwd, phaseNum);
-    if (!phaseInfo || phaseInfo.plans.length === 0) {
-        output({ updated: false, reason: 'no plans found for phase', phase: phaseNum }, raw, 'no plans');
+    // #3957 (B9.1): distinguish "phase does not resolve at all" from "phase
+    // resolves but has zero plans" — previously both collapsed into the same
+    // 'no plans found for phase' reason, which is simply false for the first
+    // case (there IS no such phase to have plans).
+    if (!phaseInfo) {
+        declineNoOp(raw, 'updated', `phase ${phaseNum} not found`, `roadmap annotate-dependencies skipped — phase ${formatDiagnosticToken(String(phaseNum))} not found.`, { phase: phaseNum });
+        return;
+    }
+    if (phaseInfo.plans.length === 0) {
+        declineNoOp(raw, 'updated', `phase ${phaseNum} has no plans`, `roadmap annotate-dependencies skipped — phase ${formatDiagnosticToken(String(phaseNum))} has no plans.`, { phase: phaseNum });
         return;
     }
     // Read each PLAN.md and extract wave + must_haves.truths
@@ -1114,7 +1152,7 @@ function cmdRoadmapAnnotateDependencies(cwd, phaseNum, raw) {
         catch { /* skip unreadable plans */ }
     }
     if (planData.length === 0) {
-        output({ updated: false, reason: 'could not read plan frontmatter' }, raw, 'no frontmatter');
+        declineNoOp(raw, 'updated', 'could not read plan frontmatter', 'roadmap annotate-dependencies skipped — could not read plan frontmatter for any plan in this phase.');
         return;
     }
     // Group plans by wave (sorted)

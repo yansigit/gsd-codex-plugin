@@ -272,10 +272,10 @@ exports.REVIEWER_LANES = Object.freeze([
         probe: { kind: 'command-exists', binary: 'cursor-agent' },
         invoke: {
             binary: 'cursor-agent',
-            args: ['-p', '--mode', 'ask', '--trust', '--output-format', 'text', '{{prompt}}'],
+            args: ['-p', '{{model}}', '--mode', 'ask', '--trust', '--output-format', 'text', '{{prompt}}'],
             promptChannel: 'argv-file-ref',
             outputChannel: 'stdout',
-            modelArg: null,
+            modelArg: '--model',
             effortChannel: 'none',
         },
         timeoutFloorMs: 900_000,
@@ -285,7 +285,8 @@ exports.REVIEWER_LANES = Object.freeze([
         evidenceClass: 'source-grounded',
         requiresBinaries: [],
         promptBudgetKey: 'review.max_prompt_tokens_per_reviewer.cursor',
-        modelConfigKey: null,
+        // #3653: cursor-agent exposes --model (204 selectable models); wired the same as codex.
+        modelConfigKey: 'review.models.cursor',
         handler: null,
     },
     {

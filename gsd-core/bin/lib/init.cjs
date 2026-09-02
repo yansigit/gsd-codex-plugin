@@ -34,6 +34,9 @@ const phaseId = require("./phase-id.cjs");
 const worktreeSafety = require("./worktree-safety.cjs");
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- planning-workspace.cjs is an export= CommonJS module
 const planningWorkspace = require("./planning-workspace.cjs");
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const planningScopeMod = require("./planning-scope.cjs");
+const { SCOPE } = planningScopeMod;
 const secrets_cjs_1 = require("./secrets.cjs");
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- plan-scan.cjs is an export= CommonJS module
 const scanPhasePlans = require("./plan-scan.cjs");
@@ -83,7 +86,7 @@ const { resolveModelInternal, resolveGranularityInternal, assertValidGranularity
 const { findPhaseInternal, listMilestonePhaseDirs, listAllPhaseDirs } = phaseLocator;
 const { getRoadmapPhaseInternal, getMilestoneInfo, stripShippedMilestones, extractCurrentMilestone, } = roadmapParser;
 const { pathExistsInternal, generateSlugInternal, toPosixPath } = coreUtils;
-const { normalizePhaseName, matchPhaseDirs, stripProjectCodePrefix, PHASE_NUMBER_TOKEN_SOURCE, isForeignPrefixedPhaseQuery, isSentinelPhaseId, extractPhaseToken, scopeToPhase } = phaseId;
+const { comparePhaseNum, normalizePhaseName, matchPhaseDirs, stripProjectCodePrefix, PHASE_NUMBER_TOKEN_SOURCE, isForeignPrefixedPhaseQuery, isSentinelPhaseId, extractPhaseToken, scopeToPhase } = phaseId;
 const { pruneOrphanedWorktrees } = worktreeSafety;
 const { planningPaths, planningDir, planningRoot, listAvailableWorkstreams, peekActiveWorkstream, diagnoseUnresolvedActiveWorkstream, describeUnresolvedWorkstreamReason, findContextMdIn, } = planningWorkspace;
 const { determinePhaseStatus } = commandsMod;
@@ -960,6 +963,11 @@ function cmdInitPlanPhase(cwd, phase, raw, options = {}) {
             : 'Pending',
         has_research: phaseInfo?.['has_research'] || false,
         has_context: phaseInfo?.['has_context'] || false,
+        // #4014 (epic #3473 B4-unreadable): additive scope signal adjacent to
+        // has_context — SCOPE.COMPLETE by default (no phase directory to read is
+        // a genuine, not-unreadable answer), overwritten below to whatever
+        // findContextMdIn(phaseDirFull) reports once a directory is known.
+        context_scope: SCOPE.COMPLETE,
         has_reviews: phaseInfo?.['has_reviews'] || false,
         has_plans: (phaseInfo?.['plans']?.length || 0) > 0,
         plan_count: phaseInfo?.['plans']?.length || 0,
@@ -974,6 +982,13 @@ function cmdInitPlanPhase(cwd, phase, raw, options = {}) {
     };
     if (phaseInfo?.['directory']) {
         const phaseDirFull = node_path_1.default.join(cwd, phaseInfo['directory']);
+        // #4014 (epic #3473 B4-unreadable): findContextMdIn's directory-string
+        // form never throws, so this can record the real scope BEFORE the
+        // pre-existing `fs.readdirSync(phaseDirFull)` immediately below
+        // (unchanged) throws on the same unreadable directory and is caught
+        // exactly as before — additive only, the failure control-flow for
+        // context_path/research_path/etc. is untouched.
+        result['context_scope'] = findContextMdIn(phaseDirFull).scope;
         try {
             const files = node_fs_1.default.readdirSync(phaseDirFull);
             const phaseDirName = node_path_1.default.basename(phaseDirFull);
@@ -1246,6 +1261,10 @@ function cmdInitQuick(cwd, description, raw, options = {}) {
         executor_model: resolveModelInternal(cwd, 'gsd-executor'),
         checker_model: resolveModelInternal(cwd, 'gsd-plan-checker'),
         verifier_model: resolveModelInternal(cwd, 'gsd-verifier'),
+        // #3936: Step 4.75 dispatches gsd-phase-researcher; resolve its own tier
+        // (parity with cmdInitPlanPhase) so the research spawn stops pinning
+        // planner_model.
+        researcher_model: resolveModelInternal(cwd, 'gsd-phase-researcher'),
         // #2072: the quick review step spawns gsd-code-reviewer; resolve its own model
         // so model_overrides / models.verification apply (was reusing executor_model).
         reviewer_model: resolveModelInternal(cwd, 'gsd-code-reviewer'),
@@ -1720,6 +1739,9 @@ function cmdInitPhaseOp(cwd, phase, raw) {
         padded_phase: phaseNumber ? normalizePhaseName(phaseNumber) : null,
         has_research: phaseInfo?.['has_research'] || false,
         has_context: phaseInfo?.['has_context'] || false,
+        // #4014 (epic #3473 B4-unreadable): see the parallel field in
+        // cmdInitPlanPhase — additive scope signal adjacent to has_context.
+        context_scope: SCOPE.COMPLETE,
         has_plans: (phaseInfo?.['plans']?.length || 0) > 0,
         has_verification: phaseInfo?.['has_verification'] || false,
         has_reviews: phaseInfo?.['has_reviews'] || false,
@@ -1734,6 +1756,9 @@ function cmdInitPhaseOp(cwd, phase, raw) {
     };
     if (phaseInfo?.['directory']) {
         const phaseDirFull = node_path_1.default.join(cwd, phaseInfo['directory']);
+        // #4014 (epic #3473 B4-unreadable): see the parallel site in
+        // cmdInitPlanPhase — additive only, failure control-flow below unchanged.
+        result['context_scope'] = findContextMdIn(phaseDirFull).scope;
         try {
             const files = node_fs_1.default.readdirSync(phaseDirFull);
             const phaseDirName = node_path_1.default.basename(phaseDirFull);
@@ -2062,6 +2087,9 @@ function cmdInitManager(cwd, raw) {
         let hasResearch = false;
         let lastActivity = null;
         let isActive = false;
+        // #4014 (epic #3473 B4-unreadable): default COMPLETE — no directory at
+        // all (dirMatch not found) is a genuine, not-unreadable answer.
+        let contextScope = SCOPE.COMPLETE;
         let completion = buildPhaseCompletionProjection(cwd, phaseNum, null, planCount, summaryCount, _slashRuntime);
         try {
             // #3185 (ADR-3180 Decision 2) moved this lookup off the
@@ -2072,6 +2100,17 @@ function cmdInitManager(cwd, raw) {
             if (dirMatch) {
                 const fullDir = node_path_1.default.join(phasesDir, dirMatch);
                 const phaseDirRel = toPosixPath(node_path_1.default.relative(cwd, fullDir));
+                // #4014 (epic #3473 B4-unreadable): this whole block used to swallow
+                // ANY readdirSync failure below into the bare `catch { /* empty */ }`
+                // at the bottom — an unreadable phase directory reported the exact
+                // same `has_context: false` / `disk_status: 'no_directory'` as a
+                // directory that never existed. findContextMdIn's directory-string
+                // form never throws, so it can record the real scope (COMPLETE vs
+                // UNREADABLE) here, BEFORE the pre-existing `fs.readdirSync(fullDir)`
+                // immediately below (unchanged) throws on the exact same unreadable
+                // directory and is caught exactly as before — this line is additive
+                // only, the failure control-flow is untouched.
+                contextScope = findContextMdIn(fullDir).scope;
                 const phaseFiles = node_fs_1.default.readdirSync(fullDir);
                 planCount = listPhasePlanFiles(fullDir).length;
                 summaryCount = listPhaseSummaryFiles(fullDir).length;
@@ -2146,6 +2185,7 @@ function cmdInitManager(cwd, raw) {
             ...completion,
             last_activity: lastActivity,
             is_active: isActive,
+            context_scope: contextScope,
         });
     }
     const MAX_NAME_WIDTH = 20;
@@ -2709,7 +2749,7 @@ function cmdInitProgress(cwd, raw, options = {}) {
             }
         }
     }
-    phases.sort((a, b) => parseInt(a['number'], 10) - parseInt(b['number'], 10));
+    phases.sort((a, b) => comparePhaseNum(a['number'], b['number']));
     // #3581: the frontier is ROADMAP ORDER, not artifact presence. The disk loop
     // above could claim nextPhase from a stray out-of-order artifact directory
     // (a phase-9 UAT evidence dir while roadmap phase 8 was pending and

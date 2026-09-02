@@ -110,6 +110,15 @@ function validateRequirement(requirement) {
     if (r.shapes == null && !(typeof r.text === 'string' && r.text.trim())) {
         throw new Error(`requirement ${requirement.id} text must be a non-empty string when no shapes override is provided`);
     }
+    // text_en (#3717) is optional, but when present it must be a non-empty string. An empty
+    // string is NOT caught by `??` (only null/undefined are), so an unvalidated `text_en: ''`
+    // would silently win `text_en ?? text` and classify against '' — the same fail-open shape
+    // #1110/#2773 already exist to eliminate, just moved one field over. Validated
+    // unconditionally (not gated on whether `shapes` will make it unused) so bad data fails
+    // closed even when it happens to be dead for this particular call.
+    if (r.text_en != null && !(typeof r.text_en === 'string' && r.text_en.trim())) {
+        throw new Error(`requirement ${requirement.id} text_en must be a non-empty string when present`);
+    }
 }
 /** Validate an edge resolution against the edge verification vocabulary. */
 function validateResolution(resolution) {
@@ -135,7 +144,11 @@ function proposeEdges(requirement) {
         shapes = requirement.shapes;
     }
     else {
-        shapes = classifyShape(requirement.text);
+        // #3717: prefer the English translation when present — SHAPE_CUES are English-only
+        // word-boundary patterns, so a non-English `text` (e.g. response_language projects)
+        // would otherwise classify to zero shapes. validateRequirement (called above) has
+        // already guaranteed text_en, if present, is a non-empty string.
+        shapes = classifyShape(requirement.text_en ?? requirement.text);
         if (shapes.length === 0) {
             // Prose present but no shape cue matched. Do NOT silently drop it (#1110): an
             // edge-relevant requirement whose phrasing missed every cue would otherwise vanish from

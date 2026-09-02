@@ -21,6 +21,9 @@ const node_path_1 = __importDefault(require("node:path"));
 const shell_command_projection_cjs_1 = require("./shell-command-projection.cjs");
 const clock_cjs_1 = require("./clock.cjs");
 // eslint-disable-next-line @typescript-eslint/no-require-imports
+const planningScopeMod = require("./planning-scope.cjs");
+const { SCOPE } = planningScopeMod;
+// eslint-disable-next-line @typescript-eslint/no-require-imports
 const activeWorkstreamStore = require("./active-workstream-store.cjs");
 const { createSharedPointerAdapter, createSessionScopedPointerAdapter, createMemoryPointerAdapter, getActiveWorkstream: getStoredActiveWorkstream, peekActiveWorkstream: peekStoredActiveWorkstream, setActiveWorkstream: setStoredActiveWorkstream, clearActiveWorkstream: clearStoredActiveWorkstream, diagnoseUnresolvedActiveWorkstream: diagnoseUnresolvedStoredActiveWorkstream, } = activeWorkstreamStore;
 // Track .planning/.lock files held by this process so they can be removed on exit.
@@ -530,40 +533,30 @@ function describeUnresolvedWorkstreamReason(reason) {
         return 'the name is not a valid workstream name';
     return "its workstream directory doesn't exist (it may have been renamed or removed)";
 }
-/**
- * Locate the CONTEXT.md file in a phase directory, handling both the bare
- * form (`CONTEXT.md`) and the padded-prefix convention (`NN-CONTEXT.md`,
- * `NN.N-CONTEXT.md`, etc.) used by gsd-discuss-phase output.
- *
- * Returns the filename (not the full path) of the first match, or null if
- * no CONTEXT.md exists in the directory.
- *
- * Canonical dual-form predicate extracted here to eliminate the 5-site
- * duplication that previously existed across init.cjs, roadmap.cjs,
- * core.cjs, gap-checker.cjs (#3739).
- *
- * @param absDirOrFiles - Absolute path to the phase directory,
- *   OR an already-read files array (avoids a redundant readdirSync at call sites
- *   that already hold a directory listing).
- */
 function findContextMdIn(absDirOrFiles) {
-    try {
-        const files = Array.isArray(absDirOrFiles)
-            ? absDirOrFiles
-            : node_fs_1.default.readdirSync(absDirOrFiles);
+    const matchIn = (files) => {
         if (files.includes('CONTEXT.md'))
             return 'CONTEXT.md';
         return files.find((f) => f.endsWith('-CONTEXT.md')) ?? null;
+    };
+    if (Array.isArray(absDirOrFiles)) {
+        return matchIn(absDirOrFiles);
+    }
+    try {
+        const files = node_fs_1.default.readdirSync(absDirOrFiles);
+        return { file: matchIn(files), files, scope: SCOPE.COMPLETE };
     }
     catch (err) {
-        // #1883: distinguish genuine absence from a permission/I-O failure. ENOENT
-        // ("nothing there") keeps the long-standing null contract the callers rely
-        // on; every other error (EACCES, EIO, …) is a real read failure that must
-        // propagate — otherwise an unreadable phase dir is silently reported as
-        // "no CONTEXT.md" and the discuss/plan gates wrongly skip context.
-        if (err.code === 'ENOENT')
-            return null;
-        throw err;
+        // #1883 / #4014: distinguish genuine absence from a permission/I-O
+        // failure. ENOENT ("nothing there") keeps the long-standing "real empty"
+        // contract callers rely on; every other error (EACCES, EIO, …) is a real
+        // read failure — reported as SCOPE.UNREADABLE rather than thrown, so a
+        // caller no longer needs its own try/catch to keep an unreadable phase
+        // dir from being silently reported the same as "no CONTEXT.md".
+        if (err.code === 'ENOENT') {
+            return { file: null, files: [], scope: SCOPE.COMPLETE };
+        }
+        return { file: null, files: [], scope: SCOPE.UNREADABLE };
     }
 }
 module.exports = {

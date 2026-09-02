@@ -64,7 +64,7 @@ const stateDocument = require("./state-document.cjs");
 const { stateFieldValue } = stateDocument;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const phaseId = require("./phase-id.cjs");
-const { comparePhaseNum, extractPhaseToken, matchPhaseDirs, normalizePhaseName, stripProjectCodePrefix } = phaseId;
+const { comparePhaseNum, extractPhaseToken, matchPhaseDirs, normalizePhaseName, parsePhaseFromProse, stripProjectCodePrefix } = phaseId;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const stateMod = require("./state.cjs");
 const { readStateHeadFreshness } = stateMod;
@@ -233,10 +233,7 @@ function readGitSignals(cwd) {
 }
 /** Leading numeric phase token from a STATE.md scalar or body `Phase:` value. */
 function phaseTokenFromState(raw) {
-    if (!raw?.trim())
-        return null;
-    const match = raw.trim().match(/^(\d+(?:[A-Z])?(?:\.\d+)*)/i);
-    return match ? match[1] : null;
+    return parsePhaseFromProse(raw).phase;
 }
 /**
  * Detect whether the current phase's verify report indicates failure. The
@@ -429,7 +426,7 @@ function detectSignals(cwd, now = Date.now) {
     const stateHeadRaw = stateFieldValue(fm, body, 'state_head', 'State Head').value;
     const freshness = readStateHeadFreshness(cwd, stateHeadRaw);
     return {
-        current_phase: parseIntOrNull(currentPhaseRaw),
+        current_phase: phaseTokenFromState(currentPhaseRaw),
         total_phases: parseIntOrNull(totalPhasesRaw),
         status: (statusRaw || '').toLowerCase(),
         progress: parseIntOrNull(progressRaw),
@@ -472,11 +469,12 @@ function isComplete(s) {
             return false;
     }
     else {
-        // Legacy path: STATE.md comparison. Still subject to the two-scale bug,
-        // but only fires when ROADMAP.md is absent or has no Progress table.
+        // Legacy path: STATE.md comparison. It only fires when ROADMAP.md is
+        // absent or has no Progress table, and uses canonical phase-id ordering
+        // so dotted phase ids are never coerced to JavaScript numbers.
         if (s.total_phases === null || s.current_phase === null)
             return false;
-        if (s.current_phase < s.total_phases)
+        if (comparePhaseNum(s.current_phase, s.total_phases) < 0)
             return false;
     }
     // Status regex: require milestone-level completion language. The pre-fix

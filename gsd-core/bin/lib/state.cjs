@@ -14,7 +14,7 @@ const node_path_1 = __importDefault(require("node:path"));
 const pattern_cjs_1 = require("./pattern.cjs");
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const ioMod = require("./io.cjs");
-const { output, error } = ioMod;
+const { output, error, declineNoOp, formatDiagnosticToken } = ioMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const cliExitModule = require("./cli-exit.cjs");
 const { ExitError } = cliExitModule;
@@ -523,6 +523,42 @@ function cmdStateUpdate(cwd, field, value) {
 }
 // ─── State Progression Engine ────────────────────────────────────────────────
 /**
+ * The "I could not read the plan position" message, DERIVED from
+ * `STATE_FIELD_SCHEMA.current_plan.acceptedShapes` rather than transcribed
+ * beside it.
+ *
+ * The accepted-shape set had two owners: the parser branches in
+ * `advancePlanCore` and an English list hand-written here. Nothing coupled
+ * them, so adding a branch left this message stale and removing one left it
+ * advertising a shape that errors — and no test could see either. ADR-3473
+ * §8.3 is "one implementation per rule"; the schema row is that one owner, and
+ * rows 23/24/25 already hold the parser to it.
+ *
+ * `Plan: N of M` is spelled out separately because there is no schema row for
+ * the body-only `Plan` field: `buildStateFrontmatter` never reads it into
+ * frontmatter, so it has no `current_*` key to hang a row on. That asymmetry is
+ * the schema's, not this function's.
+ */
+function advancePlanShapeError() {
+    const shapes = stateMdSchemaMod.STATE_FIELD_SCHEMA['current_plan']?.acceptedShapes ?? [];
+    const spellings = shapes.map((shape) => (shape === 'N'
+        ? '`Current Plan: N` with `Total Plans in Phase: M`'
+        : `\`Current Plan: ${shape}\``));
+    // The body-only `Plan` field has no schema row to derive from:
+    // `buildStateFrontmatter` never reads it into frontmatter, so there is no
+    // `current_*` key to hang a row on. Its ONE accepted spelling is named here.
+    //
+    // `Plan: N` with a `Total Plans in Phase: M` sibling is deliberately NOT
+    // listed (#3791 review round 6, M2): the parser does not accept it. A
+    // revision of this PR added both the branch and this spelling together, on
+    // the reasoning that the message must advertise exactly what the parser
+    // accepts. That reasoning still holds — which is why removing the branch
+    // removes the spelling in the same commit. The invariant is the lockstep,
+    // not the length of the list.
+    spellings.push('`Plan: N of M`');
+    return `Cannot read the plan position from STATE.md. Expected one of: ${spellings.join(', ')}.`;
+}
+/**
  * Replace a STATE.md field with fallback field name support.
  * Tries `primary` first, then `fallback` (if provided), returns content unchanged
  * if neither matches. This consolidates the replaceWithFallback pattern that was
@@ -589,6 +625,11 @@ function cmdStateAdvancePlan(cwd, raw) {
         precomputedUpdated = result.updated;
         return result.content;
     }, cwd, { divergedFields, preWriteState });
+    // `!resultData` is a type guard, not a second failure mode: the callback
+    // above assigns it unconditionally and only runs once STATE.md is known to
+    // exist (the missing-file case returns "STATE.md not found" earlier), and
+    // every `advancePlanCore` return path sets `data`. So the message below is
+    // the one a caller can actually receive.
     if (!resultData || resultData['error']) {
         // #3807: a multi-`Phase:` Current Position section carries its own cause
         // and its own remedy (name the candidates; the caller resolves them).
@@ -600,7 +641,19 @@ function cmdStateAdvancePlan(cwd, raw) {
             }, raw, undefined);
             return;
         }
-        output({ error: 'Cannot parse Current Plan or Total Plans in Phase from STATE.md' }, raw, undefined);
+        // #3791 review round 6 (B1): the document carries both plan-position
+        // spellings with DIFFERENT numbers. Same posture as the case above — name
+        // the candidates and let the caller resolve them. Advancing either one
+        // would write a number into the other that nothing derived for it.
+        if (resultData && resultData['reason'] === 'ambiguous_plan_position') {
+            output({
+                error: 'STATE.md carries two plan positions with different numbers — refusing to advance either. Resolve them to a single current plan and re-run.',
+                reason: resultData['reason'],
+                plan_candidates: resultData['plan_candidates'],
+            }, raw, undefined);
+            return;
+        }
+        output({ error: advancePlanShapeError() }, raw, undefined);
         return;
     }
     // ADR-3408 §8.4 (D4): reconcile `advancePlanCore`'s own success list against
@@ -895,10 +948,10 @@ function cmdStateUpdateProgress(cwd, raw) {
         // never read, and STATE.md's Progress field goes stale with no
         // user-visible signal beyond it. Mirrors the established
         // `[gsd-tools] WARNING:` stderr convention this file already uses
-        // (stateReplaceFieldWithFallback above) for a comparable silent no-op.
-        process.stderr.write(`[gsd-tools] WARNING: state update-progress skipped — phase scope is ${phaseScope}, not complete. ` +
-            `STATE.md's Progress field was left unchanged.\n`);
-        output({ updated: false, reason: `phase scope is ${phaseScope}, not complete` }, raw, 'false');
+        // (stateReplaceFieldWithFallback above) for a comparable silent no-op —
+        // now routed through the shared `declineNoOp` helper (#3957) so the
+        // pairing is structural rather than hand-written per arm.
+        declineNoOp(raw, 'updated', `phase scope is ${phaseScope}, not complete`, `state update-progress skipped — phase scope is ${phaseScope}, not complete. STATE.md's Progress field was left unchanged.`);
         return;
     }
     // #3233: zero plans in the current-milestone phases means there is nothing to
@@ -910,9 +963,7 @@ function cmdStateUpdateProgress(cwd, raw) {
     // ("nothing to measure" ≠ "0% done"). The legitimate 0% case (plans exist,
     // none summarized → clampPercent(0, N>0) = 0) is unaffected: totalPlans > 0.
     if (totalPlans === 0) {
-        process.stderr.write(`[gsd-tools] WARNING: state update-progress skipped — no plans found in current-milestone phases (0 plans). ` +
-            `STATE.md's Progress field was left unchanged (milestone archived?).\n`);
-        output({ updated: false, reason: 'no plans found in current-milestone phases — STATE.md left unchanged (milestone archived?)' }, raw, 'false');
+        declineNoOp(raw, 'updated', 'no plans found in current-milestone phases — STATE.md left unchanged (milestone archived?)', `state update-progress skipped — no plans found in current-milestone phases (0 plans). STATE.md's Progress field was left unchanged (milestone archived?).`);
         return;
     }
     // #3583: percent AND the completed/total counts reported alongside it both
@@ -923,8 +974,7 @@ function cmdStateUpdateProgress(cwd, raw) {
     // disagrees with its own completed/total.
     const preview = computeUpdateProgressPreview(statePath, cwd);
     if (preview.withheld) {
-        process.stderr.write(`[gsd-tools] WARNING: state update-progress skipped — ${preview.reason}\n`);
-        output({ updated: false, reason: preview.reason }, raw, 'false');
+        declineNoOp(raw, 'updated', preview.reason, `state update-progress skipped — ${preview.reason}`);
         return;
     }
     const { percent, completedPlans: fmCompletedPlans, totalPlans: fmTotalPlans } = preview;
@@ -964,7 +1014,13 @@ function cmdStateUpdateProgress(cwd, raw) {
         output({ updated: true, percent, completed: fmCompletedPlans, total: fmTotalPlans, bar: progressStr }, raw, progressStr);
     }
     else {
-        output({ updated: false, reason: 'Progress field not found in STATE.md' }, raw, 'false');
+        // #3957: the frontmatter progress data was already confirmed present a
+        // few lines above (computeUpdateProgressPreview didn't withhold) — what's
+        // actually missing here is the BODY `Progress:`/`**Progress:**` line
+        // itself. The prior 'Progress field not found in STATE.md' reason named
+        // the wrong layer and silently discarded percent/completed/total, which
+        // the sibling success arm above reports from the same preview.
+        declineNoOp(raw, 'updated', 'no Progress: line found in STATE.md body to update (frontmatter progress data is unaffected)', 'state update-progress skipped — no Progress: line found in STATE.md body to update (frontmatter progress data is unaffected).', { percent, completed: fmCompletedPlans, total: fmTotalPlans });
     }
 }
 function cmdStateAddDecision(cwd, options, raw) {
@@ -1270,7 +1326,15 @@ function cmdStateResolveBlocker(cwd, text, raw) {
         output({ error: 'text required' }, raw, undefined);
         return;
     }
-    let resolved = false;
+    // #3957: track section-found and bullet-matched SEPARATELY. Previously
+    // `resolved` was set unconditionally as soon as the heading was located —
+    // before checking whether any bullet line actually matched `text` — so a
+    // call naming a non-existent blocker reported `resolved: true` (a false
+    // success). Only a real bullet match makes `resolved` true and the
+    // rewrite happen; otherwise the transform returns `content` unchanged
+    // (this repo's established no-op-return idiom).
+    let sectionFound = false;
+    let matched = false;
     readModifyWriteStateMd(statePath, (content) => {
         // ADR-1372 T6: find Blockers/Concerns section via tokenizeHeadings; stop at level 2 or 3.
         // Mirrors /(###?\s*(?:Blockers|Blockers\/Concerns|Concerns)\s*\n)([\s\S]*?)(?=\n###?|\n##[^#]|$)/i
@@ -1278,6 +1342,7 @@ function cmdStateResolveBlocker(cwd, text, raw) {
         const i = hs.findIndex(h => (h.level === 2 || h.level === 3) && /^(?:Blockers|Blockers\/Concerns|Concerns)$/i.test(h.text));
         if (i === -1)
             return content;
+        sectionFound = true;
         const h = hs[i];
         const ls = content.split('\n');
         const hl = ls[h.line - 1];
@@ -1294,21 +1359,33 @@ function cmdStateResolveBlocker(cwd, text, raw) {
         const filtered = lines.filter(line => {
             if (!line.startsWith('- '))
                 return true;
-            return !line.toLowerCase().includes(text.toLowerCase());
+            // Case-insensitive substring match — unchanged from before the fix;
+            // only whether a match occurred is now tracked accurately.
+            const isMatch = line.toLowerCase().includes(text.toLowerCase());
+            if (isMatch)
+                matched = true;
+            return !isMatch;
         });
+        if (!matched)
+            return content;
         let newBody = filtered.join('\n');
         // If section is now empty, add placeholder
         if (!newBody.trim() || !newBody.includes('- ')) {
             newBody = 'None\n';
         }
-        resolved = true;
         return content.slice(0, bs) + newBody + content.slice(se);
     }, cwd);
-    if (resolved) {
+    if (matched) {
         output({ resolved: true, blocker: text }, raw, 'true');
     }
+    else if (!sectionFound) {
+        declineNoOp(raw, 'resolved', 'no Blockers/Concerns section found in STATE.md', 'state resolve-blocker skipped — no Blockers/Concerns section found in STATE.md.');
+    }
     else {
-        output({ resolved: false, reason: 'Blockers section not found in STATE.md' }, raw, 'false');
+        // `formatDiagnosticToken` only guards the STDERR disclosure — the JSON
+        // `reason` field can embed `text` raw since output()'s own
+        // JSON.stringify serialization already escapes it correctly.
+        declineNoOp(raw, 'resolved', `no blocker matching ${text} found in the Blockers section`, `state resolve-blocker skipped — no blocker matching ${formatDiagnosticToken(text)} found in the Blockers section.`);
     }
 }
 function cmdStateRecordSession(cwd, options, raw) {
@@ -1550,8 +1627,22 @@ function cmdStateRecordSession(cwd, options, raw) {
             result['created'] = true;
         output(result, raw, 'true');
     }
+    else if (updated.length === 0) {
+        // Nothing was ever attempted — no --stopped-at/--resume-file supplied
+        // and no existing Last session/Last Date/Stopped At/Resume File labels
+        // to touch.
+        declineNoOp(raw, 'recorded', 'no session fields found in STATE.md to update', 'state record-session skipped — no session fields found in STATE.md to update.');
+    }
     else {
-        output({ recorded: false, reason: 'No session fields found in STATE.md' }, raw, 'false');
+        // #3957: `updated` (pre-reconciliation) was non-empty — a rewrite
+        // matched a session field and reported it as changed — but
+        // `reconcileReportedFields` found the persisted bytes byte-identical to
+        // what was already on disk (the matched field's supplied value equals
+        // its already-recorded value), so nothing actually changed. Distinct
+        // from the "nothing was ever attempted" case above: the prior single
+        // reason collapsed both into 'No session fields found in STATE.md',
+        // which was simply wrong for this case.
+        declineNoOp(raw, 'recorded', 'the matched session field(s) already held the reported value — no bytes changed', 'state record-session skipped — the matched session field(s) already held the reported value; no bytes changed.');
     }
 }
 /**

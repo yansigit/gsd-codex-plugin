@@ -43,6 +43,11 @@ const phaseIdModule = require("./phase-id.cjs");
 const planningWorkspace = require("./planning-workspace.cjs");
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const shellCommandProjection = require("./shell-command-projection.cjs");
+// planning-scope.cjs is a leaf module (no imports of its own — see its file
+// header), so importing it here directly cannot introduce a cycle.
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const planningScopeMod = require("./planning-scope.cjs");
+const { SCOPE } = planningScopeMod;
 // ─── Line-ending normalization ─────────────────────────────────────────────────
 /**
  * Normalize every line ending in `content` to a bare `\n`, ONCE — the shared
@@ -271,16 +276,38 @@ function transliterateForSlug(text) {
  * Degrades on an unreadable directory instead of throwing: empty arrays,
  * every flag false, scope UNREADABLE (mirroring scanPhasePlans's own
  * degrade path).
+ *
+ * #4014 (epic #3473 B4-unreadable): this function's OWN readdirSync used to
+ * catch its own failure and then return `scope: scan.scope` — the scope of
+ * the UNRELATED, already-successful scanPhasePlans call — silently dropping
+ * that THIS read failed. The own-readdirSync is now routed through
+ * findContextMdIn's directory-string form (which never throws and reports
+ * its own SCOPE.UNREADABLE), and the two independently-scoped answers are
+ * combined into the worse of the two below — never letting a successful
+ * scan.scope mask this function's own failed read.
+ *
+ * The combination is written out as a two-value comparison rather than
+ * calling planning-snapshot.cts's `worstScope` directly: that module
+ * requires core-utils.cjs (for `findOrphanSummaries`) at its own top level,
+ * so importing it back here would create a tight, direct
+ * core-utils.cjs <-> planning-snapshot.cjs cycle — a materially different
+ * (and riskier) shape than this file's existing, documented lazy-access
+ * cyclic partners (planning-workspace.cjs, phase-id.cjs), which
+ * planning-snapshot.cts sits *above* in the dependency graph, not beside.
+ * `findContextMdIn`'s directory-string form can only ever report
+ * SCOPE.COMPLETE or SCOPE.UNREADABLE (a single readdirSync is binary — see
+ * its own doc comment), so per planning-snapshot.cts's SCOPE_SEVERITY
+ * ordering (UNREADABLE is maximal), `worstScope(scan.scope, ownScope)` is
+ * exactly `ownScope === UNREADABLE ? UNREADABLE : scan.scope` — the
+ * expression below is that identity, not a re-derivation of the ordering.
  */
 function getPhaseFileStats(phaseDir) {
     // eslint-disable-next-line @typescript-eslint/no-require-imports, @typescript-eslint/no-unsafe-assignment
     const scanPhasePlans = require('./plan-scan.cjs');
     const scan = scanPhasePlans(phaseDir);
-    let files;
-    try {
-        files = node_fs_1.default.readdirSync(phaseDir);
-    }
-    catch {
+    const { files, scope: ownScope } = planningWorkspace.findContextMdIn(phaseDir);
+    const scope = ownScope === SCOPE.UNREADABLE ? SCOPE.UNREADABLE : scan.scope;
+    if (ownScope === SCOPE.UNREADABLE) {
         return {
             plans: scan.planFiles,
             summaries: scan.summaryFiles,
@@ -288,7 +315,7 @@ function getPhaseFileStats(phaseDir) {
             hasContext: false,
             hasVerification: false,
             hasReviews: false,
-            scope: scan.scope,
+            scope,
         };
     }
     const scopedFiles = phaseIdModule.scopeToPhase(files, node_path_1.default.basename(phaseDir));
@@ -299,7 +326,7 @@ function getPhaseFileStats(phaseDir) {
         hasContext: planningWorkspace.findContextMdIn(scopedFiles) !== null,
         hasVerification: scopedFiles.some(f => f.endsWith('-VERIFICATION.md') || f === 'VERIFICATION.md'),
         hasReviews: scopedFiles.some(f => f.endsWith('-REVIEWS.md') || f === 'REVIEWS.md'),
-        scope: scan.scope,
+        scope,
     };
 }
 /**

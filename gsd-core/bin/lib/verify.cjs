@@ -23,6 +23,8 @@ const stateMod = require("./state.cjs");
 const modelProfilesMod = require("./model-profiles.cjs");
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- plan-scan.cjs is an export= CommonJS module
 const planScanMod = require("./plan-scan.cjs");
+// eslint-disable-next-line @typescript-eslint/no-require-imports -- verification.cjs is an export= CommonJS module
+const verificationMod = require("./verification.cjs");
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- core-utils.cjs is an export= CommonJS module
 const coreUtilsMod = require("./core-utils.cjs");
 const { findOrphanSummaries, findUnsummarizedPlans } = coreUtilsMod;
@@ -57,6 +59,7 @@ const { SEVERITY: HEALTH_SEVERITY, REMEDY_ACTION, REMEDY_RISK, evaluateRules, ev
 const planningSnapshotMod = require("./planning-snapshot.cjs");
 const { buildPlanningSnapshot } = planningSnapshotMod;
 const { planningDir } = planningWorkspace;
+const { defaultPhaseCleanCommitTimesMs } = verificationMod;
 const { extractFrontmatter, parseMustHavesBlock } = frontmatterMod;
 const { readStateHeadFreshness } = stateMod;
 /**
@@ -1593,6 +1596,121 @@ function cmdValidateAgents(cwd, raw) {
         sandbox_posture: sandboxPosture,
     }, raw);
 }
+// ─── Context drift (#3348) ───────────────────────────────────────────────────
+/**
+ * Resolve a phase directory under `phasesDir` from a user-supplied `phaseArg`,
+ * via the canonical phase-directory matcher (phase-id.cjs::matchPhaseDirs) rather
+ * than a naive substring test — a bare `.includes(phaseArg)` lets a non-existent
+ * phase silently match a different phase whose directory name merely contains the
+ * requested token (e.g. "1" matching "11-expansion"). Falls back to an exact
+ * directory-name match. Returns null if neither resolves. (#1571, #2528)
+ */
+function resolvePhaseDirByToken(phasesDir, phaseArg) {
+    const normalizedPhase = normalizePhaseName(phaseArg);
+    const dirEntries = node_fs_1.default.readdirSync(phasesDir, { withFileTypes: true });
+    const dirNames = dirEntries.filter((e) => e.isDirectory()).map((e) => e.name);
+    const matched = matchPhaseDirs(dirNames, normalizedPhase).matches[0];
+    if (matched)
+        return node_path_1.default.join(phasesDir, matched);
+    const check = (0, security_cjs_1.validatePath)(phaseArg, phasesDir);
+    if (check.safe && node_fs_1.default.existsSync(check.resolved))
+        return check.resolved;
+    return null;
+}
+/**
+ * Pure comparator: which of `entries` have an effective last-changed time
+ * STRICTLY BEFORE `contextEffectiveMs` (CONTEXT.md's own effective time)? Strict
+ * `<` is "stale" (matches findStaleVerificationSummary's own strict `>` convention
+ * for "newer than" elsewhere in this codebase — an artifact committed in the SAME
+ * commit/second as CONTEXT.md is in sync, not stale).
+ */
+function computeContextDrift(contextEffectiveMs, entries) {
+    return entries.filter((e) => e.effectiveMs < contextEffectiveMs).map((e) => e.file);
+}
+function buildContextDriftMessage(staleArtifacts, phaseArg) {
+    const parts = [`CONTEXT.md decisions are newer than: ${staleArtifacts.join(', ')}.`];
+    if (staleArtifacts.some((f) => f.endsWith('-RESEARCH.md'))) {
+        parts.push(`Regenerate research: /gsd:plan-phase ${phaseArg} --research.`);
+    }
+    if (staleArtifacts.some((f) => f.endsWith('-PATTERNS.md'))) {
+        parts.push('Regenerate patterns: delete the PATTERNS.md file, then re-run /gsd:plan-phase.');
+    }
+    if (staleArtifacts.some((f) => f.endsWith('-VALIDATION.md') || (f.endsWith('-SPEC.md') && !f.endsWith('-AI-SPEC.md') && !f.endsWith('-UI-SPEC.md')))) {
+        parts.push('Regenerate or manually reconcile VALIDATION.md / SPEC.md against the current decisions.');
+    }
+    parts.push('Do not hand-inject the newer decisions into a prompt as a substitute for regenerating — that carries the staleness forward.');
+    return parts.join(' ');
+}
+function cmdVerifyContextDrift(cwd, phaseArg, raw) {
+    if (!phaseArg) {
+        error('Usage: verify context-drift <phase>');
+        return;
+    }
+    const pDir = planningDir(cwd);
+    const phasesDir = node_path_1.default.join(pDir, 'phases');
+    const emitSkip = (reason, message = '') => {
+        output({ block: false, skipped: true, reason, stale_artifacts: [], message }, raw);
+    };
+    if (!node_fs_1.default.existsSync(phasesDir)) {
+        emitSkip('phase-not-found', `Phase directory not found: ${phaseArg}`);
+        return;
+    }
+    // Same phase-directory resolution rule cmdVerifySchemaDrift uses (#1571, #2528):
+    // matchPhaseDirs, never a naive substring test.
+    const phaseDir = resolvePhaseDirByToken(phasesDir, phaseArg);
+    if (!phaseDir) {
+        emitSkip('phase-not-found', `Phase directory not found: ${phaseArg}`);
+        return;
+    }
+    let phaseFiles;
+    try {
+        phaseFiles = node_fs_1.default.readdirSync(phaseDir).slice().sort();
+    }
+    catch {
+        emitSkip('phase-not-found', `Phase directory not found: ${phaseArg}`);
+        return;
+    }
+    const contextFile = phaseFiles.find((f) => f.endsWith('-CONTEXT.md'));
+    if (!contextFile) {
+        emitSkip('no-context-md');
+        return;
+    }
+    const researchFile = phaseFiles.find((f) => f.endsWith('-RESEARCH.md'));
+    const patternsFile = phaseFiles.find((f) => f.endsWith('-PATTERNS.md'));
+    const validationFile = phaseFiles.find((f) => f.endsWith('-VALIDATION.md'));
+    const specFile = phaseFiles.find((f) => f.endsWith('-SPEC.md') && !f.endsWith('-AI-SPEC.md') && !f.endsWith('-UI-SPEC.md'));
+    const upstreamFiles = [researchFile, patternsFile, validationFile, specFile].filter((f) => !!f);
+    if (upstreamFiles.length === 0) {
+        emitSkip('no-upstream-artifacts');
+        return;
+    }
+    const allFiles = [contextFile, ...upstreamFiles];
+    const cleanCommitMs = defaultPhaseCleanCommitTimesMs(phaseDir, allFiles);
+    const effectiveTimeMs = (file) => cleanCommitMs.has(file)
+        ? cleanCommitMs.get(file)
+        : node_fs_1.default.statSync(node_path_1.default.join(phaseDir, file)).mtimeMs;
+    const contextMs = effectiveTimeMs(contextFile);
+    const driftEntries = upstreamFiles.map((f) => ({ file: f, effectiveMs: effectiveTimeMs(f) }));
+    const staleArtifacts = computeContextDrift(contextMs, driftEntries);
+    let wf;
+    try {
+        const rawCfg = JSON.parse(node_fs_1.default.readFileSync(node_path_1.default.join(pDir, 'config.json'), 'utf-8'));
+        wf = rawCfg['workflow'];
+    }
+    catch {
+        wf = undefined;
+    }
+    const action = wf?.context_drift_action === 'block' ? 'block' : 'warn';
+    const block = staleArtifacts.length > 0 && action === 'block';
+    const message = staleArtifacts.length > 0 ? buildContextDriftMessage(staleArtifacts, phaseArg) : '';
+    output({
+        block,
+        skipped: false,
+        stale_artifacts: staleArtifacts,
+        action,
+        message,
+    }, raw);
+}
 function cmdVerifySchemaDrift(cwd, phaseArg, skipFlag, raw) {
     if (!phaseArg) {
         error('Usage: verify schema-drift <phase> [--skip]');
@@ -1611,18 +1729,7 @@ function cmdVerifySchemaDrift(cwd, phaseArg, skipFlag, raw) {
     // matching "11-expansion"), making the drift gate inspect the wrong phase.
     // This shares the one selection rule with find-phase / verify
     // phase-completeness rather than restating it. (#1571, #2528)
-    let phaseDir = null;
-    const normalizedPhase = normalizePhaseName(phaseArg);
-    const entries = node_fs_1.default.readdirSync(phasesDir, { withFileTypes: true });
-    const dirNames = entries.filter((e) => e.isDirectory()).map((e) => e.name);
-    const drift = matchPhaseDirs(dirNames, normalizedPhase).matches[0];
-    if (drift)
-        phaseDir = node_path_1.default.join(phasesDir, drift);
-    if (!phaseDir) {
-        const exact = node_path_1.default.join(phasesDir, phaseArg);
-        if (node_fs_1.default.existsSync(exact))
-            phaseDir = exact;
-    }
+    const phaseDir = resolvePhaseDirByToken(phasesDir, phaseArg);
     if (!phaseDir) {
         output({ block: false, drift_detected: false, blocking: false, message: `Phase directory not found: ${phaseArg}` }, raw);
         return;
@@ -1824,5 +1931,7 @@ module.exports = {
     cmdValidateAgents,
     cmdVerifySchemaDrift,
     cmdVerifyCodebaseDrift,
+    computeContextDrift,
+    cmdVerifyContextDrift,
     STATE_HEAD_ADVISORY_COMMITS,
 };
