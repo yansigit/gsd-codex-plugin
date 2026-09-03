@@ -158,6 +158,20 @@ function routeInitCommand({ init, args, cwd, raw, error }) {
                     full: namedArgs['full'],
                 });
             },
+            // #3676 (Phase 4, epic #3344): `init.quick-batch` supplies model
+            // profiles/commit_docs/roadmap-existence/section_manifest — batch
+            // creation itself is the `quick-batch create` verb's job (wraps
+            // `createBatch`, src/quick-batch.cts). No free-text description to
+            // strip: `--research`/`--validate` are the only recognized flags
+            // (`--discuss`/`--full` are rejected upstream by `parseQuickBatchArgs`
+            // before this init bundle is ever reached).
+            'quick-batch': () => {
+                const namedArgs = (0, command_arg_projection_cjs_1.parseNamedArgsOrExit)(args, { booleanFlags: ['research', 'validate'], positionals: 2 }, error);
+                init.cmdInitQuickBatch(cwd, raw, {
+                    research: namedArgs['research'],
+                    validate: namedArgs['validate'],
+                });
+            },
             'ingest-docs': () => init.cmdInitIngestDocs(cwd, raw),
             resume: () => init.cmdInitResume(cwd, raw),
             // ADR-3473 §8.4 / #3358 gap: these handlers read args[2] positionally

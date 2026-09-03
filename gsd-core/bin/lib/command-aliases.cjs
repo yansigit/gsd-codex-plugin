@@ -308,6 +308,14 @@ exports.INIT_COMMAND_ALIASES = [
         "mutation": false
     },
     {
+        "canonical": "init.quick-batch",
+        "aliases": [
+            "init quick-batch"
+        ],
+        "subcommand": "quick-batch",
+        "mutation": false
+    },
+    {
         "canonical": "init.ingest-docs",
         "aliases": [
             "init ingest-docs"
