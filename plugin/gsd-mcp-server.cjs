@@ -4,6 +4,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { StringDecoder } = require('node:string_decoder');
+const { fileURLToPath } = require('node:url');
 
 const INVALID_PARAMS = -32602;
 const INTERNAL_ERROR = -32603;
@@ -101,6 +102,73 @@ function asRecord(value) {
   return value && typeof value === 'object' && !Array.isArray(value) ? value : null;
 }
 
+function inside(parent, candidate) {
+  const relative = path.relative(parent, candidate);
+  return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative));
+}
+
+function parseRootEntries(entries) {
+  const result = [];
+  if (!entries) return result;
+  const list = Array.isArray(entries) ? entries : [entries];
+  for (let item of list) {
+    if (!item) continue;
+    if (typeof item === 'object') {
+      item = item.uri || item.path;
+    }
+    if (typeof item !== 'string') continue;
+    item = item.trim();
+    if (!item) continue;
+    if (item.startsWith('file://')) {
+      try {
+        item = fileURLToPath(item);
+      } catch {
+        continue;
+      }
+    }
+    if (path.isAbsolute(item)) {
+      result.push(path.resolve(item));
+    }
+  }
+  return result;
+}
+
+function getEnvRoots() {
+  const val = process.env.GSD_ALLOWED_ROOTS;
+  if (typeof val !== 'string' || !val.trim()) return [];
+  const entries = [];
+  for (const part of val.split(new RegExp(`[${path.delimiter}\n]+`))) {
+    if (part.trim()) entries.push(part.trim());
+  }
+  return parseRootEntries(entries);
+}
+
+function checkProjectAuthorization(rawPath, projectReal, roots) {
+  if (!roots || roots.length === 0) {
+    return { ok: false, error: 'Unauthorized root: no authorized workspace roots configured for mutation.' };
+  }
+  const candLexical = path.resolve(rawPath);
+  const resolvedRoots = roots.map((r) => {
+    const lexical = path.resolve(r);
+    try {
+      return { lexical, real: fs.realpathSync(lexical) };
+    } catch {
+      return { lexical, real: lexical };
+    }
+  });
+
+  const isLexicalAuthorized = resolvedRoots.some((r) => inside(r.lexical, candLexical) || inside(r.real, candLexical));
+  const isRealAuthorized = resolvedRoots.some((r) => inside(r.real, projectReal));
+
+  if (isLexicalAuthorized && isRealAuthorized) {
+    return { ok: true, projectPath: projectReal };
+  }
+  if (isLexicalAuthorized && !isRealAuthorized) {
+    return { ok: false, error: `Symlink escape: project_path "${rawPath}" resolves outside authorized workspace roots.` };
+  }
+  return { ok: false, error: `Unauthorized root: project_path "${rawPath}" is not within an authorized workspace root.` };
+}
+
 function existingProject(value) {
   if (typeof value !== 'string' || !path.isAbsolute(value)) return null;
   try {
@@ -164,6 +232,51 @@ function createHandler(options = {}) {
   let upstream = options.upstream;
   let dispatch = options.dispatch;
   let recordUatResult = options.recordUatResult;
+  const configuredRoots = new Set(
+    parseRootEntries(options.allowedRoots || options.roots),
+  );
+  let clientRoots = new Set();
+  const pendingRootsRequests = new Set();
+  let rootsRequestId = 1;
+
+  function sendRootsList(ctx) {
+    const reqId = `gsd-roots-${rootsRequestId++}`;
+    pendingRootsRequests.add(reqId);
+    const rootsReq = { jsonrpc: '2.0', id: reqId, method: 'roots/list', params: {} };
+    const emit = options.emit || ctx?.emit;
+    if (typeof emit === 'function') {
+      emit(rootsReq);
+      return null;
+    }
+    return rootsReq;
+  }
+
+  function addClientRoots(params) {
+    if (!params || typeof params !== 'object') return;
+    const candidates = [
+      params.rootUri,
+      params.roots,
+      params.workspaceFolders,
+      params.workspaceRoot,
+      params.workspaceRoots,
+    ];
+    for (const c of candidates) {
+      for (const r of parseRootEntries(c)) {
+        clientRoots.add(r);
+      }
+    }
+  }
+
+  function getAllowedRoots(ctx) {
+    const combined = new Set([...configuredRoots, ...clientRoots]);
+    for (const r of getEnvRoots()) combined.add(r);
+    if (ctx && typeof ctx === 'object') {
+      for (const r of parseRootEntries(ctx.allowedRoots || ctx.roots)) {
+        combined.add(r);
+      }
+    }
+    return Array.from(combined);
+  }
 
   function getUpstream() {
     upstream ||= require('../gsd-core/bin/lib/mcp-server.cjs');
@@ -180,7 +293,7 @@ function createHandler(options = {}) {
     return recordUatResult;
   }
 
-  function callCodexTool(name, args) {
+  function callCodexTool(name, args, ctx) {
     const input = asRecord(args) || {};
     const projectPath = existingProject(input.project_path);
     if (!projectPath) return toolError(`${name} requires an existing absolute "project_path" directory.`);
@@ -199,6 +312,12 @@ function createHandler(options = {}) {
         return toolError(read.error || 'audit-uat returned an invalid workbench.');
       }
       return structured({ ...read.value, project_path: projectPath });
+    }
+
+    const allowedRoots = getAllowedRoots(ctx);
+    const auth = checkProjectAuthorization(input.project_path, projectPath, allowedRoots);
+    if (!auth.ok) {
+      return toolError(auth.error);
     }
 
     const filePath = typeof input.file_path === 'string' ? input.file_path : null;
@@ -242,7 +361,30 @@ function createHandler(options = {}) {
   return function handleMessage(request, ctx = {}) {
     const method = request && typeof request === 'object' ? request.method : undefined;
     const id = request && typeof request === 'object' ? request.id : null;
+    const isNotification = id === undefined || id === null;
     const params = asRecord(request?.params) || {};
+
+    if (id !== null && pendingRootsRequests.has(id)) {
+      pendingRootsRequests.delete(id);
+      if (request.result && typeof request.result === 'object') {
+        clientRoots = new Set(parseRootEntries(request.result.roots));
+      }
+      return null;
+    }
+
+    if (method === 'initialize') {
+      addClientRoots(params);
+      return getUpstream().handleMessage(request, ctx);
+    }
+
+    if (method === 'notifications/initialized' || method === 'initialized') {
+      return sendRootsList(ctx);
+    }
+
+    if (method === 'notifications/roots/list_changed' || method === 'roots/list_changed') {
+      clientRoots = new Set();
+      return sendRootsList(ctx);
+    }
 
     if (method === 'tools/list') {
       const response = getUpstream().handleMessage(request, ctx);
@@ -253,8 +395,8 @@ function createHandler(options = {}) {
     }
 
     if (method === 'tools/call' && CODEX_TOOL_NAMES.has(params.name)) {
-      if (id === undefined || id === null) return null;
-      return okResponse(id, callCodexTool(params.name, params.arguments));
+      if (isNotification) return null;
+      return okResponse(id, callCodexTool(params.name, params.arguments, ctx));
     }
 
     if (method === 'resources/list') {
@@ -296,9 +438,13 @@ function handleMessage(request, ctx) {
   return defaultHandler(request, ctx);
 }
 
-async function runServer({ input = process.stdin, output = process.stdout, handler = handleMessage } = {}) {
+async function runServer({ input = process.stdin, output = process.stdout, handler = handleMessage, ctx = {} } = {}) {
   const decoder = new StringDecoder('utf8');
   let buffer = '';
+  const emit = (msg) => {
+    if (msg) output.write(`${JSON.stringify(msg)}\n`);
+  };
+  const serverCtx = { emit, ...ctx };
   const processLine = (line) => {
     if (!line.trim()) return;
     let request;
@@ -309,7 +455,7 @@ async function runServer({ input = process.stdin, output = process.stdout, handl
       return;
     }
     try {
-      const response = handler(request);
+      const response = handler(request, serverCtx);
       if (response) output.write(`${JSON.stringify(response)}\n`);
     } catch (error) {
       output.write(`${JSON.stringify(errorResponse(null, INTERNAL_ERROR, error instanceof Error ? error.message : 'Internal error.'))}\n`);

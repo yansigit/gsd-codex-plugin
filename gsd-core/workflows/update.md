@@ -26,7 +26,7 @@ Then resolve the install context via the deterministic projection (#498). **Do N
 GSD_TOOLS=""
 for cand in \
   "$PREFERRED_CONFIG_DIR/gsd-core/bin/gsd-tools.cjs" \
-  "$HOME/.claude/gsd-core/bin/gsd-tools.cjs"; do
+  "{{GSD_PLUGIN_ROOT}}/gsd-core/bin/gsd-tools.cjs"; do
   if [ -n "$cand" ] && [ -f "$cand" ]; then GSD_TOOLS="$cand"; break; fi
 done
 # Last resort: the gsd-tools shim on PATH — resolved to its absolute path and

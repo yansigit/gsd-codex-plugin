@@ -39,9 +39,9 @@ via filesystem and git state.
 
 <required_reading>
 Read STATE.md before any operation to load project context.
-@~/.claude/gsd-core/references/agent-contracts.md
-@~/.claude/gsd-core/references/context-budget.md
-@~/.claude/gsd-core/references/gates.md
+@{{GSD_PLUGIN_ROOT}}/gsd-core/references/agent-contracts.md
+@{{GSD_PLUGIN_ROOT}}/gsd-core/references/context-budget.md
+@{{GSD_PLUGIN_ROOT}}/gsd-core/references/gates.md
 </required_reading>
 
 <available_agent_types>
@@ -80,7 +80,7 @@ If `--wave` is absent, preserve the current behavior of executing all incomplete
 Load all context in one call:
 
 ```bash
-_GSD_SHIM_NAME="gsd-tools.cjs"; _GSD_RUNTIME_ROOT="${RUNTIME_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"; GSD_TOOLS="${_GSD_RUNTIME_ROOT}/gsd-core/bin/${_GSD_SHIM_NAME}"; _gsd_at() { for _p; do if [ -f "$_p" ]; then GSD_TOOLS="$_p"; return 0; fi; done; return 1; }; if _gsd_at "${_GSD_RUNTIME_ROOT}/gsd-core/bin/${_GSD_SHIM_NAME}" "${_GSD_RUNTIME_ROOT}/.claude/gsd-core/bin/${_GSD_SHIM_NAME}" "${_GSD_RUNTIME_ROOT}/.codex/gsd-core/bin/${_GSD_SHIM_NAME}"; then gsd_run() { node "$GSD_TOOLS" "$@"; }; elif unset -f gsd_run; _G="$(command -v gsd_run)"; then GSD_TOOLS="$_G"; gsd_run() { "$GSD_TOOLS" "$@"; }; elif _gsd_at "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/gsd-core/bin/${_GSD_SHIM_NAME}" "${HERMES_HOME:-$HOME/.hermes}/gsd-core/bin/${_GSD_SHIM_NAME}" "${CURSOR_CONFIG_DIR:-$HOME/.cursor}/gsd-core/bin/${_GSD_SHIM_NAME}" "${CODEX_HOME:-$HOME/.codex}/gsd-core/bin/${_GSD_SHIM_NAME}" "${GEMINI_CONFIG_DIR:-$HOME/.gemini}/gsd-core/bin/${_GSD_SHIM_NAME}" "${COPILOT_CONFIG_DIR:-$HOME/.copilot}/gsd-core/bin/${_GSD_SHIM_NAME}" "${WINDSURF_CONFIG_DIR:-$HOME/.codeium/windsurf}/gsd-core/bin/${_GSD_SHIM_NAME}" "${AUGMENT_CONFIG_DIR:-$HOME/.augment}/gsd-core/bin/${_GSD_SHIM_NAME}" "${TRAE_CONFIG_DIR:-$HOME/.trae}/gsd-core/bin/${_GSD_SHIM_NAME}" "${QWEN_CONFIG_DIR:-$HOME/.qwen}/gsd-core/bin/${_GSD_SHIM_NAME}" "${CODEBUDDY_CONFIG_DIR:-$HOME/.codebuddy}/gsd-core/bin/${_GSD_SHIM_NAME}" "${CLINE_CONFIG_DIR:-$HOME/.cline}/gsd-core/bin/${_GSD_SHIM_NAME}" "${GROK_AGENTS_HOME:-$HOME/.agents}/gsd-core/bin/${_GSD_SHIM_NAME}" "${ANTIGRAVITY_CONFIG_DIR:-$HOME/.gemini/antigravity}/gsd-core/bin/${_GSD_SHIM_NAME}" "${OPENCODE_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/opencode}/gsd-core/bin/${_GSD_SHIM_NAME}" "${KILO_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/kilo}/gsd-core/bin/${_GSD_SHIM_NAME}"; then gsd_run() { node "$GSD_TOOLS" "$@"; }; else echo "ERROR: gsd-tools.cjs not found at $GSD_TOOLS and gsd_run is not on PATH. Run: npx -y @opengsd/gsd-core@latest --claude --local" >&2; exit 1; fi; GSD_IDENTITY_STATUS=unverified; case "$(gsd_run runtime-identity --raw 2>/dev/null || true)" in '{"packageName":"@opengsd/gsd-core"'*'}') GSD_IDENTITY_STATUS=ok;; esac; export GSD_IDENTITY_STATUS; [ "$GSD_IDENTITY_STATUS" = ok ] || echo "WARNING: \"$GSD_TOOLS\" did not prove it is @opengsd/gsd-core - it is either a different package or an @opengsd/gsd-core older than the runtime-identity verb. See docs/how-to/diagnose-a-foreign-gsd-tools.md" >&2; if [ -n "${CLAUDE_ENV_FILE:-}" ] && [ -n "${GSD_TOOLS:-}" ]; then printf "export PATH='%s':\"\$PATH\"\n" "${GSD_TOOLS%/*}" >> "$CLAUDE_ENV_FILE" 2>/dev/null || true; fi
+_GSD_SHIM_NAME="gsd-tools.cjs"; _GSD_RUNTIME_ROOT="${RUNTIME_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"; GSD_TOOLS="${_GSD_RUNTIME_ROOT}/gsd-core/bin/${_GSD_SHIM_NAME}"; _gsd_at() { for _p; do if [ -f "$_p" ]; then GSD_TOOLS="$_p"; return 0; fi; done; return 1; }; if _gsd_at "${_GSD_RUNTIME_ROOT}/gsd-core/bin/${_GSD_SHIM_NAME}" "${_GSD_RUNTIME_ROOT}/.claude/gsd-core/bin/${_GSD_SHIM_NAME}" "${_GSD_RUNTIME_ROOT}/.codex/gsd-core/bin/${_GSD_SHIM_NAME}"; then gsd_run() { GSD_AGENTS_DIR="{{GSD_PLUGIN_ROOT}}/agents" node "$GSD_TOOLS" "$@"; }; elif unset -f gsd_run; _G="$(command -v gsd_run)"; then GSD_TOOLS="$_G"; gsd_run() { GSD_AGENTS_DIR="{{GSD_PLUGIN_ROOT}}/agents" "$GSD_TOOLS" "$@"; }; elif _gsd_at "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/gsd-core/bin/${_GSD_SHIM_NAME}" "${HERMES_HOME:-$HOME/.hermes}/gsd-core/bin/${_GSD_SHIM_NAME}" "${CURSOR_CONFIG_DIR:-$HOME/.cursor}/gsd-core/bin/${_GSD_SHIM_NAME}" "${CODEX_HOME:-$HOME/.codex}/gsd-core/bin/${_GSD_SHIM_NAME}" "${GEMINI_CONFIG_DIR:-$HOME/.gemini}/gsd-core/bin/${_GSD_SHIM_NAME}" "${COPILOT_CONFIG_DIR:-$HOME/.copilot}/gsd-core/bin/${_GSD_SHIM_NAME}" "${WINDSURF_CONFIG_DIR:-$HOME/.codeium/windsurf}/gsd-core/bin/${_GSD_SHIM_NAME}" "${AUGMENT_CONFIG_DIR:-$HOME/.augment}/gsd-core/bin/${_GSD_SHIM_NAME}" "${TRAE_CONFIG_DIR:-$HOME/.trae}/gsd-core/bin/${_GSD_SHIM_NAME}" "${QWEN_CONFIG_DIR:-$HOME/.qwen}/gsd-core/bin/${_GSD_SHIM_NAME}" "${CODEBUDDY_CONFIG_DIR:-$HOME/.codebuddy}/gsd-core/bin/${_GSD_SHIM_NAME}" "${CLINE_CONFIG_DIR:-$HOME/.cline}/gsd-core/bin/${_GSD_SHIM_NAME}" "${GROK_AGENTS_HOME:-$HOME/.agents}/gsd-core/bin/${_GSD_SHIM_NAME}" "${ANTIGRAVITY_CONFIG_DIR:-$HOME/.gemini/antigravity}/gsd-core/bin/${_GSD_SHIM_NAME}" "${OPENCODE_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/opencode}/gsd-core/bin/${_GSD_SHIM_NAME}" "${KILO_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/kilo}/gsd-core/bin/${_GSD_SHIM_NAME}"; then gsd_run() { GSD_AGENTS_DIR="{{GSD_PLUGIN_ROOT}}/agents" node "$GSD_TOOLS" "$@"; }; else echo "ERROR: gsd-tools.cjs not found at $GSD_TOOLS and gsd_run is not on PATH. Run: npx -y @opengsd/gsd-core@latest --claude --local" >&2; exit 1; fi; GSD_IDENTITY_STATUS=unverified; case "$(gsd_run runtime-identity --raw 2>/dev/null || true)" in '{"packageName":"@opengsd/gsd-core"'*'}') GSD_IDENTITY_STATUS=ok;; esac; export GSD_IDENTITY_STATUS; [ "$GSD_IDENTITY_STATUS" = ok ] || echo "WARNING: \"$GSD_TOOLS\" did not prove it is @opengsd/gsd-core - it is either a different package or an @opengsd/gsd-core older than the runtime-identity verb. See docs/how-to/diagnose-a-foreign-gsd-tools.md" >&2; if [ -n "${CLAUDE_ENV_FILE:-}" ] && [ -n "${GSD_TOOLS:-}" ]; then printf "export PATH='%s':\"\$PATH\"\n" "${GSD_TOOLS%/*}" >> "$CLAUDE_ENV_FILE" 2>/dev/null || true; fi
 WAVE_PARAM=""; if [[ "$ARGUMENTS" =~ (^|[[:space:]])--wave[[:space:]]+([^[:space:]-][^[:space:]]*) ]]; then WAVE_PARAM="--wave ${BASH_REMATCH[2]}"; fi
 INIT=$(gsd_run query init.execute-phase "${PHASE_ARG}" $WAVE_PARAM)
 if [[ "$INIT" == @file:* ]]; then INIT=$(cat "${INIT#@file:}"); fi
@@ -93,7 +93,7 @@ Parse JSON for: `executor_model`, `verifier_model`, `commit_docs`, `parallelizat
 
 **Model resolution:** If `executor_model` is `"inherit"`, omit the `model=` parameter from all `Agent()` calls — do NOT pass `model="inherit"` to Agent. Omitting the `model=` parameter causes Claude Code to inherit the orchestrator model automatically. Only set `model=` when `executor_model` is an explicit model name (e.g., `"claude-sonnet-5"`, `"claude-opus-4-8"`).
 
-@~/.claude/gsd-core/references/execute-phase-response-language.md
+@{{GSD_PLUGIN_ROOT}}/gsd-core/references/execute-phase-response-language.md
 
 Read runtime/worktree config and fail closed before any executor dispatch:
 
@@ -142,8 +142,8 @@ When `CONTEXT_WINDOW >= 500000` (1M-class models), subagent prompts include rich
 - This enables cross-phase awareness and history-aware verification
 
 When `CONTEXT_WINDOW < 200000` (sub-200K models), subagent prompts are thinned to reduce static overhead:
-- Executor agents omit extended deviation rule examples and checkpoint examples from inline prompt — load on-demand via @~/.claude/gsd-core/references/executor-examples.md
-- Planner agents omit extended anti-pattern lists and specificity examples from inline prompt — load on-demand via @~/.claude/gsd-core/references/planner-antipatterns.md
+- Executor agents omit extended deviation rule examples and checkpoint examples from inline prompt — load on-demand via @{{GSD_PLUGIN_ROOT}}/gsd-core/references/executor-examples.md
+- Planner agents omit extended anti-pattern lists and specificity examples from inline prompt — load on-demand via @{{GSD_PLUGIN_ROOT}}/gsd-core/references/planner-antipatterns.md
 - Core rules and decision logic remain inline; only verbose examples and edge-case lists are extracted
 - This reduces executor static overhead by ~40% while preserving behavioral correctness
 
@@ -219,7 +219,7 @@ if [ "$TDD_MODE" = "true" ]; then
   fi
 fi
 ```
-Pure doc-only / config-only / test-only tasks return `is_behavior_adding=false` and are exempt. When the gate trips, Read `~/.claude/gsd-core/references/execute-mvp-tdd.md` for the exact halt report format.
+Pure doc-only / config-only / test-only tasks return `is_behavior_adding=false` and are exempt. When the gate trips, Read `{{GSD_PLUGIN_ROOT}}/gsd-core/references/execute-mvp-tdd.md` for the exact halt report format.
 </step>
 
 <step name="check_blocking_antipatterns" priority="first">
@@ -275,7 +275,7 @@ checkpoints between tasks. The user can review, modify, or redirect work at any 
 
    b. **If "Review first":** Read and display the full plan file. Ask again: Execute, Modify, Skip.
 
-   c. **If "Execute":** Read and follow `~/.claude/gsd-core/workflows/execute-plan.md` **inline**
+   c. **If "Execute":** Read and follow `{{GSD_PLUGIN_ROOT}}/gsd-core/workflows/execute-plan.md` **inline**
       (do NOT spawn a subagent). Execute tasks one at a time.
 
    d. **After each task:** Pause briefly. If the user intervenes (types anything), stop and address
@@ -588,9 +588,9 @@ increases monotonically across waves. `{status}` is `complete` (success),
 
 **For each wave:**
 
-@~/.claude/gsd-core/references/execute-phase-wave-guard.md
+@{{GSD_PLUGIN_ROOT}}/gsd-core/references/execute-phase-wave-guard.md
 
-@~/.claude/gsd-core/references/execute-phase-context-guard.md
+@{{GSD_PLUGIN_ROOT}}/gsd-core/references/execute-phase-context-guard.md
 
 1. **Intra-wave files_modified overlap check (BEFORE spawning):**
 
@@ -754,12 +754,12 @@ increases monotonically across waves. `{status}` is `complete` (success),
 
        <execution_context>
        ORCHESTRATOR build-time embed (NOT a sub-agent runtime step): before this dispatch, read each file listed below and replace this note with those files' contents, inlined verbatim in this block in the listed order. Never leave `@`-include lines in the dispatched prompt — `@path` never expands inside an Agent() `prompt="..."` string (#3324), so an include arrives as literal text the executor never sees.
-       - `~/.claude/gsd-core/workflows/execute-plan.md`
-       - `~/.claude/gsd-core/templates/summary.md`
-       - `~/.claude/gsd-core/references/checkpoints.md`
-       ${TDD_APPLICABLE ? '- `~/.claude/gsd-core/references/tdd.md`' : ''}  # #3990: only when this dispatch is TDD (plan type: tdd, a tdd="true" task, or TDD_MODE=true)
-       - `~/.claude/gsd-core/references/worktree-path-safety.md`
-       ${CONTEXT_WINDOW < 200000 ? '' : '- `~/.claude/gsd-core/references/executor-examples.md`'}
+       - `{{GSD_PLUGIN_ROOT}}/gsd-core/workflows/execute-plan.md`
+       - `{{GSD_PLUGIN_ROOT}}/gsd-core/templates/summary.md`
+       - `{{GSD_PLUGIN_ROOT}}/gsd-core/references/checkpoints.md`
+       ${TDD_APPLICABLE ? '- `{{GSD_PLUGIN_ROOT}}/gsd-core/references/tdd.md`' : ''}  # #3990: only when this dispatch is TDD (plan type: tdd, a tdd="true" task, or TDD_MODE=true)
+       - `{{GSD_PLUGIN_ROOT}}/gsd-core/references/worktree-path-safety.md`
+       ${CONTEXT_WINDOW < 200000 ? '' : '- `{{GSD_PLUGIN_ROOT}}/gsd-core/references/executor-examples.md`'}
        </execution_context>
 
        <required_reading>
@@ -1117,9 +1117,9 @@ increases monotonically across waves. `{status}` is `complete` (success),
    **Step 7.3 — `class == "unknown-failure"`:**
    Report failed plan and ask Continue/Stop; continuing may cascade into dependent plan failures.
 
-@~/.claude/gsd-core/references/execute-phase-quota-recovery.md
+@{{GSD_PLUGIN_ROOT}}/gsd-core/references/execute-phase-quota-recovery.md
 
-@~/.claude/gsd-core/references/execute-phase-between-wave-reset.md
+@{{GSD_PLUGIN_ROOT}}/gsd-core/references/execute-phase-between-wave-reset.md
 
 8. **Execute checkpoint plans between waves** — see `<checkpoint_handling>`.
 9. **Proceed to next wave.**
@@ -1259,7 +1259,7 @@ CHECK_EXIT=$?
 
 **Gate evaluation** uses the same two-step contract as `execute:wave:post` above.
 
-**TDD review escalation (overrides the advisory default for the `tdd.review-checkpoint` gate only).** The tdd `execute:post` gate is declared `blocking: false`, so by the generic contract above it displays its `message`/table and continues. There is ONE documented exception (see `~/.claude/gsd-core/references/execute-mvp-tdd.md`): when `TDD_MODE=true` AND `GATE_RESULT.block == true` (one or more TDD plans miss a RED or GREEN gate commit; #4011 — no MVP condition), the end-of-phase TDD review escalates from advisory to **blocking under TDD** — refuse to mark the phase complete and present:
+**TDD review escalation (overrides the advisory default for the `tdd.review-checkpoint` gate only).** The tdd `execute:post` gate is declared `blocking: false`, so by the generic contract above it displays its `message`/table and continues. There is ONE documented exception (see `{{GSD_PLUGIN_ROOT}}/gsd-core/references/execute-mvp-tdd.md`): when `TDD_MODE=true` AND `GATE_RESULT.block == true` (one or more TDD plans miss a RED or GREEN gate commit; #4011 — no MVP condition), the end-of-phase TDD review escalates from advisory to **blocking under TDD** — refuse to mark the phase complete and present:
 
 ```
 Phase blocked: {N} TDD plan(s) violate the RED→GREEN gate sequence under TDD.
@@ -1399,7 +1399,7 @@ Verify-work will walk you through each item and mark the phase complete when all
 **If user reports issues now:** Proceed to gap closure.
 
 **If gaps_found:**
-@~/.claude/gsd-core/references/execute-phase-requirement-revert.md
+@{{GSD_PLUGIN_ROOT}}/gsd-core/references/execute-phase-requirement-revert.md
 ```
 ## ⚠ Phase {X}: {Name} — Gaps Found
 
@@ -1528,7 +1528,7 @@ transition in **post-completion mode**: SKIP its `verify_completion` and
 `update_roadmap_and_state` (re-running `phase.complete` would double-write state) and
 BEGIN at `evolve_project`, running the full set through `offer_next_phase`.
 
-@~/.claude/gsd-core/workflows/transition.md
+@{{GSD_PLUGIN_ROOT}}/gsd-core/workflows/transition.md
 </step>
 
 </process>

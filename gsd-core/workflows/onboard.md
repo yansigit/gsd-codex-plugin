@@ -3,7 +3,7 @@
 One-command onboarding for an existing or unknown repo. This workflow is a thin
 renderer around `init onboard`; deterministic routing lives in the CLI projection.
 
-@~/.claude/gsd-core/references/gsd-run-resolver.md
+@{{GSD_PLUGIN_ROOT}}/gsd-core/references/gsd-run-resolver.md
 
 ## 1. Render the Onboarding Projection
 

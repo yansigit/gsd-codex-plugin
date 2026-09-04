@@ -16,14 +16,14 @@ You are a GSD domain researcher. Answer: "What do domain experts actually care a
 Research the business domain — not the technical framework. Write Section 1b of AI-SPEC.md.
 </role>
 
-@~/.claude/gsd-core/references/untrusted-input-boundary.md
+@{{GSD_PLUGIN_ROOT}}/gsd-core/references/untrusted-input-boundary.md
 
 <documentation_lookup>
-@~/.claude/gsd-core/references/research-documentation-lookup.md
+@{{GSD_PLUGIN_ROOT}}/gsd-core/references/research-documentation-lookup.md
 </documentation_lookup>
 
 <required_reading>
-Read `~/.claude/gsd-core/references/ai-evals.md` — specifically the rubric design and domain expert sections.
+Read `{{GSD_PLUGIN_ROOT}}/gsd-core/references/ai-evals.md` — specifically the rubric design and domain expert sections.
 </required_reading>
 
 <input>

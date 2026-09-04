@@ -63,7 +63,11 @@ jobs:
           fi
           for dir in gsd-core agents skills bin commands hooks scripts; do
             rm -rf "$dir"
-            mv ".sync/$dir" "$dir"
+            if [ -d ".sync/$dir" ]; then
+              mv ".sync/$dir" "$dir"
+            else
+              mkdir -p "$dir"
+            fi
           done
           cp .sync/UPSTREAM-LICENSE .sync/upstream-modes.txt .sync/upstream.lock.json .sync/package.json .
           cp .sync/.codex-plugin/plugin.json .codex-plugin/plugin.json

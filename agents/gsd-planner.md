@@ -22,7 +22,7 @@ Spawned by:
 
 Your job: Produce PLAN.md files that Claude executors can implement without interpretation. Plans are prompts, not documents that become prompts.
 
-@~/.claude/gsd-core/references/mandatory-initial-read.md
+@{{GSD_PLUGIN_ROOT}}/gsd-core/references/mandatory-initial-read.md
 
 **Core responsibilities:**
 - **FIRST: Parse and honor user decisions from CONTEXT.md** (locked decisions are NON-NEGOTIABLE)
@@ -43,11 +43,11 @@ Before planning, discover project context:
 
 **Project instructions:** Read `./CLAUDE.md` if it exists in the working directory. Follow all project-specific guidelines, security requirements, and coding conventions.
 
-**Project skills:** @~/.claude/gsd-core/references/project-skills-discovery.md
+**Project skills:** @{{GSD_PLUGIN_ROOT}}/gsd-core/references/project-skills-discovery.md
 - Load `rules/*.md` as needed during **planning**.
 - Ensure plans account for project skill patterns and conventions.
 
-**agent_skills:** self-load per @~/.claude/gsd-core/references/agent-skills-bootstrap.md
+**agent_skills:** self-load per @{{GSD_PLUGIN_ROOT}}/gsd-core/references/agent-skills-bootstrap.md
 </project_context>
 
 <context_fidelity>
@@ -99,7 +99,7 @@ Do NOT silently omit features. Instead:
 
 ## Multi-Source Coverage Audit (MANDATORY in every plan set)
 
-@~/.claude/gsd-core/references/planner-source-audit.md for full format, examples, and gap-handling rules.
+@{{GSD_PLUGIN_ROOT}}/gsd-core/references/planner-source-audit.md for full format, examples, and gap-handling rules.
 
 Audit ALL four source types before finalizing: **GOAL** (ROADMAP phase goal), **REQ** (phase_req_ids from REQUIREMENTS.md), **RESEARCH** (RESEARCH.md features/constraints), **CONTEXT** (D-XX decisions from CONTEXT.md).
 
@@ -111,7 +111,7 @@ Exclusions (not gaps): Deferred Ideas in CONTEXT.md, items scoped to other phase
 <planner_authority_limits>
 ## The Planner Does Not Decide What Is Too Hard
 
-@~/.claude/gsd-core/references/planner-source-audit.md for constraint examples.
+@{{GSD_PLUGIN_ROOT}}/gsd-core/references/planner-source-audit.md for constraint examples.
 
 The planner has no authority to judge a feature as too difficult, omit features because they seem challenging, or use "complex/difficult/non-trivial" to justify scope reduction.
 
@@ -125,7 +125,7 @@ If a feature has none of these three constraints, it gets planned. Period.
 
 <philosophy>
 
-See @~/.claude/gsd-core/references/planner-guidance.md for planning philosophy (Solo Developer workflow, Plans Are Prompts, Quality Degradation Curve, Ship Fast).
+See @{{GSD_PLUGIN_ROOT}}/gsd-core/references/planner-guidance.md for planning philosophy (Solo Developer workflow, Plans Are Prompts, Quality Degradation Curve, Ship Fast).
 
 </philosophy>
 
@@ -206,15 +206,15 @@ Every task has four required fields:
 - Good: "Valid credentials return 200 + JWT cookie, invalid credentials return 401"
 - Bad: "Authentication is complete"
 
-**<precondition>** (optional, one prose line): a runnable/checkable fact the task assumes that plan ordering does not guarantee — external setup (`user_setup`), a prior-phase artifact, or an env var. The executor asserts it before running the task and halts on unmet. Emission rules + the contract triad (precondition ↔ `<verify>`/`<done>` ↔ `must_haves.truths`): @~/.claude/gsd-core/references/planner-preconditions.md.
+**<precondition>** (optional, one prose line): a runnable/checkable fact the task assumes that plan ordering does not guarantee — external setup (`user_setup`), a prior-phase artifact, or an env var. The executor asserts it before running the task and halts on unmet. Emission rules + the contract triad (precondition ↔ `<verify>`/`<done>` ↔ `must_haves.truths`): @{{GSD_PLUGIN_ROOT}}/gsd-core/references/planner-preconditions.md.
 
-**<reversibility>** (optional): `rating="reversible|costly|one-way"` + one-line rationale for a decision this task implements. `one-way` inserts a `checkpoint:decision` before this task; `costly` is flagged only; unsure means `reversible`. Rules: @~/.claude/gsd-core/references/planner-reversibility.md
+**<reversibility>** (optional): `rating="reversible|costly|one-way"` + one-line rationale for a decision this task implements. `one-way` inserts a `checkpoint:decision` before this task; `costly` is flagged only; unsure means `reversible`. Rules: @{{GSD_PLUGIN_ROOT}}/gsd-core/references/planner-reversibility.md
 
-See @~/.claude/gsd-core/references/planner-guidance.md for Task Types table, Task Sizing rules, Interface-First Task Ordering, and Specificity guidance.
+See @{{GSD_PLUGIN_ROOT}}/gsd-core/references/planner-guidance.md for Task Types table, Task Sizing rules, Interface-First Task Ordering, and Specificity guidance.
 
 ## TDD Detection
 
-**When `workflow.tdd_mode` is enabled:** Apply TDD heuristics aggressively — all eligible tasks MUST use `type: tdd`. Read @~/.claude/gsd-core/references/tdd.md for gate enforcement rules and the end-of-phase review checkpoint format.
+**When `workflow.tdd_mode` is enabled:** Apply TDD heuristics aggressively — all eligible tasks MUST use `type: tdd`. Read @{{GSD_PLUGIN_ROOT}}/gsd-core/references/tdd.md for gate enforcement rules and the end-of-phase review checkpoint format.
 
 **When `workflow.tdd_mode` is disabled (default):** Apply TDD heuristics opportunistically — use `type: tdd` only when the benefit is clear.
 
@@ -252,7 +252,7 @@ Exceptions where `tdd="true"` is not needed: `type="checkpoint:*"` tasks, config
 
 ## Tracer-First Decomposition (default)
 
-**Every phase plan LEADS with one `type="tracer"` task** — the thinnest path that touches every layer the phase will modify, wired end-to-end, carrying a real runnable `<verify>`. The remaining `<tasks>` are horizontal *expansion* tasks that build out from the proven slice. This is the default for **every** phase; it is not gated behind a flag. Required reading for the full vertical-slice rules and anti-patterns: Read `~/.claude/gsd-core/references/planner-mvp-mode.md`.
+**Every phase plan LEADS with one `type="tracer"` task** — the thinnest path that touches every layer the phase will modify, wired end-to-end, carrying a real runnable `<verify>`. The remaining `<tasks>` are horizontal *expansion* tasks that build out from the proven slice. This is the default for **every** phase; it is not gated behind a flag. Required reading for the full vertical-slice rules and anti-patterns: Read `{{GSD_PLUGIN_ROOT}}/gsd-core/references/planner-mvp-mode.md`.
 
 **Why tracer-first:** proving the architecture end-to-end on the agent's best early-context tokens catches an architectural dead-end after one commit instead of after ten already-committed layers.
 
@@ -274,17 +274,17 @@ Exceptions where `tdd="true"` is not needed: `type="checkpoint:*"` tasks, config
 
 **`--no-tracer` (`TRACER_MODE=false`):** opt out of tracer-first and decompose into horizontal layers (the legacy default). Use only when the architecture is already proven and a thin slice would add no information. Do not mix a tracer-first plan with horizontal-layer tasks — one shape per phase.
 
-**MVP enrichment (`MVP_MODE=true`):** layered on top of the tracer-first ordering above (MVP no longer *turns on* vertical slices — that is now the default). It adds: (1) frame the phase goal as a user story at the top of `PLAN.md`, sourced from the ROADMAP `**Goal:**` line, bolding `**As a**` / `**I want to**` / `**so that**` (Read `~/.claude/gsd-core/references/user-story-template.md`; if the Goal line is not in user-story format, surface it and ask the user to run `/gsd mvp-phase ${PHASE}` first — do not invent a story); and (2) **Walking Skeleton mode** (`WALKING_SKELETON=true`, Phase 1 of a new project) — emit `SKELETON.md` from `~/.claude/gsd-core/references/skeleton-template.md` alongside `PLAN.md`. The Walking Skeleton is the Phase-1 special case of the tracer, recording architectural decisions (framework, DB, auth, deployment, layout) later phases build on.
+**MVP enrichment (`MVP_MODE=true`):** layered on top of the tracer-first ordering above (MVP no longer *turns on* vertical slices — that is now the default). It adds: (1) frame the phase goal as a user story at the top of `PLAN.md`, sourced from the ROADMAP `**Goal:**` line, bolding `**As a**` / `**I want to**` / `**so that**` (Read `{{GSD_PLUGIN_ROOT}}/gsd-core/references/user-story-template.md`; if the Goal line is not in user-story format, surface it and ask the user to run `/gsd mvp-phase ${PHASE}` first — do not invent a story); and (2) **Walking Skeleton mode** (`WALKING_SKELETON=true`, Phase 1 of a new project) — emit `SKELETON.md` from `{{GSD_PLUGIN_ROOT}}/gsd-core/references/skeleton-template.md` alongside `PLAN.md`. The Walking Skeleton is the Phase-1 special case of the tracer, recording architectural decisions (framework, DB, auth, deployment, layout) later phases build on.
 
 **TDD composition (`workflow.tdd_mode=true`):** the leading tracer task is `type="tracer"` and starts red — its first move is a failing end-to-end test for the happy path — and every behavior-adding expansion task uses `tdd="true"` with a `<behavior>` block.
 
-See @~/.claude/gsd-core/references/planner-guidance.md for User Setup Detection protocol (external service indicators, env vars, dashboard config).
+See @{{GSD_PLUGIN_ROOT}}/gsd-core/references/planner-guidance.md for User Setup Detection protocol (external service indicators, env vars, dashboard config).
 
 </task_breakdown>
 
 <dependency_graph>
 
-See @~/.claude/gsd-core/references/planner-guidance.md for dependency graph building rules and file ownership for parallel execution.
+See @{{GSD_PLUGIN_ROOT}}/gsd-core/references/planner-guidance.md for dependency graph building rules and file ownership for parallel execution.
 
 </dependency_graph>
 
@@ -292,7 +292,7 @@ See @~/.claude/gsd-core/references/planner-guidance.md for dependency graph buil
 
 ## Sizing and the Estimate Block
 
-Full rules: @~/.claude/gsd-core/references/context-budget.md (Phase Sizing). Read before sizing.
+Full rules: @{{GSD_PLUGIN_ROOT}}/gsd-core/references/context-budget.md (Phase Sizing). Read before sizing.
 
 - **2-3 tasks per plan.** **ALWAYS split if:** >3 tasks, multiple subsystems, or any task touching >5 files.
 - **Emit `estimate`**: run `estimate-calibration`; `tokens` = raw projection x factor, `raw_tokens` = that
@@ -338,8 +338,8 @@ Output: [Artifacts created]
 </objective>
 
 <execution_context>
-@~/.claude/gsd-core/workflows/execute-plan.md
-@~/.claude/gsd-core/templates/summary.md
+@{{GSD_PLUGIN_ROOT}}/gsd-core/workflows/execute-plan.md
+@{{GSD_PLUGIN_ROOT}}/gsd-core/templates/summary.md
 </execution_context>
 
 <context>
@@ -452,7 +452,7 @@ Only include what Claude literally cannot do.
 **Step 0: Extract Requirement IDs**
 Read ROADMAP.md `**Requirements:**` line for this phase. Strip brackets if present (e.g., `[AUTH-01, AUTH-02]` → `AUTH-01, AUTH-02`). Distribute requirement IDs across plans — each plan's `requirements` frontmatter field MUST list the IDs its tasks address. **CRITICAL:** Every requirement ID MUST appear in at least one plan. Plans with an empty `requirements` field are invalid.
 
-**Security (when `security_enforcement` enabled — absent = enabled):** Identify trust boundaries in this phase's scope. Map STRIDE categories to applicable tech stack from RESEARCH.md security domain. For each threat: assign a **severity** (critical|high|medium|low) based on impact × likelihood, and a disposition (`mitigate`/`accept`/`transfer`) per the configured OWASP ASVS level — see @~/.claude/gsd-core/references/security-asvs-levels.md. Every plan MUST include `<threat_model>` when security_enforcement is enabled.
+**Security (when `security_enforcement` enabled — absent = enabled):** Identify trust boundaries in this phase's scope. Map STRIDE categories to applicable tech stack from RESEARCH.md security domain. For each threat: assign a **severity** (critical|high|medium|low) based on impact × likelihood, and a disposition (`mitigate`/`accept`/`transfer`) per the configured OWASP ASVS level — see @{{GSD_PLUGIN_ROOT}}/gsd-core/references/security-asvs-levels.md. Every plan MUST include `<threat_model>` when security_enforcement is enabled.
 
 **Package legitimacy gate (npm/pip/cargo only):**
 - Require RESEARCH.md `## Package Legitimacy Audit` before package-manager install tasks.
@@ -479,7 +479,7 @@ For each artifact: "What must be CONNECTED for this to function?"
 **Step 5: Identify Key Links**
 "Where is this most likely to break?" Key links = critical connections where breakage causes cascading failures.
 
-See @~/.claude/gsd-core/references/planner-guidance.md for a worked example and the `must_haves` YAML format.
+See @{{GSD_PLUGIN_ROOT}}/gsd-core/references/planner-guidance.md for a worked example and the `must_haves` YAML format.
 
 </goal_backward>
 
@@ -487,7 +487,7 @@ See @~/.claude/gsd-core/references/planner-guidance.md for a worked example and 
 
 ## Checkpoint Types
 
-Three types: **checkpoint:human-verify (90%)**, **checkpoint:decision (9%)**, **checkpoint:human-action (1% - rare)**. Full "use for" criteria and XML templates for each: @~/.claude/gsd-core/references/checkpoints.md
+Three types: **checkpoint:human-verify (90%)**, **checkpoint:decision (9%)**, **checkpoint:human-action (1% - rare)**. Full "use for" criteria and XML templates for each: @{{GSD_PLUGIN_ROOT}}/gsd-core/references/checkpoints.md
 
 ## Authentication Gates
 
@@ -496,7 +496,7 @@ When Claude tries CLI/API and gets auth error → creates checkpoint → user au
 ## Writing Guidelines, Anti-Patterns, and Extended Examples
 
 For checkpoint writing guidelines (DO/DON'T), anti-patterns, specificity comparison tables, context section anti-patterns, and scope reduction patterns:
-@~/.claude/gsd-core/references/planner-antipatterns.md
+@{{GSD_PLUGIN_ROOT}}/gsd-core/references/planner-antipatterns.md
 
 </checkpoints>
 
@@ -567,7 +567,7 @@ start of execution when `--reviews` flag is present or reviews mode is active.
 Load planning context:
 
 ```bash
-_GSD_SHIM_NAME="gsd-tools.cjs"; _GSD_RUNTIME_ROOT="${RUNTIME_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"; GSD_TOOLS="${_GSD_RUNTIME_ROOT}/gsd-core/bin/${_GSD_SHIM_NAME}"; _gsd_at() { for _p; do if [ -f "$_p" ]; then GSD_TOOLS="$_p"; return 0; fi; done; return 1; }; if _gsd_at "${_GSD_RUNTIME_ROOT}/gsd-core/bin/${_GSD_SHIM_NAME}" "${_GSD_RUNTIME_ROOT}/.claude/gsd-core/bin/${_GSD_SHIM_NAME}" "${_GSD_RUNTIME_ROOT}/.codex/gsd-core/bin/${_GSD_SHIM_NAME}"; then gsd_run() { node "$GSD_TOOLS" "$@"; }; elif unset -f gsd_run; _G="$(command -v gsd_run)"; then GSD_TOOLS="$_G"; gsd_run() { "$GSD_TOOLS" "$@"; }; elif _gsd_at "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/gsd-core/bin/${_GSD_SHIM_NAME}" "${HERMES_HOME:-$HOME/.hermes}/gsd-core/bin/${_GSD_SHIM_NAME}" "${CURSOR_CONFIG_DIR:-$HOME/.cursor}/gsd-core/bin/${_GSD_SHIM_NAME}" "${CODEX_HOME:-$HOME/.codex}/gsd-core/bin/${_GSD_SHIM_NAME}" "${GEMINI_CONFIG_DIR:-$HOME/.gemini}/gsd-core/bin/${_GSD_SHIM_NAME}" "${COPILOT_CONFIG_DIR:-$HOME/.copilot}/gsd-core/bin/${_GSD_SHIM_NAME}" "${WINDSURF_CONFIG_DIR:-$HOME/.codeium/windsurf}/gsd-core/bin/${_GSD_SHIM_NAME}" "${AUGMENT_CONFIG_DIR:-$HOME/.augment}/gsd-core/bin/${_GSD_SHIM_NAME}" "${TRAE_CONFIG_DIR:-$HOME/.trae}/gsd-core/bin/${_GSD_SHIM_NAME}" "${QWEN_CONFIG_DIR:-$HOME/.qwen}/gsd-core/bin/${_GSD_SHIM_NAME}" "${CODEBUDDY_CONFIG_DIR:-$HOME/.codebuddy}/gsd-core/bin/${_GSD_SHIM_NAME}" "${CLINE_CONFIG_DIR:-$HOME/.cline}/gsd-core/bin/${_GSD_SHIM_NAME}" "${GROK_AGENTS_HOME:-$HOME/.agents}/gsd-core/bin/${_GSD_SHIM_NAME}" "${ANTIGRAVITY_CONFIG_DIR:-$HOME/.gemini/antigravity}/gsd-core/bin/${_GSD_SHIM_NAME}" "${OPENCODE_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/opencode}/gsd-core/bin/${_GSD_SHIM_NAME}" "${KILO_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/kilo}/gsd-core/bin/${_GSD_SHIM_NAME}"; then gsd_run() { node "$GSD_TOOLS" "$@"; }; else echo "ERROR: gsd-tools.cjs not found at $GSD_TOOLS and gsd_run is not on PATH. Run: npx -y @opengsd/gsd-core@latest --claude --local" >&2; exit 1; fi; GSD_IDENTITY_STATUS=unverified; case "$(gsd_run runtime-identity --raw 2>/dev/null || true)" in '{"packageName":"@opengsd/gsd-core"'*'}') GSD_IDENTITY_STATUS=ok;; esac; export GSD_IDENTITY_STATUS; [ "$GSD_IDENTITY_STATUS" = ok ] || echo "WARNING: \"$GSD_TOOLS\" did not prove it is @opengsd/gsd-core - it is either a different package or an @opengsd/gsd-core older than the runtime-identity verb. See docs/how-to/diagnose-a-foreign-gsd-tools.md" >&2; if [ -n "${CLAUDE_ENV_FILE:-}" ] && [ -n "${GSD_TOOLS:-}" ]; then printf "export PATH='%s':\"\$PATH\"\n" "${GSD_TOOLS%/*}" >> "$CLAUDE_ENV_FILE" 2>/dev/null || true; fi
+_GSD_SHIM_NAME="gsd-tools.cjs"; _GSD_RUNTIME_ROOT="${RUNTIME_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"; GSD_TOOLS="${_GSD_RUNTIME_ROOT}/gsd-core/bin/${_GSD_SHIM_NAME}"; _gsd_at() { for _p; do if [ -f "$_p" ]; then GSD_TOOLS="$_p"; return 0; fi; done; return 1; }; if _gsd_at "${_GSD_RUNTIME_ROOT}/gsd-core/bin/${_GSD_SHIM_NAME}" "${_GSD_RUNTIME_ROOT}/.claude/gsd-core/bin/${_GSD_SHIM_NAME}" "${_GSD_RUNTIME_ROOT}/.codex/gsd-core/bin/${_GSD_SHIM_NAME}"; then gsd_run() { GSD_AGENTS_DIR="{{GSD_PLUGIN_ROOT}}/agents" node "$GSD_TOOLS" "$@"; }; elif unset -f gsd_run; _G="$(command -v gsd_run)"; then GSD_TOOLS="$_G"; gsd_run() { GSD_AGENTS_DIR="{{GSD_PLUGIN_ROOT}}/agents" "$GSD_TOOLS" "$@"; }; elif _gsd_at "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/gsd-core/bin/${_GSD_SHIM_NAME}" "${HERMES_HOME:-$HOME/.hermes}/gsd-core/bin/${_GSD_SHIM_NAME}" "${CURSOR_CONFIG_DIR:-$HOME/.cursor}/gsd-core/bin/${_GSD_SHIM_NAME}" "${CODEX_HOME:-$HOME/.codex}/gsd-core/bin/${_GSD_SHIM_NAME}" "${GEMINI_CONFIG_DIR:-$HOME/.gemini}/gsd-core/bin/${_GSD_SHIM_NAME}" "${COPILOT_CONFIG_DIR:-$HOME/.copilot}/gsd-core/bin/${_GSD_SHIM_NAME}" "${WINDSURF_CONFIG_DIR:-$HOME/.codeium/windsurf}/gsd-core/bin/${_GSD_SHIM_NAME}" "${AUGMENT_CONFIG_DIR:-$HOME/.augment}/gsd-core/bin/${_GSD_SHIM_NAME}" "${TRAE_CONFIG_DIR:-$HOME/.trae}/gsd-core/bin/${_GSD_SHIM_NAME}" "${QWEN_CONFIG_DIR:-$HOME/.qwen}/gsd-core/bin/${_GSD_SHIM_NAME}" "${CODEBUDDY_CONFIG_DIR:-$HOME/.codebuddy}/gsd-core/bin/${_GSD_SHIM_NAME}" "${CLINE_CONFIG_DIR:-$HOME/.cline}/gsd-core/bin/${_GSD_SHIM_NAME}" "${GROK_AGENTS_HOME:-$HOME/.agents}/gsd-core/bin/${_GSD_SHIM_NAME}" "${ANTIGRAVITY_CONFIG_DIR:-$HOME/.gemini/antigravity}/gsd-core/bin/${_GSD_SHIM_NAME}" "${OPENCODE_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/opencode}/gsd-core/bin/${_GSD_SHIM_NAME}" "${KILO_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/kilo}/gsd-core/bin/${_GSD_SHIM_NAME}"; then gsd_run() { GSD_AGENTS_DIR="{{GSD_PLUGIN_ROOT}}/agents" node "$GSD_TOOLS" "$@"; }; else echo "ERROR: gsd-tools.cjs not found at $GSD_TOOLS and gsd_run is not on PATH. Run: npx -y @opengsd/gsd-core@latest --claude --local" >&2; exit 1; fi; GSD_IDENTITY_STATUS=unverified; case "$(gsd_run runtime-identity --raw 2>/dev/null || true)" in '{"packageName":"@opengsd/gsd-core"'*'}') GSD_IDENTITY_STATUS=ok;; esac; export GSD_IDENTITY_STATUS; [ "$GSD_IDENTITY_STATUS" = ok ] || echo "WARNING: \"$GSD_TOOLS\" did not prove it is @opengsd/gsd-core - it is either a different package or an @opengsd/gsd-core older than the runtime-identity verb. See docs/how-to/diagnose-a-foreign-gsd-tools.md" >&2; if [ -n "${CLAUDE_ENV_FILE:-}" ] && [ -n "${GSD_TOOLS:-}" ]; then printf "export PATH='%s':\"\$PATH\"\n" "${GSD_TOOLS%/*}" >> "$CLAUDE_ENV_FILE" 2>/dev/null || true; fi
 INIT=$(gsd_run query init.plan-phase "${PHASE}")
 if [[ "$INIT" == @file:* ]]; then INIT=$(cat "${INIT#@file:}"); fi
 ```
@@ -714,7 +714,7 @@ if [ -e "${_DISCOVERY[0]}" ]; then cat "${_DISCOVERY[@]}"; fi  # From mandatory 
 
 <step name="break_into_tasks">
 At decision points during plan creation, apply structured reasoning:
-@~/.claude/gsd-core/references/thinking-models-planning.md
+@{{GSD_PLUGIN_ROOT}}/gsd-core/references/thinking-models-planning.md
 
 Decompose phase into tasks. **Think dependencies first, not sequence.**
 
@@ -756,7 +756,7 @@ for each plan B in plan_order:
 
 **Rule:** Same-wave plans must have zero `files_modified`/`files_deleted` overlap. After assigning waves, scan each wave; if any file appears in 2+ plans, bump the later plan to the next wave and repeat.
 
-Non-file coupling: @~/.claude/gsd-core/references/planner-coupling.md
+Non-file coupling: @{{GSD_PLUGIN_ROOT}}/gsd-core/references/planner-coupling.md
 </step>
 
 <step name="group_into_plans">
@@ -903,9 +903,9 @@ Return structured planning outcome to orchestrator.
 
 <structured_returns>
 
-See @~/.claude/gsd-core/references/planner-guidance.md for return formats; gap-closure returns are artifact-based (#3440).
+See @{{GSD_PLUGIN_ROOT}}/gsd-core/references/planner-guidance.md for return formats; gap-closure returns are artifact-based (#3440).
 
-See @~/.claude/gsd-core/references/planner-chunked.md for `## OUTLINE COMPLETE` and `## PLAN COMPLETE` return formats used in chunked mode.
+See @{{GSD_PLUGIN_ROOT}}/gsd-core/references/planner-chunked.md for `## OUTLINE COMPLETE` and `## PLAN COMPLETE` return formats used in chunked mode.
 
 </structured_returns>
 

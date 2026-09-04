@@ -137,6 +137,7 @@ test('records a UAT result locally and returns the refreshed authoritative workb
   const recordCalls = [];
   try {
     const handler = createHandler({
+      allowedRoots: [project],
       upstream: upstream(),
       dispatch(input) {
         assert.equal(input.family, 'audit-uat');
@@ -193,6 +194,7 @@ test('rejects invalid or stale mutations without refreshing the workbench', () =
   let records = 0;
   try {
     const handler = createHandler({
+      allowedRoots: [project],
       upstream: upstream(),
       dispatch() { dispatches += 1; return { ok: true, stdout: JSON.stringify(validWorkbench()) }; },
       recordUatResult() { records += 1; throw new Error('test is no longer pending'); },
@@ -213,6 +215,271 @@ test('rejects invalid or stale mutations without refreshing the workbench', () =
     assert.equal(dispatches, 0);
   } finally {
     fs.rmSync(project, { recursive: true, force: true });
+  }
+});
+
+test('rejects mutations when no authorized workspace roots are configured', () => {
+  const project = tempDir();
+  try {
+    const handler = createHandler({ upstream: upstream() });
+    const result = request(handler, 'tools/call', {
+      name: 'gsd_record_uat_result',
+      arguments: {
+        project_path: project,
+        file_path: '01-UAT.md',
+        test_number: 1,
+        result: 'pass',
+      },
+    }).result;
+    assert.equal(result.isError, true);
+    assert.match(result.content[0].text, /no authorized workspace roots configured for mutation/);
+  } finally {
+    fs.rmSync(project, { recursive: true, force: true });
+  }
+});
+
+test('rejects mutations when project path is outside configured workspace roots', () => {
+  const projectA = tempDir();
+  const projectB = tempDir();
+  try {
+    const handler = createHandler({
+      allowedRoots: [projectA],
+      upstream: upstream(),
+    });
+    const result = request(handler, 'tools/call', {
+      name: 'gsd_record_uat_result',
+      arguments: {
+        project_path: projectB,
+        file_path: '01-UAT.md',
+        test_number: 1,
+        result: 'pass',
+      },
+    }).result;
+    assert.equal(result.isError, true);
+    assert.match(result.content[0].text, /not within an authorized workspace root/);
+  } finally {
+    fs.rmSync(projectA, { recursive: true, force: true });
+    fs.rmSync(projectB, { recursive: true, force: true });
+  }
+});
+
+test('rejects mutations when project path escapes authorized root via symlink', () => {
+  const root = tempDir();
+  const outside = tempDir();
+  try {
+    const escapeLink = path.join(root, 'escape-link');
+    fs.symlinkSync(outside, escapeLink);
+    const handler = createHandler({
+      allowedRoots: [root],
+      upstream: upstream(),
+    });
+    const result = request(handler, 'tools/call', {
+      name: 'gsd_record_uat_result',
+      arguments: {
+        project_path: escapeLink,
+        file_path: '01-UAT.md',
+        test_number: 1,
+        result: 'pass',
+      },
+    }).result;
+    assert.equal(result.isError, true);
+    assert.match(result.content[0].text, /Symlink escape: project_path .* resolves outside authorized workspace roots/);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+    fs.rmSync(outside, { recursive: true, force: true });
+  }
+});
+
+test('standard MCP roots negotiation emits roots/list on initialized and ingests response', () => {
+  const project = tempDir();
+  try {
+    const handler = createHandler({
+      upstream: upstream(),
+      dispatch() { return { ok: true, stdout: JSON.stringify(validWorkbench()) }; },
+      recordUatResult() {
+        return {
+          recorded: true,
+          file_path: '01-UAT.md',
+          test_number: 1,
+          result: 'pass',
+          status: 'complete',
+          next_test: null,
+        };
+      },
+    });
+    const rootsReq = handler({ jsonrpc: '2.0', method: 'notifications/initialized' });
+    assert.equal(rootsReq.method, 'roots/list');
+    assert.ok(rootsReq.id);
+
+    const ignored = handler({
+      jsonrpc: '2.0',
+      id: rootsReq.id,
+      result: { roots: [{ uri: 'file://' + project, name: 'test-project' }] },
+    });
+    assert.equal(ignored, null);
+
+    const result = request(handler, 'tools/call', {
+      name: 'gsd_record_uat_result',
+      arguments: {
+        project_path: project,
+        file_path: '01-UAT.md',
+        test_number: 1,
+        result: 'pass',
+      },
+    }).result;
+    assert.equal(result.isError, undefined);
+    assert.equal(result.structuredContent.mutation.status, 'complete');
+
+    const changedReq = handler({ jsonrpc: '2.0', method: 'notifications/roots/list_changed' });
+    handler({ jsonrpc: '2.0', id: changedReq.id, result: { roots: [] } });
+    const revoked = request(handler, 'tools/call', {
+      name: 'gsd_record_uat_result',
+      arguments: { project_path: project, file_path: '01-UAT.md', test_number: 1, result: 'pass' },
+    }).result;
+    assert.equal(revoked.isError, true);
+    assert.match(revoked.content[0].text, /no authorized workspace roots configured/);
+  } finally {
+    fs.rmSync(project, { recursive: true, force: true });
+  }
+});
+
+test('standard MCP roots negotiation over stdio stream authorizes mutation', async () => {
+  const project = tempDir();
+  try {
+    const handler = createHandler({
+      upstream: upstream(),
+      dispatch() { return { ok: true, stdout: JSON.stringify(validWorkbench()) }; },
+      recordUatResult() {
+        return {
+          recorded: true,
+          file_path: '01-UAT.md',
+          test_number: 1,
+          result: 'pass',
+          status: 'complete',
+          next_test: null,
+        };
+      },
+    });
+
+    const output = [];
+    const input = new Readable({ read() {} });
+
+    const serverPromise = runServer({
+      input,
+      output: {
+        write(chunk) {
+          output.push(chunk);
+          const lines = chunk.trim().split('\n');
+          for (const line of lines) {
+            if (!line.trim()) continue;
+            const msg = JSON.parse(line);
+            if (msg.method === 'roots/list') {
+              input.push(JSON.stringify({
+                jsonrpc: '2.0',
+                id: msg.id,
+                result: { roots: [{ uri: 'file://' + project }] },
+              }) + '\n');
+              input.push(JSON.stringify({
+                jsonrpc: '2.0',
+                id: 42,
+                method: 'tools/call',
+                params: {
+                  name: 'gsd_record_uat_result',
+                  arguments: {
+                    project_path: project,
+                    file_path: '01-UAT.md',
+                    test_number: 1,
+                    result: 'pass',
+                  },
+                },
+              }) + '\n');
+              input.push(null);
+            }
+          }
+          return true;
+        },
+      },
+      handler,
+    });
+
+    input.push(JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }) + '\n');
+    await serverPromise;
+
+    const responses = output.join('').trim().split('\n').map(JSON.parse);
+    const toolResp = responses.find((r) => r.id === 42);
+    assert.ok(toolResp);
+    assert.equal(toolResp.result.isError, undefined);
+    assert.equal(toolResp.result.structuredContent.mutation.status, 'complete');
+  } finally {
+    fs.rmSync(project, { recursive: true, force: true });
+  }
+});
+
+test('authorizes mutations when root is configured via GSD_ALLOWED_ROOTS fallback', () => {
+  const project = tempDir();
+  const originalEnv = process.env.GSD_ALLOWED_ROOTS;
+  try {
+    process.env.GSD_ALLOWED_ROOTS = project;
+    const handler = createHandler({
+      upstream: upstream(),
+      dispatch() { return { ok: true, stdout: JSON.stringify(validWorkbench()) }; },
+      recordUatResult() {
+        return {
+          recorded: true,
+          file_path: '01-UAT.md',
+          test_number: 1,
+          result: 'pass',
+          status: 'complete',
+          next_test: null,
+        };
+      },
+    });
+    const result = request(handler, 'tools/call', {
+      name: 'gsd_record_uat_result',
+      arguments: {
+        project_path: project,
+        file_path: '01-UAT.md',
+        test_number: 1,
+        result: 'pass',
+      },
+    }).result;
+    assert.equal(result.isError, undefined);
+    assert.equal(result.structuredContent.mutation.status, 'complete');
+  } finally {
+    if (originalEnv === undefined) delete process.env.GSD_ALLOWED_ROOTS;
+    else process.env.GSD_ALLOWED_ROOTS = originalEnv;
+    fs.rmSync(project, { recursive: true, force: true });
+  }
+});
+
+test('preserves read-only control-center and workbench behavior for projects outside configured roots', () => {
+  const projectA = tempDir();
+  const projectB = tempDir();
+  try {
+    const handler = createHandler({
+      allowedRoots: [projectA],
+      upstream: upstream(),
+      dispatch(input) {
+        if (input.subcommand === 'inspect') return { ok: true, stdout: JSON.stringify(validPlanning()) };
+        return { ok: true, stdout: JSON.stringify(validWorkbench()) };
+      },
+    });
+    const cc = request(handler, 'tools/call', {
+      name: 'gsd_control_center',
+      arguments: { project_path: projectB },
+    }).result;
+    assert.equal(cc.isError, undefined);
+    assert.equal(cc.structuredContent.project_path, fs.realpathSync(projectB));
+
+    const wb = request(handler, 'tools/call', {
+      name: 'gsd_uat_workbench',
+      arguments: { project_path: projectB },
+    }).result;
+    assert.equal(wb.isError, undefined);
+    assert.equal(wb.structuredContent.project_path, fs.realpathSync(projectB));
+  } finally {
+    fs.rmSync(projectA, { recursive: true, force: true });
+    fs.rmSync(projectB, { recursive: true, force: true });
   }
 });
 
