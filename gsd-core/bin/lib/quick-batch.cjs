@@ -402,6 +402,9 @@ function createBatch(cwd, itemsInput, options = {}) {
                 planned_files: (input.plannedFiles ?? []).map(shell_command_projection_cjs_1.posixNormalize),
                 directory: input.directory ?? null,
                 worktree: input.worktree ?? null,
+                dispatched_worktree: input.dispatchedWorktree ?? null,
+                dispatched_branch: input.dispatchedBranch ?? null,
+                dispatched_base: input.dispatchedBase ?? null,
                 wave: -1,
                 commit: null,
                 failure_reason: null,
@@ -496,6 +499,18 @@ function validateBatchSchema(parsed, batchId) {
         if (typeof it.worktree === 'string' && it.worktree !== '' && !node_fs_1.default.existsSync(it.worktree)) {
             return { ok: false, reason: `item ${it.quick_id} references a worktree that does not exist on disk: ${it.worktree}` };
         }
+        // #3677: dispatched_worktree/branch/base deliberately carry NO
+        // existence check (unlike `worktree` above) — they must stay readable
+        // after a legitimate post-merge worktree removal.
+        if (it.dispatched_worktree !== null && it.dispatched_worktree !== undefined && typeof it.dispatched_worktree !== 'string') {
+            return { ok: false, reason: `item ${it.quick_id} has an invalid dispatched_worktree field` };
+        }
+        if (it.dispatched_branch !== null && it.dispatched_branch !== undefined && typeof it.dispatched_branch !== 'string') {
+            return { ok: false, reason: `item ${it.quick_id} has an invalid dispatched_branch field` };
+        }
+        if (it.dispatched_base !== null && it.dispatched_base !== undefined && typeof it.dispatched_base !== 'string') {
+            return { ok: false, reason: `item ${it.quick_id} has an invalid dispatched_base field` };
+        }
         if (it.wave !== undefined && (typeof it.wave !== 'number' || !Number.isInteger(it.wave) || it.wave < 0)) {
             return { ok: false, reason: `item ${it.quick_id} has an invalid wave field` };
         }
@@ -514,6 +529,9 @@ function validateBatchSchema(parsed, batchId) {
             planned_files: it.planned_files,
             directory: typeof it.directory === 'string' ? it.directory : null,
             worktree: typeof it.worktree === 'string' ? it.worktree : null,
+            dispatched_worktree: typeof it.dispatched_worktree === 'string' ? it.dispatched_worktree : null,
+            dispatched_branch: typeof it.dispatched_branch === 'string' ? it.dispatched_branch : null,
+            dispatched_base: typeof it.dispatched_base === 'string' ? it.dispatched_base : null,
             wave: typeof it.wave === 'number' ? it.wave : -1,
             commit: typeof it.commit === 'string' ? it.commit : null,
             failure_reason: typeof it.failure_reason === 'string' ? it.failure_reason : null,
@@ -686,6 +704,20 @@ function updateBatchItems(cwd, batchId, updates, options = {}) {
                 }
                 if (update.plannedFiles !== undefined) {
                     item.planned_files = update.plannedFiles.map(shell_command_projection_cjs_1.posixNormalize);
+                }
+                // #3677: durable worktree-recovery fields — persisted verbatim, no
+                // existence/shape validation (opaque identifiers this module never
+                // interprets, same as `commit`). Explicit `null` clears a field
+                // (post-merge); `undefined` leaves it untouched, same convention
+                // `dependsOn`/`plannedFiles` above already use.
+                if (update.dispatchedWorktree !== undefined) {
+                    item.dispatched_worktree = update.dispatchedWorktree;
+                }
+                if (update.dispatchedBranch !== undefined) {
+                    item.dispatched_branch = update.dispatchedBranch;
+                }
+                if (update.dispatchedBase !== undefined) {
+                    item.dispatched_base = update.dispatchedBase;
                 }
             }
             const wavesResult = computeWaves(toWaveInput(manifest.items));

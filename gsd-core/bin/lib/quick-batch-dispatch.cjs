@@ -183,6 +183,35 @@ function routeMergeOutcome(outcome) {
     }
 }
 /**
+ * Crash-window duplicate-dispatch guard
+ * (`.gsd/phase/feat-3677-quick-batch-hardening-acceptance/40-design.md` §1).
+ * `quick-batch resume`'s `eligible` is purely status/dependency-derived —
+ * it has no awareness that an item already finished executing (a real
+ * commit, `SUMMARY.md` written) before a coordinator crash left
+ * `BATCH.json` at `pending` (the STATE.md-row crash-window detection
+ * inside `resumeBatch` only fires once Step 9 has run). This mirrors the
+ * file-existence exclusion `planner-wave.md` already applies one layer
+ * earlier for `PLAN.md`, extracted as its own pure decision (rather than
+ * left as workflow prose only) so it is independently testable: given the
+ * eligible ids for this round and the subset the CALLER has already
+ * determined finished executing, splits them into ids safe to spawn now
+ * and ids that must never be re-dispatched.
+ */
+function filterAlreadyExecuted(eligibleIds, executedIds) {
+    const executedSet = executedIds instanceof Set ? executedIds : new Set(executedIds);
+    const spawnEligible = [];
+    const alreadyExecuted = [];
+    for (const id of eligibleIds) {
+        if (executedSet.has(id)) {
+            alreadyExecuted.push(id);
+        }
+        else {
+            spawnEligible.push(id);
+        }
+    }
+    return { spawnEligible, alreadyExecuted };
+}
+/**
  * Build one `worktree.cleanup-wave` manifest entry for an item, deriving
  * `files_modified`/`declared_deletions` FRESH from the item's own PLAN.md via
  * the existing `parsePlanDocument` (never from `BATCH.json`'s `planned_files`
@@ -216,5 +245,6 @@ const quickBatchDispatch = {
     routeVerificationOutcome,
     routeMergeOutcome,
     buildCleanupManifestEntry,
+    filterAlreadyExecuted,
 };
 module.exports = quickBatchDispatch;

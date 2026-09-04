@@ -84,6 +84,7 @@ function routeQuickBatchCommand({ args, cwd, raw, error, _quickBatch, _quickBatc
             'effective-concurrency',
             'merge-eligible',
             'spawn-plan',
+            'filter-executed',
             'verification-routing',
             'merge-routing',
             'cleanup-entry',
@@ -191,6 +192,21 @@ function routeQuickBatchCommand({ args, cwd, raw, error, _quickBatch, _quickBatc
                     refused = refusedResult.value;
                 }
                 output(dispatch.computeSpawnPlan({ eligibleIds: eligibleResult.value, capacity, currentInFlight, refused }), raw);
+            },
+            // `quick-batch filter-executed --eligible <json-array> --executed <json-array>`
+            // Crash-window duplicate-dispatch guard (#3677): splits this round's
+            // eligible ids into `spawnEligible` (safe to dispatch) and
+            // `alreadyExecuted` (SUMMARY.md already exists on disk — caller
+            // determines this via its own filesystem check; NEVER re-dispatch
+            // these — merge-wave.md's own on-disk criterion picks them up).
+            'filter-executed': () => {
+                const eligibleResult = parseJsonArg(argValue(args, '--eligible'), '--eligible');
+                if (!eligibleResult.ok)
+                    return makeInvalidArgs('--eligible', eligibleResult.reason, ERROR_REASON.USAGE);
+                const executedResult = parseJsonArg(argValue(args, '--executed'), '--executed');
+                if (!executedResult.ok)
+                    return makeInvalidArgs('--executed', executedResult.reason, ERROR_REASON.USAGE);
+                output(dispatch.filterAlreadyExecuted(eligibleResult.value, executedResult.value), raw);
             },
             // `quick-batch verification-routing --status <passed|gaps_found|human_needed>`
             'verification-routing': () => {
