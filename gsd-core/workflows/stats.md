@@ -1,3 +1,5 @@
+@{{GSD_PLUGIN_ROOT}}/gsd-core/references/response-language-directive.md
+
 <purpose>
 Display comprehensive project statistics including phases, plans, requirements, git metrics, and timeline.
 </purpose>

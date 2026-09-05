@@ -1,3 +1,5 @@
+@{{GSD_PLUGIN_ROOT}}/gsd-core/references/response-language-directive.md
+
 <purpose>
 Insert a decimal phase for urgent work discovered mid-milestone between existing integer phases. Uses decimal numbering (72.1, 72.2, etc.) to preserve the logical sequence of planned phases while accommodating urgent insertions without renumbering the entire roadmap.
 </purpose>

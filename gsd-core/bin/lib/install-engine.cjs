@@ -986,6 +986,7 @@ function installRuntimeArtifacts(runtime, configDir, scope, resolvedProfile, res
         // generic layout-driven loop below, mirroring the bespoke install path that
         // previously lived inline in bin/install.js.
         const behaviors = _hostBehaviors(runtime);
+        const projectDir = scope === 'global' ? process.cwd() : configDir;
         if (behaviors.combinedFamilyInstall) {
             // #2329: combined-family runtimes (OpenCode/Kilo) bypass
             // _runLegacyInstallMigrations below entirely (early return), so their
@@ -994,7 +995,7 @@ function installRuntimeArtifacts(runtime, configDir, scope, resolvedProfile, res
             // #2874 design row 2: this early return must ALSO return an executed
             // plan — installOpencodeFamilyArtifacts reports what it wrote, so a
             // whole runtime family returning undefined is no longer a hole.
-            return installOpencodeFamilyArtifacts(runtime, configDir, scope, resolvedProfile, resolveAttribution, behaviors, capabilityRegistry);
+            return installOpencodeFamilyArtifacts(runtime, configDir, scope, resolvedProfile, resolveAttribution, behaviors, capabilityRegistry, projectDir);
         }
         // Legacy cleanup before layout-driven writes
         _runLegacyInstallMigrations(runtime, configDir, scope);
@@ -1012,6 +1013,7 @@ function installRuntimeArtifacts(runtime, configDir, scope, resolvedProfile, res
             homedir: () => node_os_1.default.homedir(),
             platform: process.platform,
             resolveAttribution,
+            projectDir,
         });
         const cleanupDirs = planResult.ok ? planResult.plan.cleanupDirs : planResult.cleanupDirs;
         // #2874 row 1/4/5: per-kind executed-plan entries, appended only as the
@@ -1388,10 +1390,11 @@ function installOpencodeFamilySkills(runtime, targetDir, rawCommandsDir, pathPre
  * @param capabilityRegistry - #2362: optional composed capability registry, threaded
  *   straight through to resolveRuntimeArtifactLayout (unused by the agents kind today,
  *   but kept for signature parity with the skills/commands siblings on this call tree)
+ * @param projectDir - project/config discovery root, distinct from the artifact destination
  * @returns `{ sourceDir, destDir }` describing what was written, or `null` when the
  *   runtime's layout declares no `agents` kind.
  */
-function installAgentsKindStandalone(runtime, targetDir, scope, resolvedProfile, pathPrefix, resolveAttribution = () => undefined, capabilityRegistry) {
+function installAgentsKindStandalone(runtime, targetDir, scope, resolvedProfile, pathPrefix, resolveAttribution = () => undefined, capabilityRegistry, projectDir) {
     const layout = runtimeArtifactLayout.resolveRuntimeArtifactLayout(runtime, targetDir, scope, capabilityRegistry);
     const agentsKindEntry = layout.kinds.find((k) => k.kind === 'agents');
     if (!agentsKindEntry)
@@ -1408,7 +1411,7 @@ function installAgentsKindStandalone(runtime, targetDir, scope, resolvedProfile,
     // for the generic layout-driven loop (runtime-artifact-install-plan.cts) —
     // targetDir IS the install root the inline agent loop called `targetDir`.
     const attribution = resolveAttribution ? resolveAttribution(runtime) : undefined;
-    const agentCtx = { runtime, pathPrefix, attribution, targetDir };
+    const agentCtx = { runtime, pathPrefix, attribution, targetDir, projectDir: projectDir ?? targetDir };
     const stagedDir = agentsKindEntry.stage(resolvedProfile, agentCtx);
     const stagedAgentFiles = installFs().existsSync(stagedDir)
         ? installFs().readdirSync(stagedDir).filter((f) => f.endsWith('.md'))
@@ -1670,12 +1673,13 @@ function _migrateLegacyOpencodeCommandDir(runtime, configDir, behaviors) {
  *   installOpencodeFamilySkills so an installed third-party capability skill
  *   materializes for this combined-family (OpenCode/Kilo) install path too.
  *   Absent -> no third-party skills staged (fail closed).
+ * @param projectDir - project/config discovery root, distinct from configDir for global installs
  * @returns #2874 design row 2: an executed-plan value, same top-level shape
  *   (`runtime`/`scope`/`kinds`/`cleanup`/`postSteps`) as the generic
  *   `installRuntimeArtifacts` branch — this was the one early return a
  *   `void`-shaped hole survived unnoticed in.
  */
-function installOpencodeFamilyArtifacts(runtime, configDir, scope, resolvedProfile, resolveAttribution = () => undefined, behaviors = {}, capabilityRegistry) {
+function installOpencodeFamilyArtifacts(runtime, configDir, scope, resolvedProfile, resolveAttribution = () => undefined, behaviors = {}, capabilityRegistry, projectDir) {
     // #2870: `scope` keeps its exported required `string` signature (no
     // signature change). It is always the `installRuntimeArtifacts`-forwarded
     // 'global' | 'local' literal produced by bin/install.js's scope-resolution
@@ -1711,7 +1715,7 @@ function installOpencodeFamilyArtifacts(runtime, configDir, scope, resolvedProfi
     // generic layout-driven loop uses (see installAgentsKindStandalone's own
     // doc). A `null` result means this runtime's layout declares no `agents`
     // kind — nothing written, nothing reported (no #1879-F15 inert claim).
-    const agentsResult = installAgentsKindStandalone(runtime, configDir, scope, resolvedProfile, pathPrefix, resolveAttribution, capabilityRegistry);
+    const agentsResult = installAgentsKindStandalone(runtime, configDir, scope, resolvedProfile, pathPrefix, resolveAttribution, capabilityRegistry, projectDir);
     _installNativePluginIfDeclared(runtime, configDir, behaviors, src);
     // #2874 design row 2: report what this combined-family install wrote,
     // mirroring the generic branch's top-level shape. `cleanup` is `[]` — this

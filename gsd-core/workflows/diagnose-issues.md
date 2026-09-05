@@ -1,3 +1,5 @@
+@{{GSD_PLUGIN_ROOT}}/gsd-core/references/response-language-directive.md
+
 <purpose>
 Orchestrate parallel debug agents to investigate UAT gaps and find root causes.
 

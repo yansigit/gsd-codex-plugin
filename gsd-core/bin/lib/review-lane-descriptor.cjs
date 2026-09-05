@@ -120,6 +120,8 @@ exports.REVIEWER_LANES = Object.freeze([
         requiresBinaries: [],
         promptBudgetKey: 'review.max_prompt_tokens_per_reviewer.gemini',
         modelConfigKey: 'review.models.gemini',
+        effortConfigKey: null,
+        defaultEffort: null,
         handler: null,
     },
     {
@@ -153,6 +155,8 @@ exports.REVIEWER_LANES = Object.freeze([
         requiresBinaries: [],
         promptBudgetKey: 'review.max_prompt_tokens_per_reviewer.claude',
         modelConfigKey: 'review.models.claude',
+        effortConfigKey: 'review.effort.claude',
+        defaultEffort: 'high',
         handler: null,
     },
     {
@@ -182,6 +186,8 @@ exports.REVIEWER_LANES = Object.freeze([
         requiresBinaries: [],
         promptBudgetKey: 'review.max_prompt_tokens_per_reviewer.codex',
         modelConfigKey: 'review.models.codex',
+        effortConfigKey: 'review.effort.codex',
+        defaultEffort: 'high',
         handler: null,
     },
     {
@@ -209,6 +215,8 @@ exports.REVIEWER_LANES = Object.freeze([
         promptBudgetKey: 'review.max_prompt_tokens_per_reviewer.coderabbit',
         // Accepts no model flag at all (review.md:367) — not merely "none configured".
         modelConfigKey: null,
+        effortConfigKey: null,
+        defaultEffort: null,
         handler: null,
     },
     {
@@ -236,6 +244,8 @@ exports.REVIEWER_LANES = Object.freeze([
         requiresBinaries: [],
         promptBudgetKey: 'review.max_prompt_tokens_per_reviewer.opencode',
         modelConfigKey: 'review.models.opencode',
+        effortConfigKey: 'review.effort.opencode',
+        defaultEffort: 'high',
         // Phase 5b (#2799): was `null`. The review is REBUILT from assistant `text` parts; a plain
         // stdout copy would write the raw JSON envelope as the review (#1936). See LaneHandler.
         handler: 'opencode',
@@ -260,6 +270,8 @@ exports.REVIEWER_LANES = Object.freeze([
         requiresBinaries: [],
         promptBudgetKey: 'review.max_prompt_tokens_per_reviewer.qwen',
         modelConfigKey: null,
+        effortConfigKey: null,
+        defaultEffort: null,
         handler: null,
     },
     {
@@ -287,6 +299,8 @@ exports.REVIEWER_LANES = Object.freeze([
         promptBudgetKey: 'review.max_prompt_tokens_per_reviewer.cursor',
         // #3653: cursor-agent exposes --model (204 selectable models); wired the same as codex.
         modelConfigKey: 'review.models.cursor',
+        effortConfigKey: null,
+        defaultEffort: null,
         handler: null,
     },
     {
@@ -322,6 +336,8 @@ exports.REVIEWER_LANES = Object.freeze([
         // NOT `review.models.antigravity` — the shipped key is `review.models.agy` (review.md:291) and
         // Phase 4 federated it under that name. This lane is why the key is declared, not derived.
         modelConfigKey: 'review.models.agy',
+        effortConfigKey: null,
+        defaultEffort: null,
         handler: 'antigravity',
     },
     {
@@ -352,6 +368,8 @@ exports.REVIEWER_LANES = Object.freeze([
         requiresBinaries: [],
         promptBudgetKey: 'review.max_prompt_tokens_per_reviewer.ollama',
         modelConfigKey: 'review.models.ollama',
+        effortConfigKey: null,
+        defaultEffort: null,
         handler: 'openai-compatible',
     },
     {
@@ -380,6 +398,8 @@ exports.REVIEWER_LANES = Object.freeze([
         requiresBinaries: [],
         promptBudgetKey: 'review.max_prompt_tokens_per_reviewer.lm_studio',
         modelConfigKey: 'review.models.lm_studio',
+        effortConfigKey: null,
+        defaultEffort: null,
         handler: 'openai-compatible',
     },
     {
@@ -408,6 +428,8 @@ exports.REVIEWER_LANES = Object.freeze([
         requiresBinaries: [],
         promptBudgetKey: 'review.max_prompt_tokens_per_reviewer.llama_cpp',
         modelConfigKey: 'review.models.llama_cpp',
+        effortConfigKey: null,
+        defaultEffort: null,
         handler: 'openai-compatible',
     },
     {
@@ -454,6 +476,8 @@ exports.REVIEWER_LANES = Object.freeze([
         requiresBinaries: [],
         promptBudgetKey: 'review.max_prompt_tokens_per_reviewer.kimi-code',
         modelConfigKey: 'review.models.kimi-code',
+        effortConfigKey: null,
+        defaultEffort: null,
         handler: null,
     },
 ].map((lane) => Object.freeze(lane)));

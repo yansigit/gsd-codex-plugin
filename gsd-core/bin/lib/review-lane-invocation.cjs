@@ -26,6 +26,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.LANE_UNAVAILABLE = void 0;
 exports.configString = configString;
 exports.normalizeHost = normalizeHost;
+exports.resolveLaneEffort = resolveLaneEffort;
 exports.resolveTimeoutMs = resolveTimeoutMs;
 exports.nativeTimeoutToken = nativeTimeoutToken;
 exports.isEmptyReview = isEmptyReview;
@@ -124,17 +125,53 @@ function normalizeHost(raw) {
     const pathPart = u.pathname.replace(/\/+$/, '');
     return `${scheme}//${host}${port ? `:${port}` : ''}${pathPart}`;
 }
+/** Levels GSD's effort axis accepts (#3533). `inherit` selects the no-argument path. */
+const EFFORT_LEVELS = new Set([
+    'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'inherit',
+]);
 /**
- * Resolve a lane's outer wall-clock timeout in milliseconds (#3274).
+ * Resolve one lane's reasoning effort from REVIEW configuration (#4255).
  *
- * `timeoutConfigKey` resolves in SECONDS — the user-facing convention this repo already uses for
- * timeout-shaped config keys (`workflow.cross_ai_timeout`, `graphify.build_timeout`), distinct from
- * the internal millisecond unit `timeoutFloorMs` carries. Anything that is not a positive finite
- * number is treated as unset and falls back to `floorMs`, never coerced: a wrong-typed config value
- * silently becoming a wrong-but-plausible timeout is worse than falling back cleanly. `0` and
- * negative values are deliberately treated as unset too — a timeout has no legitimate zero or
- * negative value, so no second sentinel (unlike the prompt-budget keys, which use -1) is needed.
+ * Resolution order, highest first:
+ *   1. `lane.effortConfigKey` — the per-lane review effort the operator set
+ *   2. `lane.defaultEffort` — the lane's declared review default (`high` for prompt-fed,
+ *      source-grounded lanes)
+ *   3. nothing — no effort argument is emitted and the reviewer CLI's own configuration decides
+ *
+ * A configured `'inherit'` selects (3) explicitly. An unrecognized level is REFUSED rather than
+ * passed to the host: it falls back to the lane default, because forwarding a typo would render an
+ * argument the CLI rejects and kill the lane outright.
+ *
+ * What this function deliberately does NOT do is consult any agent's execution settings. Before
+ * #4255 the level came from `gsd-plan-checker`'s installed frontmatter through a hardcoded agent
+ * id, so every lane ran at a fast structural verifier's `low` — and, because the rendered argument
+ * is a CLI config override, it silently beat the effort the operator had configured for that CLI
+ * itself. A value inherited from an unrelated agent is worse than no value at all, which is why
+ * (3) emits nothing rather than falling back to some other agent's number.
+ *
+ * `renderArgv` is injected (the host table and the ADR-2481 surface negotiation live in
+ * `model-catalog` / `commands`, above this module's layer) so this stays a pure function of its
+ * inputs and the golden lane table can assert it without a spawn.
  */
+function resolveLaneEffort(lane, configGet, renderArgv) {
+    const none = { argv: [], value: null, source: 'none' };
+    if (!lane || typeof lane !== 'object')
+        return none;
+    const configured = lane.effortConfigKey ? configString(configGet(lane.effortConfigKey)) : null;
+    const valid = configured !== null && EFFORT_LEVELS.has(configured) ? configured : null;
+    const level = valid ?? configString(lane.defaultEffort);
+    if (level === null || level === 'inherit')
+        return none;
+    const rendered = renderArgv(lane.slug, level);
+    const argv = (rendered.argv ?? []).filter((a) => typeof a === 'string' && a !== '');
+    if (argv.length === 0)
+        return none;
+    return {
+        argv,
+        value: configString(rendered.value) ?? level,
+        source: valid !== null ? 'config' : 'lane-default',
+    };
+}
 function resolveTimeoutMs(timeoutConfigKey, floorMs, configGet) {
     const configuredSeconds = typeof timeoutConfigKey === 'string' ? configGet(timeoutConfigKey) : undefined;
     return typeof configuredSeconds === 'number' && Number.isFinite(configuredSeconds) && configuredSeconds > 0

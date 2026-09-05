@@ -509,6 +509,11 @@ const SUMMARY_ARTIFACT_SUFFIX = 'SUMMARY.md';
  * (a trailing lone backslash, or an octal escape with fewer than three
  * digits) never throws — it degrades to treating the character literally, so
  * a single bad path can never take down the whole cleanup wave.
+ *
+ * Exported (#4081) so the codebase-drift gate's `--name-status` parser can
+ * decode the identical C-quoted form before classifying paths — the gate's
+ * `execGit` call sets no `core.quotepath` config, so it receives the same
+ * quoting and must decode it with the same single owner of this seam.
  */
 function decodeGitQuotedPath(raw) {
     if (raw.length < 2 || !raw.startsWith('"') || !raw.endsWith('"'))
@@ -1986,6 +1991,9 @@ function pruneOrphanedWorktrees(repoRoot, deps = {}) {
     return [];
 }
 module.exports = {
+    // Re-exported for the codebase-drift gate's --name-status parser (#4081):
+    // single owner of git C-quoted-path decoding.
+    decodeGitQuotedPath,
     resolveWorktreeContext,
     resolveWorktreeLinkage,
     parseWorktreePorcelain,

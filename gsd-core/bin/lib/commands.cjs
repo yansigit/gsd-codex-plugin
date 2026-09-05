@@ -625,6 +625,11 @@ function cmdResolveExecution(cwd, agentType, raw, opts) {
  * applies here exactly as everywhere else: an unknown host, a missing axis, or the
  * `undocumented` sentinel all degrade to the safe floor rather than being trusted.
  * Never throws — a lookup failure yields `'none'`, which renders no argument.
+ *
+ * On the module's export surface for #4255: the reviewer-lane effort resolver renders a lane's own
+ * configured level through this same negotiation, so a lane can never emit an argument for a host
+ * whose negotiated surface does not accept one. One negotiation, both channels — a second copy in
+ * the lane path is exactly how the two would drift.
  */
 function effortSurfaceForHost(cwd, host) {
     void cwd;
@@ -3139,6 +3144,7 @@ function cmdCommitDocsGuardDisable(cwd, raw) {
     output({ disabled: true, action: 'removed', path: hookPath }, raw, 'disabled');
 }
 module.exports = {
+    effortSurfaceForHost,
     groupFilesBySubrepo,
     determinePhaseStatus,
     foldPhaseStatus,

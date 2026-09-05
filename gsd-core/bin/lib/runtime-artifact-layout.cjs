@@ -405,11 +405,11 @@ function kimiAgentsKind(destSubpath, prefix, configDir) {
         kind: 'kimi-agents',
         destSubpath,
         prefix,
-        stage: (resolved) => {
+        stage: (resolved, agentCtx) => {
             const buildKimiAgentArtifacts = conversionExports['buildKimiAgentArtifacts'];
             // #2995: compose at staging (identity converter) so the readFileSync below
             // sees marker-free content — same single composing stager as agentsKind.
-            const stagedAgents = stageAgentsForRuntimeWithConverter(findAgentsSourceRoot(configDir), resolved, (content) => content);
+            const stagedAgents = stageAgentsForRuntimeWithConverter(findAgentsSourceRoot(configDir), resolved, (content) => content, false, agentCtx);
             const subagents = [];
             if (installFs().existsSync(stagedAgents)) {
                 for (const entry of installFs().readdirSync(stagedAgents, { withFileTypes: true })) {

@@ -1,3 +1,5 @@
+@{{GSD_PLUGIN_ROOT}}/gsd-core/references/response-language-directive.md
+
 <purpose>
 Create a clean branch for pull requests by filtering .planning/ paths out of the
 cherry-picked history. Two modes, selected by the `planning.pr_strict` config key:

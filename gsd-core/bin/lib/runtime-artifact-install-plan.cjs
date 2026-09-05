@@ -51,7 +51,7 @@ function addCleanupDir(cleanupDirs, stagedDir, rewrittenDir) {
     return sourceDir;
 }
 function createRuntimeArtifactInstallPlan(args) {
-    const { layout, resolvedProfile, homedir, platform, resolveAttribution, deps = {}, } = args;
+    const { layout, resolvedProfile, homedir, platform, resolveAttribution, projectDir, deps = {}, } = args;
     const conversionExports = _require('./runtime-artifact-conversion.cjs');
     const rewriteStagedSkillBodies = deps.rewriteStagedSkillBodies ?? conversionExports.rewriteStagedSkillBodies;
     const rewriteStagedCommandBodies = deps.rewriteStagedCommandBodies ?? conversionExports.rewriteStagedCommandBodies;
@@ -88,11 +88,17 @@ function createRuntimeArtifactInstallPlan(args) {
     const attribution = resolveAttribution ? resolveAttribution(layout.runtime) : undefined;
     // #2875 Part 2 (row I1): layout.configDir IS the install root the inline
     // agent loop called `targetDir` — same value, same resolution.
-    const agentCtx = { runtime: layout.runtime, pathPrefix, attribution, targetDir: layout.configDir };
+    const agentCtx = {
+        runtime: layout.runtime,
+        pathPrefix,
+        attribution,
+        targetDir: layout.configDir,
+        projectDir: projectDir ?? layout.configDir,
+    };
     for (const kind of layout.kinds) {
         let stagedDir;
         try {
-            if (kind.kind === 'agents') {
+            if (kind.kind === 'agents' || kind.kind === 'kimi-agents') {
                 // ADR-1235 §1: pass agentCtx so stageAgentsForRuntimeWithConverter applies
                 // the full inline-loop order: pathRewrites → attribution → converter → normalize.
                 // The cross-cutting is now PRE-converter (inside staging), not POST.
@@ -115,7 +121,7 @@ function createRuntimeArtifactInstallPlan(args) {
                 const rewrittenDir = rewriteStagedSkillBodies(stagedDir, rewriteOpts);
                 sourceDir = addCleanupDir(cleanupDirs, stagedDir, rewrittenDir);
             }
-            // agents kind: cross-cutting already applied INSIDE kind.stage() via agentCtx.
+            // Agent kinds: cross-cutting already applied INSIDE kind.stage() via agentCtx.
             // No POST-step needed. sourceDir stays as stagedDir.
         }
         catch (err) {

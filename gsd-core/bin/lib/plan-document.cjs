@@ -143,6 +143,7 @@ function parseXmlTasks(content) {
                 acceptanceCriteria: [],
                 done: null,
                 trackerId: null,
+                tdd: null,
             };
         }
         return {
@@ -154,6 +155,7 @@ function parseXmlTasks(content) {
             acceptanceCriteria: splitCriteria(elementBody(block, 'acceptance_criteria')),
             done: collapseWhitespace(elementBody(block, 'done')),
             trackerId: tagAttribute(openTag, 'tracker-id'),
+            tdd: tagAttribute(openTag, 'tdd'),
         };
     });
 }
@@ -172,6 +174,7 @@ function parseMarkdownTasks(content) {
         acceptanceCriteria: [],
         done: null,
         trackerId: null,
+        tdd: null,
     }));
 }
 // ─── Objective ────────────────────────────────────────────────────────────────
@@ -247,8 +250,15 @@ function parsePlanDocument(content, planPath = '') {
         const hintStr = String(fmAgentHint).trim();
         agentHint = hintStr !== '' ? hintStr : null;
     }
+    let planType = null;
+    const fmType = fm['type'];
+    if (fmType !== undefined) {
+        // eslint-disable-next-line @typescript-eslint/no-base-to-string -- FrontmatterValue scalar-to-string
+        planType = String(fmType);
+    }
     return {
         objective: extractObjective(content) || fm['objective'] || null,
+        type: planType,
         declaredWave,
         dependsOn,
         autonomous,

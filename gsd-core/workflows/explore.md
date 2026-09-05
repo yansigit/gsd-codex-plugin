@@ -1,3 +1,5 @@
+@{{GSD_PLUGIN_ROOT}}/gsd-core/references/response-language-directive.md
+
 <purpose>
 Socratic ideation workflow. Guides the developer through exploring an idea via probing questions,
 offers mid-conversation research when useful, then routes crystallized outputs to GSD artifacts.

@@ -1,3 +1,5 @@
+@{{GSD_PLUGIN_ROOT}}/gsd-core/references/response-language-directive.md
+
 # sync-skills — Cross-Runtime GSD Skill Sync
 
 **Command:** `/gsd-sync-skills`

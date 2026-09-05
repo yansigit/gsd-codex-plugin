@@ -1,3 +1,5 @@
+@{{GSD_PLUGIN_ROOT}}/gsd-core/references/response-language-directive.md
+
 # Add Backlog Item Workflow
 
 Invoked by `/gsd:capture --backlog` (`commands/gsd/capture.md`).

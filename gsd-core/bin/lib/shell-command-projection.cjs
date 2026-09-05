@@ -242,6 +242,8 @@ const MANAGED_HOOK_BASENAMES_BY_SURFACE = {
         'gsd-write-guard.js',
         'gsd-agent-isolation-guard.js',
         'gsd-worktree-path-guard.js',
+        // #4221: secret-file read guard (Read|Grep|Bash).
+        'gsd-secret-read-guard.js',
     ]),
     'codex-toml': new Set([
         'gsd-check-update.js',
@@ -269,6 +271,8 @@ const MANAGED_HOOK_COMMAND_BASENAMES_BY_SURFACE = {
         'gsd-write-guard.js',
         'gsd-agent-isolation-guard.js',
         'gsd-worktree-path-guard.js',
+        // #4221: secret-file read guard (Read|Grep|Bash).
+        'gsd-secret-read-guard.js',
     ]),
     'codex-toml': new Set([
         'gsd-check-update.js',

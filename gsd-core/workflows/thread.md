@@ -1,3 +1,5 @@
+@{{GSD_PLUGIN_ROOT}}/gsd-core/references/response-language-directive.md
+
 # Thread Workflow
 
 Invoked by `/gsd:thread` (`commands/gsd/thread.md`).
