@@ -15,6 +15,7 @@ const node_os_1 = __importDefault(require("node:os"));
 const shell_command_projection_cjs_1 = require("./shell-command-projection.cjs");
 const clock_cjs_1 = require("./clock.cjs");
 const pattern_cjs_1 = require("./pattern.cjs");
+const markdown_sectionizer_cjs_1 = require("./markdown-sectionizer.cjs");
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- io.cjs is an export= CommonJS module
 const io = require("./io.cjs");
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- config-loader.cjs is an export= CommonJS module
@@ -1898,13 +1899,108 @@ function cmdInitPhaseOp(cwd, phase, raw) {
     }
     output(withProjectRoot(cwd, result), raw);
 }
+// #2618: bullet-cap and title-floor for renderPendingTodosMarkdown below.
+// 240 matches the bound already vetted by maintainer review on the prior
+// attempt at this issue (PR #2662) — re-deriving a different number would be
+// pure bikeshedding, not a correctness improvement. See
+// .gsd/phase/feat-2618-compact-todo-pointers/40-design.md.
+const PENDING_TODO_BULLET_MAX_CHARS = 240;
+const PENDING_TODO_TITLE_FLOOR = 15;
+const PENDING_TODO_AREA_FLOOR = 3;
+function sanitizePendingTodoInline(value) {
+    // Defensive: the regex captures that populate title/area/needs can only
+    // ever match a single line, so this is belt-and-suspenders against any
+    // future non-regex-sourced input, not a reachable case today.
+    return value.replace(/[\r\n]+/g, ' ').trim();
+}
+function truncatePendingTodoText(value, maxLen) {
+    if (value.length <= maxLen)
+        return value;
+    if (maxLen <= 1)
+        return value.slice(0, Math.max(0, maxLen));
+    return `${value.slice(0, maxLen - 1)}…`;
+}
+/**
+ * #2618: pure renderer for STATE.md's "### Pending Todos" section BODY (not
+ * the heading). One bullet per todo, each capped at
+ * PENDING_TODO_BULLET_MAX_CHARS. `gsd-core/workflows/add-todo.md` and
+ * `check-todos.md` splice this string in verbatim instead of free-hand
+ * editing STATE.md — see the design doc for why this is real, unit-tested
+ * code rather than a prose algorithm (DEFECT.GENERATIVE-FIX: a prose
+ * algorithm duplicated as a test oracle is exactly the divergence class
+ * this avoids).
+ */
+function renderPendingTodosMarkdown(todos) {
+    if (!Array.isArray(todos) || todos.length === 0) {
+        return 'None yet.';
+    }
+    return todos.map((todo) => renderPendingTodoBullet(todo)).join('\n');
+}
+function pendingTodoFieldAsString(value, fallback) {
+    return typeof value === 'string' && value.length > 0 ? value : fallback;
+}
+function renderPendingTodoBullet(todo) {
+    const date = sanitizePendingTodoInline(pendingTodoFieldAsString(todo['created'], 'unknown'));
+    let area = sanitizePendingTodoInline(pendingTodoFieldAsString(todo['area'], 'general'));
+    let title = sanitizePendingTodoInline(pendingTodoFieldAsString(todo['title'], 'Untitled'));
+    // Strip trailing "." so the fixed "Needs ....` template below never
+    // produces a doubled period when the source text already ended in one.
+    let needs = typeof todo['needs'] === 'string'
+        ? sanitizePendingTodoInline(todo['needs']).replace(/\.+$/, '')
+        : '';
+    const link = `[todo file](${pendingTodoFieldAsString(todo['path'], '')})`;
+    const assemble = () => {
+        const needsClause = needs ? ` — Needs ${needs}.` : '';
+        return `- [${date}] [${area}] ${title} — ${link}${needsClause}`;
+    };
+    let line = assemble();
+    if (line.length <= PENDING_TODO_BULLET_MAX_CHARS)
+        return line;
+    // 1) Drop the needs clause entirely first — date/area/title/link untouched.
+    needs = '';
+    line = assemble();
+    if (line.length <= PENDING_TODO_BULLET_MAX_CHARS)
+        return line;
+    // 2) Shorten the title next, down to a floor — date/area/link untouched.
+    const titleOverage = line.length - PENDING_TODO_BULLET_MAX_CHARS;
+    const targetTitleLen = Math.max(PENDING_TODO_TITLE_FLOOR, title.length - titleOverage);
+    if (targetTitleLen < title.length) {
+        title = truncatePendingTodoText(title, targetTitleLen);
+        line = assemble();
+    }
+    if (line.length <= PENDING_TODO_BULLET_MAX_CHARS)
+        return line;
+    // 3) Shorten area as a last resort — date and the markdown link are never
+    // altered (link correctness > strict cap; see design doc "Known limits").
+    const areaOverage = line.length - PENDING_TODO_BULLET_MAX_CHARS;
+    const targetAreaLen = Math.max(PENDING_TODO_AREA_FLOOR, area.length - areaOverage);
+    if (targetAreaLen < area.length) {
+        area = truncatePendingTodoText(area, targetAreaLen);
+        line = assemble();
+    }
+    return line;
+}
 function cmdInitTodos(cwd, area, raw) {
     const config = loadConfig(cwd);
     const pendingDir = node_path_1.default.join(planningDir(cwd), 'todos', 'pending');
     let count = 0;
     const todos = [];
+    // #2618: distinct from "genuinely zero pending todos" — false only when
+    // readdirSync itself failed for a reason OTHER than the directory simply
+    // not existing yet (ENOENT), mirroring the ENOENT-vs-other-errno split
+    // already used above in this file (#3885, ADR-3473 §8.5). Without this,
+    // a real I/O/permission error on the pending dir would look identical to
+    // "no pending todos" and could wipe an existing, non-empty Pending Todos
+    // section in STATE.md on refresh — the fail-safe requirement for #2618.
+    let pendingReadOk = true;
     try {
-        const files = node_fs_1.default.readdirSync(pendingDir).filter((f) => f.endsWith('.md'));
+        // #2618: sorted so pending_todos_markdown's bullet order is stable across
+        // runs — readdirSync's order is filesystem-dependent, not contractually
+        // stable, and an unstable order would reorder every bullet on an
+        // unrelated re-render, turning a one-line git diff into a full-section
+        // rewrite (must-have #3). Filenames are `YYYY-MM-DD-slug.md`, so this
+        // also yields a sensible chronological order as a side effect.
+        const files = node_fs_1.default.readdirSync(pendingDir).filter((f) => f.endsWith('.md')).sort();
         for (const file of files) {
             const content = (0, shell_command_projection_cjs_1.platformReadSync)(node_path_1.default.join(pendingDir, file));
             if (content === null)
@@ -1916,6 +2012,21 @@ function cmdInitTodos(cwd, area, raw) {
                 // #2337: kept in parity with cmdListTodos — surface severity when
                 // present, omit the key entirely for todos with no severity line.
                 const severityMatch = content.match(/^severity:\s*(.+)$/m);
+                // #2618: first non-empty line of the `## Solution` body, used as the
+                // bullet's "Needs ..." clause. "TBD" (the create_file template's own
+                // placeholder for an unresolved solution) renders no clause at all
+                // rather than the useless literal "Needs TBD.".
+                const solutionSection = (0, markdown_sectionizer_cjs_1.collectSection)(content, (h) => h.level === 2 && h.text.trim() === 'Solution');
+                let needs;
+                if (solutionSection) {
+                    const firstLine = solutionSection.body
+                        .split('\n')
+                        .map((l) => l.trim())
+                        .find((l) => l.length > 0);
+                    if (firstLine && firstLine.toUpperCase() !== 'TBD') {
+                        needs = firstLine;
+                    }
+                }
                 const todoArea = areaMatch ? areaMatch[1].trim() : 'general';
                 if (area && todoArea !== area)
                     continue;
@@ -1928,6 +2039,7 @@ function cmdInitTodos(cwd, area, raw) {
                     // #2376: absolute — see comment on phase_dir in cmdInitExecutePhase.
                     path: toPosixPath(node_path_1.default.join(planningDir(cwd), 'todos', 'pending', file)),
                     ...(severityMatch ? { severity: severityMatch[1].trim() } : {}),
+                    ...(needs ? { needs } : {}),
                 });
             }
             catch {
@@ -1935,8 +2047,11 @@ function cmdInitTodos(cwd, area, raw) {
             }
         }
     }
-    catch {
-        /* intentionally empty */
+    catch (err) {
+        const code = err?.code;
+        if (code !== 'ENOENT') {
+            pendingReadOk = false;
+        }
     }
     const result = {
         commit_docs: config.commit_docs,
@@ -1951,6 +2066,12 @@ function cmdInitTodos(cwd, area, raw) {
         planning_exists: node_fs_1.default.existsSync(planningDir(cwd)),
         todos_dir_exists: node_fs_1.default.existsSync(node_path_1.default.join(planningDir(cwd), 'todos')),
         pending_dir_exists: node_fs_1.default.existsSync(node_path_1.default.join(planningDir(cwd), 'todos', 'pending')),
+        // #2618: see PENDING_TODO_BULLET_MAX_CHARS comment / design doc. Consumed
+        // by add-todo.md / check-todos.md's update_state step; omitted entirely
+        // (rather than emitted with possibly-wrong data) when pendingReadOk is
+        // false, so the workflow's fail-safe check can key off field presence.
+        pending_read_ok: pendingReadOk,
+        ...(pendingReadOk ? { pending_todos_markdown: renderPendingTodosMarkdown(todos) } : {}),
     };
     output(withProjectRoot(cwd, result), raw);
 }
@@ -3563,4 +3684,5 @@ module.exports = {
     cmdAgentSkills,
     buildSkillManifest,
     cmdSkillManifest,
+    renderPendingTodosMarkdown,
 };

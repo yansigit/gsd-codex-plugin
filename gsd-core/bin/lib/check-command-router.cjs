@@ -272,9 +272,34 @@ function loadDecisionExtraction(contextPath) {
         outcome: extraction.outcome,
     };
 }
+/**
+ * `check decision-coverage-plan` — blocking plan-phase decision-coverage gate
+ * (#2492, #1365 fail-loud, #2770 empty-arg fail-closed).
+ *
+ * Invocation (the context path may be supplied EITHER way; #4130 follow-up):
+ *   gsd_run check decision-coverage-plan <phase-dir> <context-path>   (positional, the workflow caller's form)
+ *   gsd_run check decision-coverage-plan --context <path> [<phase-dir>]
+ *
+ * `--context <path>` follows the sibling flag convention (`check predicate`,
+ * #2008): `--flag value` pairs parsed by the shared partitionPredicateArgs
+ * pass, the flag WINNING over a same-purpose positional when both appear,
+ * and a valueless `--context` counting as no context at all (it falls
+ * through to the #2770 caller-error branch, not to the "CONTEXT.md missing"
+ * green skip). The positional form keeps working unchanged — no sibling
+ * check verb deprecates positionals and the plan-phase workflow passes them.
+ */
 function cmdDecisionCoveragePlan(projectDir, args, raw) {
-    const phaseDir = args[2] ? resolvePath(args[2], projectDir) : '';
-    const contextArg = args[3];
+    // args[0]='check', args[1]=subcommand — partition the REST so flag tokens
+    // and their values never land in a positional slot.
+    const { flags, positionals } = partitionPredicateArgs(args.slice(2));
+    const phaseDir = positionals[0] ? resolvePath(positionals[0], projectDir) : '';
+    // A VALUELESS `--context` stays a bare token in the positionals (sibling
+    // parser semantics); it must not then be read as the context PATH — a
+    // `--`-prefixed "path" is a caller mistake, and #2770's law says a missing
+    // context argument fails CLOSED, never a silent "CONTEXT.md missing" green
+    // skip. So only a non-flag positional may serve as the context.
+    const positionalContext = positionals[1] && !positionals[1].startsWith('--') ? positionals[1] : '';
+    const contextArg = flags['context'] ?? positionalContext ?? '';
     const contextPath = contextArg ? resolvePath(contextArg, projectDir) : '';
     if (!gateEnabled(projectDir)) {
         output({ passed: true, skipped: true, reason: 'workflow.context_coverage_gate is false', total: 0, covered: 0, uncovered: [], message: 'Decision coverage gate disabled by config.' }, raw, undefined);
@@ -309,12 +334,15 @@ function cmdDecisionCoveragePlan(projectDir, args, raw) {
             uncovered: [],
             message: partialParse
                 ? 'Decision coverage gate: decisions could not be fully parsed — one or more ' +
-                    '`- **D-NN ...**` bullets appear malformed (missing `:` or ` — ` separator). ' +
-                    'Fix the bullet format so all D-NN decisions can be read before re-running the gate.'
+                    '`- **D-NN ...**` bullets appear malformed (missing `:` or ` — ` separator, or a phase ' +
+                    'prefix that is not a digit run, e.g. `D4x-01`). Fix the bullet format so all decisions ' +
+                    'can be read before re-running the gate.'
                 : 'Decision coverage gate: could not parse decisions — possible format mismatch. ' +
                     'The CONTEXT.md appears to be decision-shaped (has a <decisions> block, a decisions heading, ' +
-                    'or D- tokens) but no D-NN bullets could be extracted. Check the formatting of the decisions ' +
-                    'block and ensure bullets follow the `- **D-NN:** text` or `- **D-NN — title** body` form.',
+                    'or D- tokens) but no decision bullets could be extracted. Check the formatting of the decisions ' +
+                    'block and ensure bullets follow the `- **D-NN:** text`, `- **D4-NN:** text` (phase-prefixed), ' +
+                    'or `- **D-NN — title** body` form. An ID grammar the parser does not support (e.g. `DEC-01`) ' +
+                    'also lands here.',
         }, raw, undefined);
         return;
     }
@@ -411,9 +439,11 @@ function cmdDecisionCoverageVerify(projectDir, args, raw) {
             not_honored: [],
             message: partialParse
                 ? 'Decision coverage verify (warning): decisions could not be fully parsed — one or more ' +
-                    '`- **D-NN ...**` bullets appear malformed. Fix the bullet format in the CONTEXT.md decisions block.'
+                    '`- **D-NN ...**` bullets appear malformed (missing `:` or ` — ` separator, or a phase ' +
+                    'prefix that is not a digit run). Fix the bullet format in the CONTEXT.md decisions block.'
                 : 'Decision coverage verify (warning): could not parse decisions — possible format mismatch. ' +
-                    'Check the formatting of the CONTEXT.md decisions block.',
+                    'Check the formatting of the CONTEXT.md decisions block (accepted forms: `- **D-NN:** text`, ' +
+                    '`- **D4-NN:** text` (phase-prefixed), `- **D-NN — title** body`).',
         }, raw, undefined);
         return;
     }
@@ -1101,23 +1131,42 @@ function buildPredicateDeps() {
         }
     };
 }
-/** Parse `--flag value` pairs from an args array into a map (last write wins). */
-function parsePredicateFlags(args) {
-    const out = {};
+/**
+ * Split an args array into `--flag value` pairs and the leftover positional
+ * tokens, in ONE pass, with the semantics `check predicate` established
+ * (#2008): a `--flag` followed by a non-`--` token consumes it as the value
+ * (last write wins); a `--flag` with no value stays a bare token and moves to
+ * the positionals; everything else is positional. `parsePredicateFlags` is
+ * the flags half of this same pass — there is exactly one parser, so the
+ * flag-taking check verbs cannot drift apart (#4130 follow-up: `check
+ * decision-coverage-plan --context <path>` shares it).
+ */
+function partitionPredicateArgs(args) {
+    const flags = {};
+    const positionals = [];
     for (let i = 0; i < args.length; i++) {
         const a = args[i];
         if (typeof a !== 'string')
             continue;
-        if (!a.startsWith('--'))
+        if (!a.startsWith('--')) {
+            positionals.push(a);
             continue;
+        }
         const key = a.slice(2);
         const next = args[i + 1];
         if (key.length > 0 && typeof next === 'string' && !next.startsWith('--')) {
-            out[key] = next;
+            flags[key] = next;
             i++;
         }
+        else {
+            positionals.push(a);
+        }
     }
-    return out;
+    return { flags, positionals };
+}
+/** Parse `--flag value` pairs from an args array into a map (last write wins). */
+function parsePredicateFlags(args) {
+    return partitionPredicateArgs(args).flags;
 }
 /**
  * `check predicate` — generic evaluator for capability gate `check.predicate`
@@ -1578,7 +1627,9 @@ function routeCheckCommand({ args, cwd, raw }) {
         // this for any gate whose `check` carries a `predicate` (instead of a `query`),
         // passing the predicate object as --predicate '<json>'. NOTE: unlike the
         // `check.query` subcommands above (which take positional phase args), this
-        // subcommand parses --flag value pairs.
+        // subcommand is flag-driven. `decision-coverage-plan` above now ALSO accepts
+        // `--context <path>` (its positionals still work) — both share
+        // partitionPredicateArgs, the one flag parser.
         cmdCheckPredicate(cwd, args, raw);
         return;
     }
@@ -1606,6 +1657,7 @@ module.exports = {
     cmdCheckPredicate,
     buildPredicateDeps,
     parsePredicateFlags,
+    partitionPredicateArgs,
     // Fail-closed phase-scope reader for the api-coverage gate — exported for
     // in-process failure-injection tests (#2365 review).
     readPhaseScope,

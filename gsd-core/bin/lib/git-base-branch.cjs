@@ -122,6 +122,7 @@ function readEffectiveGitConfig(cwd, deps) {
                     config = {
                         base_branch: _readGitKey(normalized, 'base_branch'),
                         protected_branches: _readGitNested(normalized, 'protected_branches'),
+                        allow_default_branch_commits: _readGitNested(normalized, 'allow_default_branch_commits'),
                     };
                 }
             }
@@ -161,7 +162,10 @@ function readEffectiveGitConfig(cwd, deps) {
         // Not a list at all — contributes no names, but is still a misconfiguration.
         rejectedProtectedBranches.push(renderRejected(rawProtectedBranches));
     }
-    return { baseBranch, protectedBranches, rejectedProtectedBranches };
+    // #3819: nested-only read (mirrors protected_branches — new key, no legacy
+    // flat form, so a top-level spelling must not become an undocumented alias).
+    const allowDefaultBranchCommits = config.allow_default_branch_commits === true;
+    return { baseBranch, protectedBranches, rejectedProtectedBranches, allowDefaultBranchCommits };
 }
 /**
  * Try `git symbolic-ref --short refs/remotes/origin/HEAD` (no network).
@@ -302,13 +306,17 @@ function resolveBaseBranch(cwd, deps) {
 function resolveProtectedBranchStatus(cwd, currentBranch, deps) {
     const effectiveConfig = readEffectiveGitConfig(cwd, deps);
     const { branch: baseBranch, verified } = resolveBaseBranchDiagnosticsWithConfig(cwd, effectiveConfig.baseBranch, deps);
-    const protectedBranches = [...new Set([baseBranch, ...effectiveConfig.protectedBranches])];
+    const protectedBranches = [...new Set([
+            ...(effectiveConfig.allowDefaultBranchCommits ? [] : [baseBranch]),
+            ...effectiveConfig.protectedBranches,
+        ])];
     return {
         baseBranch,
         protectedBranches,
         rejectedProtectedBranches: effectiveConfig.rejectedProtectedBranches,
         isProtected: protectedBranches.includes(currentBranch),
         verified,
+        allowDefaultBranchCommits: effectiveConfig.allowDefaultBranchCommits,
     };
 }
 /**

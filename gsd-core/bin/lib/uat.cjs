@@ -278,8 +278,26 @@ function cmdAuditUat(cwd, raw) {
         parse_gap_files: results.filter((r) => r.parse_gap).length,
         by_category: {},
         by_phase: {},
+        // #3783: additive segmentation so a consumer reads one field instead of
+        // re-deriving the `archived_milestone` filter itself. Deliberately does
+        // NOT touch total_items/parse_gap_files — see the parse_gap_files
+        // comment above for why splitting THAT counter by archive status was
+        // tried and reverted; this is a purely additive pair of new keys.
+        current_milestone: { files: 0, items: 0 },
+        archived: { files: 0, items: 0, by_milestone: {} },
     };
     for (const r of results) {
+        const resultItemCount = r.items.length;
+        if (r.archived_milestone) {
+            summary.archived.files++;
+            summary.archived.items += resultItemCount;
+            summary.archived.by_milestone[r.archived_milestone] =
+                (summary.archived.by_milestone[r.archived_milestone] || 0) + resultItemCount;
+        }
+        else {
+            summary.current_milestone.files++;
+            summary.current_milestone.items += resultItemCount;
+        }
         // Deliberate (#3707 follow-up MINOR): this seeds a `by_phase` key at 0
         // even for a parse-gap-only phase whose `items` is empty — do NOT "tidy"
         // this away as dead code. The 0-valued key is itself the cue that this

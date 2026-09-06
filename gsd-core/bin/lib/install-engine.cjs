@@ -55,6 +55,148 @@ const { processAttribution } = runtimeArtifactConversion;
 // resolveRuntimeArtifactLayout: accessed via module ref (not destructured) so
 // test stubs that monkeypatch the module's exports are seen at call time.
 const { getDirName } = runtimeNamePolicy;
+function withInstallerPackageSource(configDir, fn) {
+    // Reuse the existing compatibility-marker contract through the existing fs
+    // seam. The marker exists only in this synchronous call tree: no disk state,
+    // layout export, stage argument, or caller-settable authority flag is added.
+    const markerPath = node_path_1.default.resolve(configDir, '.gsd-source');
+    const packageCommandsRoot = runtimeArtifactLayout.findInstallSourceRoot();
+    const markerBytes = Buffer.from(packageCommandsRoot + '\n');
+    const base = installFs();
+    const overlay = {
+        ...base,
+        existsSync: (candidate) => node_path_1.default.resolve(candidate) === markerPath || base.existsSync(candidate),
+        lstatSync: (candidate) => node_path_1.default.resolve(candidate) === markerPath
+            ? { isFile: () => true, isDirectory: () => false, isSymbolicLink: () => false }
+            : base.lstatSync(candidate),
+        readFileSync: ((candidate, encoding) => {
+            if (node_path_1.default.resolve(candidate) !== markerPath) {
+                return encoding ? base.readFileSync(candidate, encoding) : base.readFileSync(candidate);
+            }
+            return encoding ? markerBytes.toString(encoding) : Buffer.from(markerBytes);
+        }),
+    };
+    return withInstallFs(overlay, fn);
+}
+function isRuntimeSurfaceSourceUnavailable(message) {
+    return message.startsWith('Runtime Surface source is unavailable or incomplete for ') &&
+        message.endsWith('install or upgrade gsd-core before materializing this surface.');
+}
+function assertCorpusTreeHasNoSymlinks(root) {
+    if (!installFs().existsSync(root))
+        return;
+    const stat = installFs().lstatSync(root);
+    if (stat.isSymbolicLink()) {
+        throw new Error(`Runtime Surface corpus path is a symlink: ${root}`);
+    }
+    if (!stat.isDirectory())
+        return;
+    for (const name of installFs().readdirSync(root)) {
+        assertCorpusTreeHasNoSymlinks(node_path_1.default.join(root, name));
+    }
+}
+function previousOwnedCorpusFiles(configDir, prefix) {
+    try {
+        const files = installerMigrations.readInstallManifest(configDir).files;
+        return Object.keys(files)
+            .filter((entry) => entry.startsWith(prefix))
+            .map((entry) => entry.slice(prefix.length))
+            .filter((entry) => entry !== '' && !node_path_1.default.posix.isAbsolute(entry) && !entry.split('/').some((part) => part === '' || part === '.' || part === '..'));
+    }
+    catch {
+        // An absent or unreadable prior manifest provides no ownership evidence.
+        // Preserve existing entries rather than guessing that they are stale.
+        return [];
+    }
+}
+function pruneEmptyCorpusParents(start, stop) {
+    let current = node_path_1.default.dirname(start);
+    while (current !== stop && current.startsWith(stop + node_path_1.default.sep)) {
+        if (installFs().readdirSync(current).length > 0)
+            return;
+        installFs().rmdirSync(current);
+        current = node_path_1.default.dirname(current);
+    }
+}
+function syncRuntimeSurfaceCorpus(source, destination, configDir, manifestPrefix) {
+    if (hasExistingSymlinkBetween(node_path_1.default.resolve(configDir), destination, { allowOptInFollow: isSymlinkedDestOptIn() })) {
+        throw new Error(`syncRuntimeSurfaceCorpus: destination "${destination}" contains a symlink the install root "${configDir}" does not trust — refusing to write.`);
+    }
+    assertCorpusTreeHasNoSymlinks(destination);
+    // Remove only paths the previous manifest proves GSD owned and which the
+    // executing package no longer ships. Unknown neighbouring files survive.
+    for (const relative of previousOwnedCorpusFiles(configDir, manifestPrefix)) {
+        const sourceEntry = node_path_1.default.join(source, ...relative.split('/'));
+        let sourceIsFile = false;
+        try {
+            sourceIsFile = installFs().lstatSync(sourceEntry).isFile();
+        }
+        catch {
+            sourceIsFile = false;
+        }
+        if (sourceIsFile)
+            continue;
+        const target = node_path_1.default.join(destination, ...relative.split('/'));
+        if (!installFs().existsSync(target))
+            continue;
+        const targetStat = installFs().lstatSync(target);
+        if (!targetStat.isFile()) {
+            throw new Error(`Runtime Surface corpus ownership conflict at ${target}`);
+        }
+        installFs().rmSync(target, { force: true });
+        pruneEmptyCorpusParents(target, destination);
+    }
+    installFs().mkdirSync(node_path_1.default.dirname(destination), { recursive: true });
+    installFs().cpSync(source, destination, { recursive: true });
+}
+/**
+ * Provision the raw, installation-owned input needed to re-materialize a
+ * global Runtime Surface after the executing package tree disappears.
+ *
+ * The corpus deliberately lives below the already-installed `gsd-core/`
+ * tree and is accepted only after its manifest ownership and hashes verify.
+ * The compatibility marker does not replace that installed-corpus authority.
+ */
+function provisionRuntimeSurfaceCorpus(layout, configDir, scope) {
+    const required = new Set();
+    if ((0, install_scope_cjs_1.isGlobalScope)(scope)) {
+        for (const kind of layout.kinds) {
+            if (kind.kind === 'commands' || kind.kind === 'skills')
+                required.add('commands');
+            if (kind.kind === 'agents' || kind.kind === 'kimi-agents')
+                required.add('agents');
+        }
+    }
+    if (required.size === 0)
+        return;
+    const corpusRoot = node_path_1.default.join(configDir, 'gsd-core');
+    if (required.has('commands')) {
+        const source = runtimeArtifactLayout.findInstallSourceRoot();
+        const destination = node_path_1.default.join(corpusRoot, 'commands', 'gsd');
+        syncRuntimeSurfaceCorpus(source, destination, configDir, 'gsd-core/commands/gsd/');
+    }
+    if (required.has('agents')) {
+        const source = node_path_1.default.join(executingPackageRoot(), 'agents');
+        const destination = node_path_1.default.join(corpusRoot, 'agents');
+        syncRuntimeSurfaceCorpus(source, destination, configDir, 'gsd-core/agents/');
+    }
+    const markerFile = _hostBehaviors(layout.runtime).sourceMarkerFile;
+    if (typeof markerFile === 'string' && markerFile !== '' && required.has('commands')) {
+        try {
+            const markerPath = runtimeArtifactInstallPlan.assertDestWithinConfigHome(configDir, markerFile);
+            if (hasExistingSymlinkBetween(node_path_1.default.resolve(configDir), markerPath, { allowOptInFollow: isSymlinkedDestOptIn() })) {
+                throw new Error(`compatibility marker "${markerPath}" contains an untrusted symlink`);
+            }
+            installFs().writeFileSync(markerPath, node_path_1.default.join(corpusRoot, 'commands', 'gsd') + '\n', 'utf8');
+        }
+        catch {
+            // The existing installer marker writer owns the user-facing warning and
+            // keeps marker failure non-fatal. The installed corpus remains usable
+            // without the compatibility marker.
+        }
+    }
+}
+function executingPackageRoot() { return node_path_1.default.dirname(node_path_1.default.dirname(runtimeArtifactLayout.findInstallSourceRoot())); }
 // ---------------------------------------------------------------------------
 // USER_OWNED_ARTIFACTS
 // ---------------------------------------------------------------------------
@@ -977,6 +1119,7 @@ function _runLegacyUninstallCleanup(runtime, configDir, scope = 'global') {
  */
 function installRuntimeArtifacts(runtime, configDir, scope, resolvedProfile, resolveAttribution = () => undefined, capabilityRegistry, deps = {}) {
     return withInstallFs(deps.fs, () => {
+        const layout = runtimeArtifactLayout.resolveRuntimeArtifactLayout(runtime, configDir, scope, capabilityRegistry);
         // A removed descriptor kind is no longer visited by the layout loop, so it
         // cannot prune its own previous output. Clean manifest-proven retired files
         // before materializing the current layout (#2644).
@@ -995,17 +1138,24 @@ function installRuntimeArtifacts(runtime, configDir, scope, resolvedProfile, res
             // #2874 design row 2: this early return must ALSO return an executed
             // plan — installOpencodeFamilyArtifacts reports what it wrote, so a
             // whole runtime family returning undefined is no longer a hole.
-            return installOpencodeFamilyArtifacts(runtime, configDir, scope, resolvedProfile, resolveAttribution, behaviors, capabilityRegistry, projectDir);
+            // An injected filesystem supplies its own hermetic corpus fixture. The
+            // real installer is the authority that refreshes package bytes into the
+            // durable installed corpus; attempting that cross-filesystem copy through
+            // an in-memory destination adapter would read from the wrong filesystem.
+            if (!deps.fs)
+                provisionRuntimeSurfaceCorpus(layout, configDir, scope);
+            return installOpencodeFamilyArtifacts(runtime, configDir, scope, resolvedProfile, resolveAttribution, behaviors, capabilityRegistry, deps.packageRoot, projectDir);
         }
         // Legacy cleanup before layout-driven writes
         _runLegacyInstallMigrations(runtime, configDir, scope);
-        const layout = runtimeArtifactLayout.resolveRuntimeArtifactLayout(runtime, configDir, scope, capabilityRegistry);
+        if (!deps.fs)
+            provisionRuntimeSurfaceCorpus(layout, configDir, scope);
         // #3712: a global `home` override escapes the sandboxed configDir. Refuse to
         // execute when a test run would land that escape in the developer's real home.
         testHomeGuard.assertTestHomeSandboxed('installRuntimeArtifacts', runtime, layout?.kinds, {
             os: deps.os, env: deps.env,
         });
-        const planResult = runtimeArtifactInstallPlan.createRuntimeArtifactInstallPlan({
+        const createPlan = () => runtimeArtifactInstallPlan.createRuntimeArtifactInstallPlan({
             // `Layout` is structurally identical across the layout/install-plan .cjs
             // modules but nominally distinct to tsc (untyped .cjs boundary) — bridge it.
             layout: layout,
@@ -1015,6 +1165,14 @@ function installRuntimeArtifacts(runtime, configDir, scope, resolvedProfile, res
             resolveAttribution,
             projectDir,
         });
+        let planResult = createPlan();
+        if (scope === 'global' &&
+            !planResult.ok &&
+            planResult.kind === 'stage_failed' &&
+            planResult.cleanupDirs.length === 0 &&
+            isRuntimeSurfaceSourceUnavailable(planResult.message)) {
+            planResult = withInstallerPackageSource(configDir, createPlan);
+        }
         const cleanupDirs = planResult.ok ? planResult.plan.cleanupDirs : planResult.cleanupDirs;
         // #2874 row 1/4/5: per-kind executed-plan entries, appended only as the
         // loop below actually finishes writing each kind — a kind that throws
@@ -1178,8 +1336,10 @@ function installRuntimeArtifacts(runtime, configDir, scope, resolvedProfile, res
         // is safe even when configDir has no .gsd-source marker (artifactLayout: []).
         let nativePluginInstalled = false;
         if (behaviors.nativePlugin) {
-            const commandsGsdDir = runtimeArtifactLayout.findInstallSourceRoot(configDir);
-            const src = node_path_1.default.dirname(node_path_1.default.dirname(commandsGsdDir));
+            // Native plugin sources live only in the executing package, never in the
+            // durable Runtime Surface corpus. Do not derive this package root from a
+            // config-scoped provider that may now correctly resolve installed input.
+            const src = deps.packageRoot ?? executingPackageRoot();
             _installNativePluginIfDeclared(runtime, configDir, behaviors, src);
             nativePluginInstalled = true;
         }
@@ -1396,7 +1556,7 @@ function installOpencodeFamilySkills(runtime, targetDir, rawCommandsDir, pathPre
  */
 function installAgentsKindStandalone(runtime, targetDir, scope, resolvedProfile, pathPrefix, resolveAttribution = () => undefined, capabilityRegistry, projectDir) {
     const layout = runtimeArtifactLayout.resolveRuntimeArtifactLayout(runtime, targetDir, scope, capabilityRegistry);
-    const agentsKindEntry = layout.kinds.find((k) => k.kind === 'agents');
+    const agentsKindEntry = layout.kinds.find((kind) => kind.kind === 'agents');
     if (!agentsKindEntry)
         return null;
     // #3712: this writer selects `agentsKindEntry.home` over targetDir below and then
@@ -1412,7 +1572,15 @@ function installAgentsKindStandalone(runtime, targetDir, scope, resolvedProfile,
     // targetDir IS the install root the inline agent loop called `targetDir`.
     const attribution = resolveAttribution ? resolveAttribution(runtime) : undefined;
     const agentCtx = { runtime, pathPrefix, attribution, targetDir, projectDir: projectDir ?? targetDir };
-    const stagedDir = agentsKindEntry.stage(resolvedProfile, agentCtx);
+    let stagedDir;
+    try {
+        stagedDir = agentsKindEntry.stage(resolvedProfile, agentCtx);
+    }
+    catch (err) {
+        if (scope !== 'global' || !isRuntimeSurfaceSourceUnavailable(err.message))
+            throw err;
+        stagedDir = withInstallerPackageSource(targetDir, () => agentsKindEntry.stage(resolvedProfile, agentCtx));
+    }
     const stagedAgentFiles = installFs().existsSync(stagedDir)
         ? installFs().readdirSync(stagedDir).filter((f) => f.endsWith('.md'))
         : [];
@@ -1679,7 +1847,7 @@ function _migrateLegacyOpencodeCommandDir(runtime, configDir, behaviors) {
  *   `installRuntimeArtifacts` branch — this was the one early return a
  *   `void`-shaped hole survived unnoticed in.
  */
-function installOpencodeFamilyArtifacts(runtime, configDir, scope, resolvedProfile, resolveAttribution = () => undefined, behaviors = {}, capabilityRegistry, projectDir) {
+function installOpencodeFamilyArtifacts(runtime, configDir, scope, resolvedProfile, resolveAttribution = () => undefined, behaviors = {}, capabilityRegistry, packageRoot, projectDir) {
     // #2870: `scope` keeps its exported required `string` signature (no
     // signature change). It is always the `installRuntimeArtifacts`-forwarded
     // 'global' | 'local' literal produced by bin/install.js's scope-resolution
@@ -1692,7 +1860,7 @@ function installOpencodeFamilyArtifacts(runtime, configDir, scope, resolvedProfi
     // into stageSkillsForProfile/stageSkillsForRuntimeAsSkills. The repo/package
     // root (needed below for the native plugin source) is two levels up.
     const commandsGsdDir = runtimeArtifactLayout.findInstallSourceRoot(configDir);
-    const src = node_path_1.default.dirname(node_path_1.default.dirname(commandsGsdDir));
+    const src = packageRoot ?? executingPackageRoot();
     const rawCommandsDir = installProfiles.stageSkillsForProfile(commandsGsdDir, resolvedProfile);
     const pathPrefix = runtimeArtifactConversion._computePathPrefix({
         isGlobal,

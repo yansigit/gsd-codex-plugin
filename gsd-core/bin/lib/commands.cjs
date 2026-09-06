@@ -2654,7 +2654,34 @@ function cmdTodoMatchPhase(cwd, phase, raw) {
     matches.sort((a, b) => b.score - a.score);
     output({ phase, matches, todo_count: todos.length }, raw, undefined);
 }
-function cmdTodoComplete(cwd, filename, raw) {
+// #4096: upsert completion keys INSIDE the leading frontmatter block. Never a
+// bare prefix line above the opening `---` (that displaces the fence to line 2
+// and breaks every fence-locating reader). A file with no well-formed block
+// (absent, or an unterminated opening fence) gains a complete block.
+function upsertTodoCompletionFields(content, today) {
+    const lines = content.split('\n');
+    const fields = [`completed: ${today}`, 'status: completed'];
+    const hasOpeningFence = lines[0] !== undefined && lines[0].trim() === '---';
+    const closeIdx = hasOpeningFence ? lines.findIndex((l, i) => i > 0 && l.trim() === '---') : -1;
+    if (!hasOpeningFence || closeIdx === -1) {
+        // No parseable frontmatter: wrap the whole content in a complete block
+        // rather than prefixing bare keys (#4096 fix 2).
+        return `---\n${fields.join('\n')}\n---\n\n${content}`;
+    }
+    const block = lines.slice(1, closeIdx);
+    for (const field of fields) {
+        const key = `${field.slice(0, field.indexOf(':'))}:`;
+        const idx = block.findIndex(l => l.startsWith(key));
+        if (idx === -1) {
+            block.push(field);
+        }
+        else {
+            block[idx] = field;
+        }
+    }
+    return [...lines.slice(0, 1), ...block, ...lines.slice(closeIdx)].join('\n');
+}
+function cmdTodoComplete(cwd, filename, options, raw) {
     if (!filename) {
         error('filename required for todo complete');
     }
@@ -2664,13 +2691,30 @@ function cmdTodoComplete(cwd, filename, raw) {
     if (!node_fs_1.default.existsSync(sourcePath)) {
         error(`Todo not found: ${filename}`);
     }
-    // Ensure completed directory exists
-    (0, shell_command_projection_cjs_1.platformEnsureDir)(completedDir);
-    // Read, add completion timestamp, move
-    let content = node_fs_1.default.readFileSync(sourcePath, 'utf-8');
+    const content = node_fs_1.default.readFileSync(sourcePath, 'utf-8');
     const today = clock_cjs_1.realClock.localToday();
-    content = `completed: ${today}\n` + content;
-    (0, shell_command_projection_cjs_1.platformWriteSync)(node_path_1.default.join(completedDir, filename), content);
+    // #4096: --dry-run mirrors `milestone complete --dry-run` (#2118) — every
+    // existence check above still runs, nothing below mutates, and the payload
+    // is preview-shaped (`dry_run`/`would_*`), never `completed: true`.
+    if (options.dryRun) {
+        output({
+            dry_run: true,
+            would_complete: true,
+            file: filename,
+            date: today,
+            would_move: {
+                source: node_path_1.default.relative(cwd, sourcePath).split(node_path_1.default.sep).join('/'),
+                target: node_path_1.default.relative(cwd, node_path_1.default.join(completedDir, filename)).split(node_path_1.default.sep).join('/'),
+            },
+            would_set: { completed: today, status: 'completed' },
+        }, raw);
+        return;
+    }
+    // Ensure completed directory exists (only on the real run — a dry run
+    // creates nothing).
+    (0, shell_command_projection_cjs_1.platformEnsureDir)(completedDir);
+    const completedContent = upsertTodoCompletionFields(content, today);
+    (0, shell_command_projection_cjs_1.platformWriteSync)(node_path_1.default.join(completedDir, filename), completedContent);
     node_fs_1.default.unlinkSync(sourcePath);
     output({ completed: true, file: filename, date: today }, raw, 'completed');
 }

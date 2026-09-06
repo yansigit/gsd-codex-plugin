@@ -49,6 +49,12 @@ const { findPhaseInternal, getArchivedPhaseDirs, listMilestonePhaseDirs } = phas
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- roadmap-parser.cjs is an export= CommonJS module
 const roadmapParserMod = require("./roadmap-parser.cjs");
 const { stripShippedMilestones, extractCurrentMilestone, currentMilestoneRawRanges, withPhaseSection, findMilestoneScopeHeadingLines } = roadmapParserMod;
+// #4129: the single owner of "count the ROADMAP's milestone Complete rows"
+// (pure computation, no I/O — no cycle on this path) for the intent-first
+// progress counters the phase-complete transaction passes downstream.
+// eslint-disable-next-line @typescript-eslint/no-require-imports -- phase-lifecycle.cjs is an export= CommonJS module
+const phaseLifecycleMod = require("./phase-lifecycle.cjs");
+const { deriveProgressFromRoadmap: deriveProgressFromRoadmapForIntent, clampPercent: clampPercentForIntent } = phaseLifecycleMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- planning-workspace.cjs is an export= CommonJS module
 const planningWorkspace = require("./planning-workspace.cjs");
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- frontmatter.cjs is an export= CommonJS module
@@ -3767,14 +3773,53 @@ function cmdPhaseComplete(cwd, phaseNum, raw) {
                 const fmBody = frontmatterMod.stripFrontmatter(stateContent);
                 const bodyHasPhaseField = stateExtractField(fmBody, 'Current Phase') != null ||
                     stateExtractField(fmBody, 'Phase') != null;
-                const authoritativeFm = nextPhaseDisplayName
-                    ? bodyHasPhaseField || !nextPhaseNum
-                        ? { current_phase_name: nextPhaseDisplayName }
-                        : {
-                            current_phase: String(nextPhaseNum),
-                            current_phase_name: nextPhaseDisplayName,
+                // #4129: the POST-completion progress counters, derived from the very
+                // ROADMAP this transaction just mutated (still in memory — it hits disk
+                // only at writePlanningFileSet, AFTER this content was assembled).
+                // buildStateFrontmatter's disk scan inside syncAndPreserveStateMd
+                // reads the PRE-completion ROADMAP (and any stale-dated sibling
+                // verification), so without this intent the persisted counter failed
+                // to increment on the completing phase's own transaction. Routed
+                // through the #2736 authoritativeFm seam's object direction: the
+                // pre-preservation merge makes it the derived truth the ratchet
+                // compares, and the post-preservation re-assert (completedOnlyRaise)
+                // is a floor no preservation branch can drop below. clampPercent is
+                // completePhaseCore's own percent formula (state-transition.cts),
+                // reused so the frontmatter and the body `Progress:` line agree.
+                const postCompletionRoadmapScope = roadmapContent !== null
+                    ? extractCurrentMilestone(roadmapContent, cwd)
+                    : null;
+                const postCompletionRoadmapProgress = postCompletionRoadmapScope !== null
+                    ? deriveProgressFromRoadmapForIntent(postCompletionRoadmapScope)
+                    : null;
+                const authoritativeProgress = postCompletionRoadmapProgress && postCompletionRoadmapProgress.completedPhases !== null
+                    ? postCompletionRoadmapProgress.totalPhases !== null && postCompletionRoadmapProgress.totalPhases > 0
+                        ? {
+                            completed_phases: postCompletionRoadmapProgress.completedPhases,
+                            percent: clampPercentForIntent(postCompletionRoadmapProgress.completedPhases, postCompletionRoadmapProgress.totalPhases),
                         }
+                        : { completed_phases: postCompletionRoadmapProgress.completedPhases }
                     : undefined;
+                const authoritativeFm = authoritativeProgress
+                    ? {
+                        ...(nextPhaseDisplayName
+                            ? bodyHasPhaseField || !nextPhaseNum
+                                ? { current_phase_name: nextPhaseDisplayName }
+                                : {
+                                    current_phase: String(nextPhaseNum),
+                                    current_phase_name: nextPhaseDisplayName,
+                                }
+                            : {}),
+                        progress: authoritativeProgress,
+                    }
+                    : nextPhaseDisplayName
+                        ? bodyHasPhaseField || !nextPhaseNum
+                            ? { current_phase_name: nextPhaseDisplayName }
+                            : {
+                                current_phase: String(nextPhaseNum),
+                                current_phase_name: nextPhaseDisplayName,
+                            }
+                        : undefined;
                 // ADR-3408 §8.3 / #3469: this deliberately bypasses
                 // readModifyWriteStateMd (STATE.md is committed atomically with
                 // ROADMAP/REQUIREMENTS), so it calls the single write-seam
