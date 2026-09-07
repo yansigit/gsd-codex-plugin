@@ -1067,12 +1067,24 @@ function assertDescriptionPreservesMilestoneScope(cwd, description, command) {
  * before any directory does; milestone-scoping is wrong here because a number
  * used under any milestone on another branch is still taken).
  *
+ * #4225 — the horizon must track the ALLOCATION scope. When the allocation is
+ * workstream-scoped (`--ws`/`GSD_WORKSTREAM`, resolved into the env before
+ * dispatch), the sibling's copy of the SAME workstream is what carries that
+ * scope's independent numbering; the sibling's ROOT roadmap and phases/
+ * belong to a different numbering universe (docs/FEATURES.md §51 REQ-WS-01 —
+ * workstream state is isolated in `.planning/workstreams/{name}/`) and must
+ * not contribute. `planningDir(wt, ws)` reuses the canonical resolver, so the
+ * sibling scope matches the local scope's own resolution (env workstream plus
+ * env project segment) by construction; `ws === null` (no workstream active)
+ * keeps the #3849 root-scope horizon byte-for-byte.
+ *
  * Widen, never refuse: a missing `.planning/`, an unreadable sibling, a
  * non-git cwd, or an unavailable git binary each leave `used` untouched —
  * allocation then behaves exactly as it did before this horizon existed.
- * Sentinels reuse the canonical `isSentinelPhaseId`; the dir pattern is the
- * same one the on-disk scan uses, so decimal sub-phases (`411.1-foo`) are
- * correctly not integers.
+ * A sibling that simply lacks the active workstream's directory is the same
+ * fail-open case: it contributes nothing. Sentinels reuse the canonical
+ * `isSentinelPhaseId`; the dir pattern is the same one the on-disk scan uses,
+ * so decimal sub-phases (`411.1-foo`) are correctly not integers.
  */
 function collectSiblingWorktreePhaseNums(cwd, used) {
     let porcelain;
@@ -1090,6 +1102,13 @@ function collectSiblingWorktreePhaseNums(cwd, used) {
     catch {
         return; // not a git repo / git unavailable — unchanged behavior
     }
+    // #4225: the env workstream, read once with planningDir's own discriminator
+    // (`?? null` = deliberately no workstream — never re-derived per sibling).
+    // A poisoned value would already have thrown at the local `planningDir(cwd)`
+    // call every allocator makes before reaching this horizon; the per-sibling
+    // try/catch below still keeps any resolution failure fail-open.
+    const ws = process.env['GSD_WORKSTREAM'] ?? null;
+    const siblingPlanningDir = (wt) => planningDir(wt, ws);
     const dirNumPattern = /^(?:[A-Z][A-Z0-9]*-)?(\d+)-/;
     // Same header shape the allocators scan locally (#1729 tag tolerance).
     const headerPattern = /#{2,4}\s*Phase\s+(\d+)[A-Z]?(?:\.\d+)*(?:\s*\([^)\n]{0,200}\))?:/gi;
@@ -1100,7 +1119,7 @@ function collectSiblingWorktreePhaseNums(cwd, used) {
         if (!wt || node_path_1.default.resolve(wt) === node_path_1.default.resolve(cwd))
             continue;
         try {
-            for (const entry of node_fs_1.default.readdirSync(node_path_1.default.join(wt, '.planning', 'phases'))) {
+            for (const entry of node_fs_1.default.readdirSync(node_path_1.default.join(siblingPlanningDir(wt), 'phases'))) {
                 const match = entry.match(dirNumPattern);
                 if (!match)
                     continue;
@@ -1110,10 +1129,10 @@ function collectSiblingWorktreePhaseNums(cwd, used) {
             }
         }
         catch {
-            /* worktree has no .planning — normal, contributes nothing */
+            /* worktree has no .planning (or no copy of this scope) — normal, contributes nothing */
         }
         try {
-            const content = node_fs_1.default.readFileSync(node_path_1.default.join(wt, '.planning', 'ROADMAP.md'), 'utf-8');
+            const content = node_fs_1.default.readFileSync(node_path_1.default.join(siblingPlanningDir(wt), 'ROADMAP.md'), 'utf-8');
             let m;
             headerPattern.lastIndex = 0;
             while ((m = headerPattern.exec(content)) !== null) {
@@ -1123,7 +1142,7 @@ function collectSiblingWorktreePhaseNums(cwd, used) {
             }
         }
         catch {
-            /* no roadmap in that worktree — normal, contributes nothing */
+            /* no roadmap in that worktree (or scope) — normal, contributes nothing */
         }
     }
 }

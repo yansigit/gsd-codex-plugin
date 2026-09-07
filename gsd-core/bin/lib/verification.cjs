@@ -544,9 +544,16 @@ function findStaleVerificationSummary(phaseDir, fsImpl = defaultFsImpl, phaseCle
         // or sentinel-numbered canonically-shaped file cannot outrank this
         // phase's own (possibly non-canonical) report. #3511: phaseDirName scopes
         // the fallback path to this same phase (see resolveVerificationFile docs).
+        // #4187: allowBare — this staleness seam must see the same report set the
+        // status reader sees, or a bare report could never read `stale` while its
+        // dashed twin could (two answers from one verb).
         const phaseDirName = node_path_1.default.basename(phaseDir);
         const phaseToken = extractPhaseToken(phaseDirName);
-        const verificationFile = resolveVerificationFile(phaseFiles, { phaseToken, phaseDirName });
+        const verificationFile = resolveVerificationFile(phaseFiles, {
+            allowBare: true,
+            phaseToken,
+            phaseDirName,
+        });
         if (!verificationFile)
             return { determined: true, stale: false };
         const summaryFiles = scanPhasePlans(phaseDir).summaryFiles
@@ -587,7 +594,9 @@ function findStaleVerificationSummary(phaseDir, fsImpl = defaultFsImpl, phaseCle
  * 1. Find the phase's verification report via `resolveVerificationFile`
  *    (canonical `<phase-token>-VERIFICATION.md` preferred; falls back to the
  *    alphabetically-first `*-VERIFICATION.md` that belongs to THIS phase when
- *    none is canonical — #3357/#3511). If none → status 'missing'.
+ *    none is canonical — #3357/#3511; and, when the directory's only report
+ *    is a bare `VERIFICATION.md`, that file — #4187, matching
+ *    `verification.resolve-file`). If none → status 'missing'.
  * 2. Extract `status` from FRONTMATTER ONLY via the shared extractFrontmatter
  *    parser (DEFECT.FRONTMATTER-SCALAR-BROAD-GREP fix — parser anchors at byte 0).
  *    If no frontmatter block or no `status` key → status 'missing'.
@@ -629,7 +638,12 @@ function readVerificationStatus(phaseDir, opts = {}) {
         // sentinel-numbered canonically-shaped file cannot outrank this phase's
         // own (possibly non-canonical) report. #3511: baseName also scopes the
         // fallback path to this same phase (see resolveVerificationFile docs).
-        verificationFile = resolveVerificationFile(entries, { phaseToken, phaseDirName: baseName });
+        // #4187: allowBare — the status reader must recognize a bare
+        // `VERIFICATION.md` exactly like `verification.resolve-file`,
+        // `determinePhaseStatus`, and the init verification_path projectors
+        // already do; without it a verified phase reported `missing` and
+        // recommended re-running execute-phase.
+        verificationFile = resolveVerificationFile(entries, { allowBare: true, phaseToken, phaseDirName: baseName });
     }
     catch {
         // Directory unreadable → treat as missing

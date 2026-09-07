@@ -89,7 +89,7 @@ const { getRoadmapPhaseInternal, getMilestoneInfo, stripShippedMilestones, extra
 const { pathExistsInternal, generateSlugInternal, toPosixPath } = coreUtils;
 const { comparePhaseNum, normalizePhaseName, matchPhaseDirs, stripProjectCodePrefix, PHASE_NUMBER_TOKEN_SOURCE, isForeignPrefixedPhaseQuery, isSentinelPhaseId, extractPhaseToken, scopeToPhase } = phaseId;
 const { pruneOrphanedWorktrees } = worktreeSafety;
-const { planningPaths, planningDir, planningRoot, listAvailableWorkstreams, peekActiveWorkstream, diagnoseUnresolvedActiveWorkstream, describeUnresolvedWorkstreamReason, findContextMdIn, } = planningWorkspace;
+const { planningPaths, planningDir, planningRoot, todosDir, listAvailableWorkstreams, peekActiveWorkstream, diagnoseUnresolvedActiveWorkstream, describeUnresolvedWorkstreamReason, findContextMdIn, } = planningWorkspace;
 const { determinePhaseStatus } = commandsMod;
 const { extractFrontmatter } = frontmatterMod;
 const { isPhaseComplete, resolveVerificationFile, resolveUatFile } = verificationMod;
@@ -1929,17 +1929,46 @@ function truncatePendingTodoText(value, maxLen) {
  * code rather than a prose algorithm (DEFECT.GENERATIVE-FIX: a prose
  * algorithm duplicated as a test oracle is exactly the divergence class
  * this avoids).
+ *
+ * #4384 regression fix: the optional `projectRoot` makes the bullet's
+ * `[todo file](…)` link repo-relative (see pendingTodoLinkTarget) so the cap
+ * is deterministic w.r.t. where the repo is checked out. Omitting it keeps
+ * the legacy absolute-link behavior for existing direct callers.
  */
-function renderPendingTodosMarkdown(todos) {
+function renderPendingTodosMarkdown(todos, projectRoot) {
     if (!Array.isArray(todos) || todos.length === 0) {
         return 'None yet.';
     }
-    return todos.map((todo) => renderPendingTodoBullet(todo)).join('\n');
+    return todos.map((todo) => renderPendingTodoBullet(todo, projectRoot)).join('\n');
 }
 function pendingTodoFieldAsString(value, fallback) {
     return typeof value === 'string' && value.length > 0 ? value : fallback;
 }
-function renderPendingTodoBullet(todo) {
+/**
+ * #4384 regression fix: the bullet's markdown link target, rendered
+ * repo-relative when `projectRoot` is given and the todo's `path` is
+ * absolute. The JSON `todos[].path` field stays absolute (#2376 contract);
+ * only the rendered display link changes — embedding the machine-variable
+ * absolute base let macOS's /private/var/folders/… temp paths consume the
+ * 240-char budget and drop the "Needs <solution>" clause on long-path
+ * machines only (next's own macos CI shard went red on exactly this, run
+ * 34038716700). Repo-relative links also resolve correctly from STATE.md at
+ * the repo root and survive repo moves.
+ */
+function pendingTodoLinkTarget(todo, projectRoot) {
+    const raw = pendingTodoFieldAsString(todo['path'], '');
+    if (typeof projectRoot !== 'string' || projectRoot.length === 0 || !node_path_1.default.isAbsolute(raw)) {
+        return raw;
+    }
+    const rel = toPosixPath(node_path_1.default.relative(projectRoot, raw));
+    if (rel.length === 0 || node_path_1.default.isAbsolute(rel)) {
+        // Degenerate (path === projectRoot) or Windows cross-drive fallback:
+        // keep the raw target rather than emitting an empty or incorrect link.
+        return raw;
+    }
+    return rel;
+}
+function renderPendingTodoBullet(todo, projectRoot) {
     const date = sanitizePendingTodoInline(pendingTodoFieldAsString(todo['created'], 'unknown'));
     let area = sanitizePendingTodoInline(pendingTodoFieldAsString(todo['area'], 'general'));
     let title = sanitizePendingTodoInline(pendingTodoFieldAsString(todo['title'], 'Untitled'));
@@ -1948,7 +1977,7 @@ function renderPendingTodoBullet(todo) {
     let needs = typeof todo['needs'] === 'string'
         ? sanitizePendingTodoInline(todo['needs']).replace(/\.+$/, '')
         : '';
-    const link = `[todo file](${pendingTodoFieldAsString(todo['path'], '')})`;
+    const link = `[todo file](${pendingTodoLinkTarget(todo, projectRoot)})`;
     const assemble = () => {
         const needsClause = needs ? ` — Needs ${needs}.` : '';
         return `- [${date}] [${area}] ${title} — ${link}${needsClause}`;
@@ -1982,7 +2011,13 @@ function renderPendingTodoBullet(todo) {
 }
 function cmdInitTodos(cwd, area, raw) {
     const config = loadConfig(cwd);
-    const pendingDir = node_path_1.default.join(planningDir(cwd), 'todos', 'pending');
+    // #4256: todos are root-scoped shared state (migrateToWorkstreams keeps
+    // them at .planning/todos/ and every workflow writer writes that literal
+    // path), so this read resolves via todosDir(cwd) — NOT planningDir(cwd),
+    // which would look in .planning/workstreams/<ws>/todos/ under a workstream
+    // (a directory nothing creates) and report existing todos as absent.
+    const todosRoot = todosDir(cwd);
+    const pendingDir = node_path_1.default.join(todosRoot, 'pending');
     let count = 0;
     const todos = [];
     // #2618: distinct from "genuinely zero pending todos" — false only when
@@ -2037,7 +2072,7 @@ function cmdInitTodos(cwd, area, raw) {
                     title: titleMatch ? titleMatch[1].trim() : 'Untitled',
                     area: todoArea,
                     // #2376: absolute — see comment on phase_dir in cmdInitExecutePhase.
-                    path: toPosixPath(node_path_1.default.join(planningDir(cwd), 'todos', 'pending', file)),
+                    path: toPosixPath(node_path_1.default.join(pendingDir, file)),
                     ...(severityMatch ? { severity: severityMatch[1].trim() } : {}),
                     ...(needs ? { needs } : {}),
                 });
@@ -2061,17 +2096,22 @@ function cmdInitTodos(cwd, area, raw) {
         todos,
         area_filter: area || null,
         // #2376: absolute — see comment on phase_dir in cmdInitExecutePhase.
-        pending_dir: toPosixPath(node_path_1.default.join(planningDir(cwd), 'todos', 'pending')),
-        completed_dir: toPosixPath(node_path_1.default.join(planningDir(cwd), 'todos', 'completed')),
+        // #4256: both dir fields probe the ROOT todos tree via todosDir(cwd).
+        pending_dir: toPosixPath(pendingDir),
+        completed_dir: toPosixPath(node_path_1.default.join(todosRoot, 'completed')),
+        // planning_exists intentionally stays workstream/project-scoped — it
+        // answers "does the ACTIVE planning dir exist", not a todos question.
         planning_exists: node_fs_1.default.existsSync(planningDir(cwd)),
-        todos_dir_exists: node_fs_1.default.existsSync(node_path_1.default.join(planningDir(cwd), 'todos')),
-        pending_dir_exists: node_fs_1.default.existsSync(node_path_1.default.join(planningDir(cwd), 'todos', 'pending')),
+        todos_dir_exists: node_fs_1.default.existsSync(todosRoot),
+        pending_dir_exists: node_fs_1.default.existsSync(pendingDir),
         // #2618: see PENDING_TODO_BULLET_MAX_CHARS comment / design doc. Consumed
         // by add-todo.md / check-todos.md's update_state step; omitted entirely
         // (rather than emitted with possibly-wrong data) when pendingReadOk is
         // false, so the workflow's fail-safe check can key off field presence.
         pending_read_ok: pendingReadOk,
-        ...(pendingReadOk ? { pending_todos_markdown: renderPendingTodosMarkdown(todos) } : {}),
+        // #4384 fix: pass cwd as projectRoot so the bullet link renders
+        // repo-relative — see pendingTodoLinkTarget.
+        ...(pendingReadOk ? { pending_todos_markdown: renderPendingTodosMarkdown(todos, cwd) } : {}),
     };
     output(withProjectRoot(cwd, result), raw);
 }

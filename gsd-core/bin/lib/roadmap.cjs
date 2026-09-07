@@ -872,6 +872,23 @@ function cmdRoadmapUpdatePlanProgress(cwd, phaseNum, raw) {
     }
     // Wrap entire read-modify-write in lock to prevent concurrent corruption
     let updated = false;
+    // #4247: the refusal flag. The write/report decision below must be keyed to
+    // "a writable roadmap representation of THIS phase was found", never to "any
+    // byte moved". On a checklist-form ROADMAP (`- [ ] **Phase N: …**`, the
+    // roadmapper's own summary-checklist form) every phase-targeted grammar
+    // below requires an ATX `#{2,4} Phase N` heading and therefore finds
+    // nothing; the Progress-table row is the only other writable target, and
+    // when its Phase cell does not match `phaseCellRe` (e.g. a word-prefixed
+    // `Phase 68` cell — deliberately unrecognized on the read side too,
+    // `deriveProgressFromRoadmap`'s `/^\d/` data-row filter) the command used
+    // to fall through to unrelated byte deltas (an UN-scoped plan-checkbox mark
+    // anywhere in the document) and report `updated: true` while the phase's
+    // own row stayed untouched — with the file-global write then letting the
+    // platform write seam's markdown normalization inject blank lines around
+    // other phases' bullets, splitting hand-wrapped sentences mid-entry. The
+    // refusal below declines with the analyzer's own `missing_phase_details`
+    // vocabulary and leaves ROADMAP.md byte-identical.
+    let missingPhaseDetails = false;
     withPlanningLock(cwd, () => {
         // #3957 (B9.4): captured BEFORE any transform runs, so the write/report
         // decision below reflects whether the transforms actually changed
@@ -881,6 +898,32 @@ function cmdRoadmapUpdatePlanProgress(cwd, phaseNum, raw) {
         const originalContent = node_fs_1.default.readFileSync(roadmapPath, 'utf-8');
         let roadmapContent = originalContent;
         const phasePattern = phaseMarkdownRegexSource(phaseNum);
+        // #4247: ONE local source for the ATX phase-heading anchor that every
+        // section-scoped writer below (`planCountPattern`,
+        // `insertRowsPatternA|B`) starts with — extracted so the target-detection
+        // gate below reads the SAME grammar the writers anchor on, and a future
+        // edit to one cannot drift from the other three copies.
+        const phaseHeadingAnchor = `#{2,4}\\s*Phase\\s+${phasePattern}${OPTIONAL_PHASE_TAG_SOURCE}(?=[:\\s])`;
+        // #4247: target detection runs against the ORIGINAL content's active
+        // (post-</details>) region — the same milestone scoping every writer
+        // below applies — so the gate asks "does the file carry a writable phase
+        // representation" rather than "did some regex fire mid-transform".
+        const gateDetailsClose = originalContent.lastIndexOf('</details>');
+        const gateActiveRegion = gateDetailsClose === -1
+            ? originalContent
+            : originalContent.slice(gateDetailsClose + '</details>'.length);
+        // Heading target: the exact grammar `planCountPattern` /
+        // `insertRowsPatternA|B` anchor on (an ATX phase heading for this phase).
+        const headingTargetFound = new RegExp(phaseHeadingAnchor, 'i').test(gateActiveRegion);
+        // Checklist target: when the phase is complete, its own checklist bullet
+        // (`- [ ] **Phase N: …**`) IS a writable phase row — the completion
+        // checkbox stamp below updates it. Same grammar as that writer, widened
+        // one notch to `[ x]` so an ALREADY-checked bullet still counts as a
+        // found target: an idempotent re-run then takes the honest
+        // "no changes were needed" decline instead of this refusal.
+        const checklistTargetFound = isComplete && new RegExp(`-\\s*\\[[ x]\\]\\s*.*Phase\\s+${phasePattern}${OPTIONAL_PHASE_TAG_SOURCE}[:\\s]`, 'i').test(gateActiveRegion);
+        // Table-row target: set by the row-scoped cell updates below.
+        let tableRowFound = false;
         // Progress table row: update Plans Complete/Status/Completed columns BY
         // COLUMN NAME (handles 4- or 5-column RoadmapProgress tables regardless of
         // Milestone-column presence) via the markdown-table seam (ADR-2143 §7) —
@@ -899,11 +942,15 @@ function cmdRoadmapUpdatePlanProgress(cwd, phaseNum, raw) {
         roadmapContent = editProgressTableSlice(roadmapContent, (scoped) => {
             let text = scoped;
             const plansResult = (0, markdown_table_cjs_1.updateTableCell)(text, rowMatch, 'Plans Complete', ` ${summaryCount}/${planCount} `);
-            if (plansResult.ok)
+            if (plansResult.ok) {
                 text = plansResult.value;
+                tableRowFound = true;
+            }
             const statusResult = (0, markdown_table_cjs_1.updateTableCell)(text, rowMatch, 'Status', ` ${status.padEnd(11)}`);
-            if (statusResult.ok)
+            if (statusResult.ok) {
                 text = statusResult.value;
+                tableRowFound = true;
+            }
             // Preserve only a valid ISO date (#1161: idempotent; self-heal garbage).
             // Ragged-tolerant (#2245 Blocker 2): probe the CURRENT Completed cell via
             // a no-op updateTableCell write (its own tolerant row scan) rather than
@@ -918,8 +965,10 @@ function cmdRoadmapUpdatePlanProgress(cwd, phaseNum, raw) {
                 }
                 return '  ';
             });
-            if (completedResult.ok)
+            if (completedResult.ok) {
                 text = completedResult.value;
+                tableRowFound = true;
+            }
             return text;
         });
         // Update plan count in phase detail section.
@@ -960,7 +1009,7 @@ function cmdRoadmapUpdatePlanProgress(cwd, phaseNum, raw) {
         //      `_match` unchanged. An untouched first line cannot orphan its own
         //      continuation on the next line, since the pattern never spans past
         //      `\n` in the first place.
-        const planCountPattern = new RegExp(`(#{2,4}\\s*Phase\\s+${phasePattern}${OPTIONAL_PHASE_TAG_SOURCE}(?=[:\\s])(?:(?!\\n#{1,4}\\s)[\\s\\S])*?(?:\\*\\*Plans\\*\\*:|\\*\\*Plans:\\*\\*|(?:^|\\n)Plans:)\\s*)(\\d+\\s*\\/\\s*\\d+\\s+plans(?:\\s+(?:complete|executed))?|\\d+\\s+plans?)?([^\\r\\n]*)`, 'i');
+        const planCountPattern = new RegExp(`(${phaseHeadingAnchor}(?:(?!\\n#{1,4}\\s)[\\s\\S])*?(?:\\*\\*Plans\\*\\*:|\\*\\*Plans:\\*\\*|(?:^|\\n)Plans:)\\s*)(\\d+\\s*\\/\\s*\\d+\\s+plans(?:\\s+(?:complete|executed))?|\\d+\\s+plans?)?([^\\r\\n]*)`, 'i');
         const planCountText = isComplete
             ? `${summaryCount}/${planCount} plans complete`
             : `${summaryCount}/${planCount} plans executed`;
@@ -1040,8 +1089,8 @@ function cmdRoadmapUpdatePlanProgress(cwd, phaseNum, raw) {
             //
             // Pattern A: anchor to bare `Plans:` header (preferred).
             // Pattern B: fallback to bold summary when no bare header exists.
-            const insertRowsPatternA = new RegExp(`(#{2,4}\\s*Phase\\s+${phasePattern}${OPTIONAL_PHASE_TAG_SOURCE}(?=[:\\s])(?:(?!\\n#{1,4}\\s)[\\s\\S])*?(?:^|\\n)(?:Plans:)[^\\n]*)`, 'i');
-            const insertRowsPatternB = new RegExp(`(#{2,4}\\s*Phase\\s+${phasePattern}${OPTIONAL_PHASE_TAG_SOURCE}(?=[:\\s])(?:(?!\\n#{1,4}\\s)[\\s\\S])*?(?:\\*\\*Plans\\*\\*:|\\*\\*Plans:\\*\\*)[^\\n]*)`, 'i');
+            const insertRowsPatternA = new RegExp(`(${phaseHeadingAnchor}(?:(?!\\n#{1,4}\\s)[\\s\\S])*?(?:^|\\n)(?:Plans:)[^\\n]*)`, 'i');
+            const insertRowsPatternB = new RegExp(`(${phaseHeadingAnchor}(?:(?!\\n#{1,4}\\s)[\\s\\S])*?(?:\\*\\*Plans\\*\\*:|\\*\\*Plans:\\*\\*)[^\\n]*)`, 'i');
             const sortedMissing = [...missingPlans].sort();
             const newRows = sortedMissing.map(p => `- [ ] ${p}`).join('\n');
             const inserter = (match) => `${match}\n${newRows}`;
@@ -1081,9 +1130,23 @@ function cmdRoadmapUpdatePlanProgress(cwd, phaseNum, raw) {
         // `cmdRoadmapAnnotateDependencies`'s existing `nextContent !== content`
         // gate. Previously this wrote and reported `updated: true`
         // unconditionally, even on an idempotent re-run that changed nothing.
-        if (roadmapContent !== originalContent) {
+        //
+        // #4247: ...but ONLY when a writable representation of THIS phase was
+        // found. Without the target gate, a byte delta from an unrelated
+        // transform (the un-scoped plan-checkbox mark) satisfied the #3957 gate
+        // and produced a success-shaped `updated: true` while the phase's own
+        // row stayed untouched — and the file-global write let the platform
+        // write seam's markdown normalization reflow unrelated entries. When no
+        // target exists the command refuses: no write at all, so ROADMAP.md is
+        // left byte-identical, and the caller gets a typed
+        // `missing_phase_details` decline instead of a false green.
+        const phaseRepresentationFound = tableRowFound || headingTargetFound || checklistTargetFound;
+        if (phaseRepresentationFound && roadmapContent !== originalContent) {
             (0, shell_command_projection_cjs_1.platformWriteSync)(roadmapPath, roadmapContent);
             updated = true;
+        }
+        if (!phaseRepresentationFound) {
+            missingPhaseDetails = true;
         }
     });
     const computed = {
@@ -1096,6 +1159,13 @@ function cmdRoadmapUpdatePlanProgress(cwd, phaseNum, raw) {
     };
     if (updated) {
         output({ updated: true, ...computed }, raw, `${summaryCount}/${planCount} ${status}`);
+    }
+    else if (missingPhaseDetails) {
+        // #4247: honest refusal — the reason names the real condition (the
+        // analyzer's `missing_phase_details` vocabulary), never "already
+        // reflects", which was false: the ROADMAP was never able to record this
+        // phase's progress in the first place.
+        declineNoOp(raw, 'updated', 'missing_phase_details', `roadmap update-plan-progress skipped — ROADMAP.md has no writable entry for phase ${formatDiagnosticToken(String(phaseNum))} (no matching Progress-table row, no phase detail section, and no checklist entry this command can update). ROADMAP.md was left unchanged.`, computed);
     }
     else {
         declineNoOp(raw, 'updated', "no changes were needed — ROADMAP.md already reflects this phase's plan/summary counts and status", "roadmap update-plan-progress skipped — no changes were needed; ROADMAP.md already reflects this phase's plan/summary counts and status.", computed);
