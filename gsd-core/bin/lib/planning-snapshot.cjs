@@ -41,7 +41,15 @@ const planningWorkspace = require("./planning-workspace.cjs");
 // `phase_id_convention` reader, from the same §7 owner module `planningPaths`
 // comes from. Resolved once in `buildPlanningSnapshot` — see the
 // `phaseIdConvention` field's comment for why one resolution point matters.
-const { planningPaths, planningRoot, resolvePhaseIdConvention } = planningWorkspace;
+// #4257: `resolveEnvWorkstream` is that same module's ONE owner of the env
+// workstream discriminator `planningDir` applies — the name W002's scope
+// clause prints comes from the same resolution point that scoped the reads.
+const { planningPaths, planningRoot, resolvePhaseIdConvention, resolveEnvWorkstream } = planningWorkspace;
+// #4257: canonical CommonMark code strippers (markdown-sectionizer is the
+// repo's T0 structural seam, adopted per the #2365 composition order — fenced
+// blocks first, then inline spans) so the `statePhaseTokens` harvest sees
+// PROSE, not quoted literals.
+const markdown_sectionizer_cjs_1 = require("./markdown-sectionizer.cjs");
 const shell_command_projection_cjs_1 = require("./shell-command-projection.cjs");
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const frontmatterMod = require("./frontmatter.cjs");
@@ -160,9 +168,11 @@ function buildPhaseSnapshot(phasesDir, dir) {
  *   a whole-body fallback, together.
  * - `statePhaseTokens` scans the WHOLE document (`verify.cts`'s exact
  *   `PHASE_NUMBER_TOKEN_SOURCE` regex, relocated verbatim from
- *   `verify.cts:1731-1735`), not just the Current Position section, so it is
- *   NOT degraded to `TRUNCATED` by a missing section header — it stays
- *   `COMPLETE` whenever the file itself was read successfully.
+ *   `verify.cts:1731-1735`; #4257 adds the left word boundary and the
+ *   fenced-block/inline-span strip — see the harvest site's comment), not
+ *   just the Current Position section, so it is NOT degraded to `TRUNCATED`
+ *   by a missing section header — it stays `COMPLETE` whenever the file
+ *   itself was read successfully.
  */
 function buildStateFields(statePath) {
     let content;
@@ -222,7 +232,30 @@ function buildStateFields(statePath) {
         scope: currentPositionScope,
     });
     const statePhaseTokens = {
-        value: [...content.matchAll(new RegExp(`[Pp]hase\\s+(${PHASE_NUMBER_TOKEN_SOURCE})`, 'g'))].map((m) => m[1]),
+        // #4257: harvest PROSE phase references, not every literal token match.
+        // Two precisions over the pre-#4257 verbatim relocation of verify.cts's
+        // scan (which was `[Pp]hase\s+(TOKEN)`, unanchored, over the raw file):
+        //
+        // 1. Strip fenced code blocks, then inline code spans (the #2365
+        //    composition order, via the canonical markdown-sectionizer seam) —
+        //    a token inside backticks is a QUOTED LITERAL (a ledger row quoting
+        //    `` `/gsd-execute-phase 5` `` or `` `- [ ] **Phase 40:` `` from a
+        //    sibling roadmap), not a reference. Pinned tradeoff: a GENUINE
+        //    reference written in backticks stops counting too — a quoted
+        //    literal and a reference are indistinguishable inside a code span.
+        // 2. Left word boundary `(?<![-\w])` — the `-phase 5` tail of GSD's own
+        //    command names (`/gsd-execute-phase 5`, bare or in prose) is a
+        //    command mention, not a reference, and word-suffixed carriers
+        //    (`myphase 5`) never were references. `Phase 5` at line start,
+        //    `**Phase 5:**`, `(Phase 5)`, `[Phase 5]`, and `### Phase 5:` all
+        //    still harvest — the char before `Phase` is not in `[-\w]`.
+        //
+        // Still scans the WHOLE document (frontmatter included — the `Phase: 3`
+        // field syntax never matched, `phase` is followed by a colon, not `\s`),
+        // still `COMPLETE` whenever the file itself was read successfully.
+        value: [
+            ...(0, markdown_sectionizer_cjs_1.stripInlineCode)((0, markdown_sectionizer_cjs_1.stripFencedCode)(content).text).matchAll(new RegExp(`(?<![-\\w])[Pp]hase\\s+(${PHASE_NUMBER_TOKEN_SOURCE})`, 'g')),
+        ].map((m) => m[1]),
         scope: SCOPE.COMPLETE,
     };
     return { currentPhaseLabel, statePhaseTokens, stateStatus };
@@ -963,6 +996,11 @@ function buildPlanningSnapshot(cwd) {
     // See the `phaseIdConvention` field's comment for why one resolution point is
     // load-bearing rather than a micro-optimisation.
     const phaseIdConvention = resolvePhaseIdConvention(cwd) ?? null;
+    // #4257: the workstream `planningPaths(cwd)` just scoped every read to
+    // (its `planningDir` call applies this exact discriminator when handed no
+    // `ws`), resolved through the same owner so W002's scope clause names the
+    // scope the valid set was ACTUALLY built from.
+    const workstream = resolveEnvWorkstream();
     const milestone = getMilestoneInfo(cwd);
     // #612: deliberately LEFT to `listMilestonePhaseDirs`'s own lazy resolve —
     // this call is byte-identical to upstream's.
@@ -1013,6 +1051,7 @@ function buildPlanningSnapshot(cwd) {
         phaseIdConvention,
         roadmapSentinelPhaseTokens: roadmapDeclared.sentinelTokens,
         roadmapBracketIncoherences: buildRoadmapBracketIncoherencesField(paths.roadmap, phaseIdConvention),
+        workstream,
     };
 }
 module.exports = {

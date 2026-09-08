@@ -100,11 +100,27 @@ const PLANNING_LOCK_RETRY_ERRNOS = new Set([
     'ENOENT', // Docker overlay-fs: parent dir transiently missing during race
     'ESTALE', // NFS: stale file handle (self-resolves on retry)
 ]);
+/**
+ * #4257: the ONE owner of the env workstream discriminator `planningDir`
+ * itself applies when handed no `ws` argument. `planningPaths(cwd)` — and
+ * therefore every workstream-scoped `PlanningSnapshot` read — resolves its
+ * base through exactly this read, and the CLI bootstrap has already folded
+ * the stored active-workstream pointer into the env by the time any
+ * diagnostic runs (`resolveActiveWorkstream` → `applyResolvedWorkstreamEnv`,
+ * `active-workstream-store.cjs`). Exposed so a consumer that needs to NAME
+ * the scope those reads used (W002's warning message, via the snapshot's
+ * `workstream` field) derives it from the same resolution point instead of
+ * growing a second env read site that can drift (the #612 PR-2
+ * two-readers-two-bases lesson).
+ */
+function resolveEnvWorkstream() {
+    return process.env['GSD_WORKSTREAM'] ?? null;
+}
 function planningDir(cwd, ws, project) {
     if (project === undefined)
         project = process.env['GSD_PROJECT'] ?? null;
     if (ws === undefined)
-        ws = process.env['GSD_WORKSTREAM'] ?? null;
+        ws = resolveEnvWorkstream();
     // Reject path separators and traversal components in project/workstream names
     const BAD_SEGMENT = /[/\\]|\.\./;
     if (project && BAD_SEGMENT.test(project)) {
@@ -597,6 +613,7 @@ module.exports = {
     createMemoryPointerAdapter,
     planningDir,
     planningRoot,
+    resolveEnvWorkstream,
     resolvePhaseIdConvention,
     listAvailableWorkstreams,
     planningPaths,
