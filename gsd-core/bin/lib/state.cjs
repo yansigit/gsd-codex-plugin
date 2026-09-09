@@ -4923,6 +4923,12 @@ function updatePerformanceMetricsSection(content, cwd, phaseNum, planCount, summ
  * Updates Status to "Ready to execute", Total Plans, Last Activity.
  */
 function cmdStatePlannedPhase(cwd, phaseNumber, phaseName, planCount, raw) {
+    // #4383: mirror begin-phase's command-boundary guard. A missing phase must
+    // fail before even looking up STATE.md so no invalid invocation can enter
+    // the read-modify-write path and serialize a null/blank phase identity.
+    if (phaseNumber == null || String(phaseNumber).trim() === '') {
+        error('phase required (--phase <N>)');
+    }
     const statePath = planningPaths(cwd).state;
     if (!node_fs_1.default.existsSync(statePath)) {
         output({ error: 'STATE.md not found' }, raw, undefined);
@@ -4938,7 +4944,7 @@ function cmdStatePlannedPhase(cwd, phaseNumber, phaseName, planCount, raw) {
     // still owns the lock, the #1230 preservation, and the no-op write guard.
     const intent = {
         kind: 'plannedPhase',
-        phaseNumber,
+        phaseNumber: phaseNumber,
         phaseName: phaseName ?? null,
         planCount: planCount ?? null,
     };

@@ -856,6 +856,17 @@ function cmdInitExecutePhase(cwd, phase, raw, options = {}) {
         // #3188: null when the file is absent (parity with patterns_path/context_path).
         state_path: node_fs_1.default.existsSync(statePath) ? toPosixPath(statePath) : null,
         roadmap_path: node_fs_1.default.existsSync(roadmapPath) ? toPosixPath(roadmapPath) : null,
+        // #4456 correction: an isolated review pass initially "fixed" this to
+        // planningDir(cwd, null) on the assumption that config.json is shared
+        // like PROJECT.md (workstream-flag.md's directory diagram marks it
+        // `# Shared`) — but ADR-0006's own tests (tests/init.test.cjs, "init
+        // handlers honor GSD_WORKSTREAM") assert config_path IS workstream-scoped
+        // for execute-phase/new-project/new-milestone/progress, and gsd-test
+        // caught the regression immediately. The diagram is stale for
+        // config.json specifically (same class of staleness already found for
+        // `milestones/` during the #4455 follow-up) — reverted to the
+        // workstream-aware planningDir(cwd), matching the established,
+        // ADR-governed, tested contract.
         config_path: toPosixPath(node_path_1.default.join(planningDir(cwd), 'config.json')),
         // #2376: execute-phase.md's verify_phase_goal step reads this instead of
         // hardcoding '.planning/REQUIREMENTS.md' into the gsd-verifier spawn prompt.
@@ -1189,6 +1200,14 @@ function cmdInitNewProject(cwd, raw, options = {}) {
         has_existing_code: hasCode,
         has_package_file: hasPackageFile,
         is_brownfield: isBrownfield,
+        // #4458: new-project.md's Step 5.1 (Sub-Repo Detection) used to run its own
+        // narrower `find ... -exec test -d "{}/.git"` predicate, which requires
+        // .git to be a DIRECTORY and so silently excluded linked git worktree
+        // children (.git is a FILE there). detectSubRepos already handled this
+        // correctly (fs.existsSync, not isDirectory) but had zero callers anywhere
+        // in the codebase — reused here instead of leaving the workflow to
+        // maintain its own duplicate, narrower detection logic.
+        sub_repos_detected: coreUtils.detectSubRepos(cwd),
         needs_codebase_map: isBrownfield && !hasCodebaseMap,
         ...getInitGitState(cwd),
         brave_search_available: hasBraveSearch,
@@ -1201,6 +1220,17 @@ function cmdInitNewProject(cwd, raw, options = {}) {
         // read these instead of hardcoding '.planning/...' literals.
         requirements_path: toPosixPath(node_path_1.default.join(planningDir(cwd), 'REQUIREMENTS.md')),
         roadmap_path: toPosixPath(node_path_1.default.join(planningDir(cwd), 'ROADMAP.md')),
+        // #4456 correction: an isolated review pass initially "fixed" this to
+        // planningDir(cwd, null) on the assumption that config.json is shared
+        // like PROJECT.md (workstream-flag.md's directory diagram marks it
+        // `# Shared`) — but ADR-0006's own tests (tests/init.test.cjs, "init
+        // handlers honor GSD_WORKSTREAM") assert config_path IS workstream-scoped
+        // for execute-phase/new-project/new-milestone/progress, and gsd-test
+        // caught the regression immediately. The diagram is stale for
+        // config.json specifically (same class of staleness already found for
+        // `milestones/` during the #4455 follow-up) — reverted to the
+        // workstream-aware planningDir(cwd), matching the established,
+        // ADR-governed, tested contract.
         config_path: toPosixPath(node_path_1.default.join(planningDir(cwd), 'config.json')),
         research_dir: toPosixPath(node_path_1.default.join(planningRoot(cwd), 'research')),
     };
@@ -1255,9 +1285,28 @@ function cmdInitNewMilestone(cwd, raw, options = {}) {
         // #2376: new-milestone.md's research-synthesizer/roadmapper spawn prompts
         // read these instead of hardcoding '.planning/...' literals.
         requirements_path: toPosixPath(node_path_1.default.join(planningDir(cwd), 'REQUIREMENTS.md')),
+        // #4456 correction: an isolated review pass initially "fixed" this to
+        // planningDir(cwd, null) on the assumption that config.json is shared
+        // like PROJECT.md (workstream-flag.md's directory diagram marks it
+        // `# Shared`) — but ADR-0006's own tests (tests/init.test.cjs, "init
+        // handlers honor GSD_WORKSTREAM") assert config_path IS workstream-scoped
+        // for execute-phase/new-project/new-milestone/progress, and gsd-test
+        // caught the regression immediately. The diagram is stale for
+        // config.json specifically (same class of staleness already found for
+        // `milestones/` during the #4455 follow-up) — reverted to the
+        // workstream-aware planningDir(cwd), matching the established,
+        // ADR-governed, tested contract.
         config_path: toPosixPath(node_path_1.default.join(planningDir(cwd), 'config.json')),
         research_dir: toPosixPath(node_path_1.default.join(planningRoot(cwd), 'research')),
         milestones_path: toPosixPath(node_path_1.default.join(planningDir(cwd), 'MILESTONES.md')),
+        // #4456: new-milestone.md's Step 6 stages the phase-archive move
+        // (`git add .planning/milestones/ .planning/phases/`) — both
+        // workstream-scoped (phases_dir mirrors the phasesDir local above;
+        // archive_dir mirrors cmdInitCompleteMilestone's own field of the same
+        // name), so a literal root `git add` misses the actual files
+        // phases.clear just moved under an active workstream.
+        phases_dir: toPosixPath(phasesDir),
+        archive_dir: toPosixPath(node_path_1.default.join(planningDir(cwd), 'milestones')),
     };
     // `state:flat-mode` (#2994): whether NO workstream is active — the inverse
     // of `state:workstream-active` (introduced for `cmdInitTransition` below).
@@ -3162,6 +3211,17 @@ function cmdInitProgress(cwd, raw, options = {}) {
         roadmap_path: toPosixPath(node_path_1.default.join(planningDir(cwd), 'ROADMAP.md')),
         // #4455 follow-up: PROJECT.md is shared across workstreams.
         project_path: toPosixPath(node_path_1.default.join(planningDir(cwd, null), 'PROJECT.md')),
+        // #4456 correction: an isolated review pass initially "fixed" this to
+        // planningDir(cwd, null) on the assumption that config.json is shared
+        // like PROJECT.md (workstream-flag.md's directory diagram marks it
+        // `# Shared`) — but ADR-0006's own tests (tests/init.test.cjs, "init
+        // handlers honor GSD_WORKSTREAM") assert config_path IS workstream-scoped
+        // for execute-phase/new-project/new-milestone/progress, and gsd-test
+        // caught the regression immediately. The diagram is stale for
+        // config.json specifically (same class of staleness already found for
+        // `milestones/` during the #4455 follow-up) — reverted to the
+        // workstream-aware planningDir(cwd), matching the established,
+        // ADR-governed, tested contract.
         config_path: toPosixPath(node_path_1.default.join(planningDir(cwd), 'config.json')),
     };
     // #2992 (Phase 6.1): additive, optional field — degrades to null, never throws.
