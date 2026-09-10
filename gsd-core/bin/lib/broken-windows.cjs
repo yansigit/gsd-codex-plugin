@@ -64,6 +64,8 @@ exports.cmdWindowsWaive = cmdWindowsWaive;
 exports.cmdWindowsMarkFixed = cmdWindowsMarkFixed;
 const node_fs_1 = __importDefault(require("node:fs"));
 const node_path_1 = __importDefault(require("node:path"));
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const workstreamInventory = require("./workstream-inventory.cjs");
 // ─── Constants ─────────────────────────────────────────────────────────────
 exports.LEDGER_FILE_NAME = 'WINDOWS.md';
 exports.SCHEMA_VERSION = 1;
@@ -243,6 +245,7 @@ function appendWindow(ledger, input, opts = { now: new Date().toISOString() }) {
         reason: '',
         recorded_at: opts.now,
         resolved_at: null,
+        milestone: input.milestone ?? null,
     };
     const entries = [...ledger.entries, entry];
     const result = recomputeCounts({ ...ledger, entries, last_updated: opts.now });
@@ -475,6 +478,19 @@ function validateEntryShape(e, i) {
         reason: o.reason,
         recorded_at: recordedStr,
         resolved_at: resolvedStr,
+        // #4487: NOT in `required` above -- an entry recorded before this field
+        // existed has no `milestone` key at all, and that must parse cleanly.
+        // Preserve the absence itself -- by not materializing the property at
+        // all, via the conditional spread below, rather than assigning it
+        // `milestone: undefined` (an object literal property set to `undefined`
+        // is still an OWN property; `'milestone' in entry` reads true either
+        // way) -- so a genuinely absent key stays absent both to `in` and to
+        // JSON.stringify on re-render. Collapsing absence to an explicit null
+        // instead would stamp every legacy entry with permanent
+        // `"milestone": null` noise the moment the ledger is next touched. A
+        // genuinely-recorded-but-unresolvable milestone (set by appendWindow)
+        // is still an explicit null and round-trips as one.
+        ...('milestone' in o ? { milestone: typeof o.milestone === 'string' ? o.milestone : null } : {}),
     };
 }
 function parseLedger(raw) {
@@ -919,12 +935,18 @@ function cmdWindowsAppend(cwd, args, opts = {}) {
             throw e;
         throw new WindowsError(exports.REASON.WINDOWS_LEDGER_MALFORMED, e.message);
     }
+    // #4487: stamp the workstream's resolved milestone at record time -- the
+    // same STATE.md-first, ROADMAP-fallback resolution workstream-inventory.cts
+    // already uses. Best-effort: an unreadable/missing STATE.md or ROADMAP.md
+    // resolves to null, same as an entry recorded before this field existed.
+    const milestone = workstreamInventory.readCurrentMilestoneVersion(node_path_1.default.join(cwd, '.planning', 'STATE.md'), node_path_1.default.join(cwd, '.planning', 'ROADMAP.md'));
     const result = appendWindow(ledger, {
         kind: parsed.values['--kind'],
         phase: parsed.values['--phase'] ?? '',
         file: parsed.values['--file'] ?? '',
         line: parsed.values['--line'] == null ? null : Number(parsed.values['--line']),
         description: parsed.values['--description'] ?? '',
+        milestone,
     }, { now: nowIso() });
     writeLedgerAtomic(cwd, result.ledger);
     emit({ ok: true, ledger: result.ledger, entry: result.entry });
