@@ -364,7 +364,7 @@ function stateFieldContinuation(content, fieldName) {
     // this locates exactly the line whose value it returned. The pipe-table rung
     // is deliberately absent: a `| Field | value |` row is bounded by its closing
     // pipe and cannot wrap.
-    const match = new RegExp(`\\*\\*${escaped}:\\*\\*[ \\t]*(.+)`, 'i').exec(content) ??
+    const match = new RegExp(`^[ \\t]*\\*\\*${escaped}:\\*\\*[ \\t]*(.+)`, 'im').exec(content) ??
         new RegExp(`^${escaped}:[ \\t]*(.+)`, 'im').exec(content);
     if (!match)
         return null;
@@ -396,8 +396,9 @@ function stateFieldContinuation(content, fieldName) {
 }
 function stateExtractField(content, fieldName) {
     const escaped = (0, pattern_cjs_1.escapeRegex)(fieldName);
-    // Bold inline format: **FieldName:** value
-    const boldPattern = new RegExp(`\\*\\*${escaped}:\\*\\*[ \\t]*(.+)`, 'i');
+    // Bold line-start format: **FieldName:** value. Leading same-line whitespace
+    // matches the writer's established indented-field tolerance.
+    const boldPattern = new RegExp(`^[ \\t]*\\*\\*${escaped}:\\*\\*[ \\t]*(.+)`, 'im');
     const boldMatch = content.match(boldPattern);
     if (boldMatch)
         return boldMatch[1].trim();

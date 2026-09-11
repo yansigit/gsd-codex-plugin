@@ -2545,9 +2545,7 @@ function cmdProgressRender(cwd, format, raw) {
         : null;
     if (format === 'table') {
         // Render markdown table
-        const barWidth = 10;
-        const filled = percent === null ? 0 : Math.round((percent / 100) * barWidth);
-        const bar = '█'.repeat(filled) + '░'.repeat(barWidth - filled);
+        const bar = (0, phase_lifecycle_cjs_1.renderProgressBar)(percent, 10);
         const percentSuffix = percent === null ? '' : ` (${percent}%)`;
         let out = `# ${milestone?.version ?? ''} ${milestone?.name ?? ''}\n\n`;
         out += `**Progress:** [${bar}] ${totalSummaries}/${totalPlans} plans${percentSuffix}\n\n`;
@@ -2559,9 +2557,7 @@ function cmdProgressRender(cwd, format, raw) {
         output({ rendered: out }, raw, out);
     }
     else if (format === 'bar') {
-        const barWidth = 20;
-        const filled = percent === null ? 0 : Math.round((percent / 100) * barWidth);
-        const bar = '█'.repeat(filled) + '░'.repeat(barWidth - filled);
+        const bar = (0, phase_lifecycle_cjs_1.renderProgressBar)(percent, 20);
         const percentSuffix = percent === null ? '' : ` (${percent}%)`;
         const text = `[${bar}] ${totalSummaries}/${totalPlans} plans${percentSuffix}`;
         output({ bar: text, percent, completed: totalSummaries, total: totalPlans }, raw, text);
@@ -2967,9 +2963,7 @@ function cmdStats(cwd, format, raw) {
         phase_scope: phaseScope,
     };
     if (format === 'table') {
-        const barWidth = 10;
-        const filled = percent === null ? 0 : Math.round((percent / 100) * barWidth);
-        const bar = '█'.repeat(filled) + '░'.repeat(barWidth - filled);
+        const bar = (0, phase_lifecycle_cjs_1.renderProgressBar)(percent, 10);
         let out = `# ${milestone?.version ?? ''} ${milestone?.name ?? ''} — Statistics\n\n`;
         const percentSuffix = percent === null ? '' : ` (${percent}%)`;
         out += `**Progress:** [${bar}] ${completedPhases}/${phases.length} phases${percentSuffix}\n`;

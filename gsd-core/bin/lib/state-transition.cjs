@@ -49,12 +49,13 @@ function formatProgressMachineSegment(percent) {
     // ADR-3180 Decision 7: rounding and the 100 ceiling belong to the
     // completion-ratio kernel. The floor is added here because this helper is
     // also fed persisted frontmatter values (hand-editable, unlike the
-    // count-shaped entries into that kernel), and `'░'.repeat` throws on a
-    // negative count. Bar and printed percent use the clamped value so the two
-    // halves of the segment can never disagree.
+    // count-shaped entries into that kernel). Bar and printed percent use the
+    // clamped value so the two halves of the segment can never disagree.
+    // #4294: the CELL count is the render kernel's — `renderProgressBar` holds a
+    // sub-100 percent one cell short of full, so `[██████████]` beside `95%`
+    // cannot recur here as a seventh inline copy of the rounding.
     const clamped = Math.max(0, (0, phase_lifecycle_cjs_1.clampPercentFromFraction)(percent / 100));
-    const filled = Math.round(clamped / 10);
-    return `[${'█'.repeat(filled)}${'░'.repeat(10 - filled)}] ${clamped}%`;
+    return `[${(0, phase_lifecycle_cjs_1.renderProgressBar)(clamped, 10)}] ${clamped}%`;
 }
 // Consumers (a future STATE.md writer that bypasses all three reintroduces the
 // #4213 divergence class): `cmdStateUpdateProgress` and `syncCore`'s progress

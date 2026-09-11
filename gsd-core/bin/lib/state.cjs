@@ -293,7 +293,7 @@ function cmdStateGet(cwd, section, raw) {
         // Try to find markdown section or field
         const fieldEscaped = (0, pattern_cjs_1.escapeRegex)(section);
         // Check for **field:** value (bold format)
-        const boldPattern = new RegExp(`\\*\\*${fieldEscaped}:\\*\\*\\s*(.*)`, 'i');
+        const boldPattern = new RegExp(`^[ \\t]*\\*\\*${fieldEscaped}:\\*\\*[ \\t]*(.*)`, 'im');
         const boldMatch = content.match(boldPattern);
         if (boldMatch) {
             output({ [section]: boldMatch[1].trim() }, raw, boldMatch[1].trim());

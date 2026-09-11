@@ -626,16 +626,17 @@ function hasPhaseEntries(markdown, phaseIdConvention) {
     return collectTablePhaseRows(markdown).length > 0;
 }
 // ─── #3577: markdown-table phase listings ─────────────────────────────────────
-// #3577: a GFM table declares phases when its header's FIRST cell is the literal
-// `Phase` (optionally `Phase #` / `Phase No.` / `Phase number`) and the header does
-// NOT match a known non-listing schema — the canonical RoadmapProgress table
-// (`| Phase | Plans Complete | Status | Completed |`) leads with `Phase` too, and
-// its rows are progress markers, not declarations. Data rows carry the phase id in
-// their first cell (digit-bearing canonical shape — `Phase`-word header cells and
-// `---` delimiter rows are digit-free and excluded by construction). Fence-aware
-// via stripFencedCode, matching the #3184 lesson: a fenced EXAMPLE of the table
-// form is not a declared phase.
+// #3577/#4480: a GFM table declares phases only when its header's FIRST cell is
+// the literal `Phase` (optionally `Phase #` / `Phase No.` / `Phase number`) AND
+// it positively identifies a `Name` or `Phase Name` column. This fails closed:
+// ordinary progress/summary tables such as `| Phase | Status |` cannot mint a
+// phase whose name is whichever value happens to occupy column two. Data rows
+// carry the phase id in their first cell (digit-bearing canonical shape —
+// `Phase`-word header cells and `---` delimiter rows are digit-free and excluded
+// by construction). Fence-aware via stripFencedCode, matching the #3184 lesson:
+// a fenced EXAMPLE of the table form is not a declared phase.
 const PHASE_LISTING_HEADER_RE = /^\|?\s*phase(?:\s*(?:#|no\.?|number))?\s*\|/i;
+const PHASE_NAME_HEADER_RE = /^(?:phase\s+)?name$/i;
 const TABLE_PHASE_ID_RE = /^[A-Za-z]?\d[\w.-]*$/;
 function collectTablePhaseRows(window) {
     const unfenced = (0, markdown_sectionizer_cjs_1.stripFencedCode)(window).text;
@@ -645,8 +646,9 @@ function collectTablePhaseRows(window) {
         if (!PHASE_LISTING_HEADER_RE.test(lines[i]))
             continue;
         const headerCells = (0, markdown_table_cjs_1.splitTableRow)(lines[i]);
-        if ((0, markdown_table_cjs_1.matchTableSchema)(headerCells) !== null)
-            continue; // canonical non-listing schema
+        const nameColumn = headerCells.findIndex((cell) => PHASE_NAME_HEADER_RE.test(cell));
+        if (nameColumn === -1)
+            continue;
         if (!(0, markdown_table_cjs_1.isDelimiterRow)((0, markdown_table_cjs_1.splitTableRow)(lines[i + 1])))
             continue;
         for (let j = i + 2; j < lines.length; j++) {
@@ -662,7 +664,8 @@ function collectTablePhaseRows(window) {
             if (!TABLE_PHASE_ID_RE.test(first))
                 continue;
             if (!/^999\b/.test(first)) {
-                rows.push({ id: first, name: cells[1] && cells[1] !== '' ? cells[1] : null, row: lines[j] });
+                const name = cells[nameColumn];
+                rows.push({ id: first, name: name && name !== '' ? name : null, row: lines[j] });
             }
         }
     }
