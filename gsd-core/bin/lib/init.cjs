@@ -87,7 +87,7 @@ const { resolveModelInternal, resolveGranularityInternal, assertValidGranularity
 const { findPhaseInternal, listMilestonePhaseDirs, listAllPhaseDirs } = phaseLocator;
 const { getRoadmapPhaseInternal, getMilestoneInfo, stripShippedMilestones, extractCurrentMilestone, } = roadmapParser;
 const { pathExistsInternal, generateSlugInternal, toPosixPath } = coreUtils;
-const { comparePhaseNum, normalizePhaseName, matchPhaseDirs, stripProjectCodePrefix, PHASE_NUMBER_TOKEN_SOURCE, isForeignPrefixedPhaseQuery, isSentinelPhaseId, extractPhaseToken, scopeToPhase } = phaseId;
+const { comparePhaseNum, normalizePhaseName, matchPhaseDirs, stripProjectCodePrefix, PHASE_NUMBER_TOKEN_SOURCE, isForeignPrefixedPhaseQuery, isSentinelPhaseId, extractPhaseToken, scopeToPhase, renderPhaseBranchName } = phaseId;
 const { pruneOrphanedWorktrees } = worktreeSafety;
 const { planningPaths, planningDir, planningRoot, todosDir, listAvailableWorkstreams, peekActiveWorkstream, diagnoseUnresolvedActiveWorkstream, describeUnresolvedWorkstreamReason, findContextMdIn, } = planningWorkspace;
 const { determinePhaseStatus } = commandsMod;
@@ -847,10 +847,7 @@ function cmdInitExecutePhase(cwd, phase, raw, options = {}) {
         runnable_plans: phaseInfo?.['runnable_plans'] || [],
         runnable_count: phaseInfo?.['runnable_plans']?.length || 0,
         branch_name: config.branching_strategy === 'phase' && phaseInfo
-            ? config.phase_branch_template
-                .replace('{project}', config.project_code || '')
-                .replace('{phase}', normalizePhaseName(phaseInfo['phase_number']))
-                .replace('{slug}', phaseInfo['phase_slug'] || 'phase')
+            ? renderPhaseBranchName(config.phase_branch_template.replace('{project}', config.project_code || ''), phaseInfo['phase_number'], phaseInfo['phase_slug'])
             : config.branching_strategy === 'milestone'
                 ? config.milestone_branch_template
                     .replace('{milestone}', milestone['version'] ?? '')

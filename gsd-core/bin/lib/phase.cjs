@@ -45,7 +45,10 @@ const { normalizePhaseName, phaseMarkdownRegexSource, comparePhaseNum, matchPhas
 const pattern_cjs_1 = require("./pattern.cjs");
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- phase-locator.cjs is an export= CommonJS module
 const phaseLocatorMod = require("./phase-locator.cjs");
-const { findPhaseInternal, getArchivedPhaseDirs, listMilestonePhaseDirs } = phaseLocatorMod;
+const { findPhaseInternal, getArchivedPhaseDirs, listMilestonePhaseDirs, listAllPhaseDirs } = phaseLocatorMod;
+// eslint-disable-next-line @typescript-eslint/no-require-imports -- planning-scope.cjs is an export= CommonJS module
+const planningScopeMod = require("./planning-scope.cjs");
+const { SCOPE } = planningScopeMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- roadmap-parser.cjs is an export= CommonJS module
 const roadmapParserMod = require("./roadmap-parser.cjs");
 const { stripShippedMilestones, extractCurrentMilestone, currentMilestoneRawRanges, withPhaseSection, findMilestoneScopeHeadingLines } = roadmapParserMod;
@@ -293,25 +296,26 @@ function cmdPhaseNextDecimal(cwd, basePhase, raw) {
             const entries = node_fs_1.default.readdirSync(phasesDir, { withFileTypes: true });
             const dirs = entries.filter((e) => e.isDirectory()).map((e) => e.name);
             baseExists = matchPhaseDirs(dirs, normalized).matches.length > 0;
-            const dirPattern = new RegExp(`^${OPTIONAL_PROJECT_CODE_PREFIX_SOURCE}${(0, pattern_cjs_1.escapeRegex)(normalized)}\\.(\\d+)`);
-            for (const dir of dirs) {
-                const match = dir.match(dirPattern);
-                if (match)
-                    decimalSet.add(parseInt(match[1], 10));
-            }
         }
         const roadmapPath = node_path_1.default.join(planningDir(cwd), 'ROADMAP.md');
         if (node_fs_1.default.existsSync(roadmapPath)) {
             try {
                 const roadmapContent = node_fs_1.default.readFileSync(roadmapPath, 'utf-8');
-                const phasePattern = new RegExp(`#{2,4}\\s*Phase\\s+${phaseMarkdownRegexSource(normalized)}\\.(\\d+)${OPTIONAL_PHASE_TAG_SOURCE}\\s*:`, 'gi');
-                let pm;
-                while ((pm = phasePattern.exec(roadmapContent)) !== null) {
-                    decimalSet.add(parseInt(pm[1], 10));
+                for (const n of scanExistingDecimalPhaseNumbers(phasesDir, roadmapContent, normalized)) {
+                    decimalSet.add(n);
                 }
             }
             catch {
-                /* ROADMAP.md read failure is non-fatal */
+                // ROADMAP.md read failure is non-fatal — fall back to the directory-only
+                // scan (empty rawContent) so on-disk decimal directories are still counted.
+                for (const n of scanExistingDecimalPhaseNumbers(phasesDir, '', normalized)) {
+                    decimalSet.add(n);
+                }
+            }
+        }
+        else {
+            for (const n of scanExistingDecimalPhaseNumbers(phasesDir, '', normalized)) {
+                decimalSet.add(n);
             }
         }
         const existingDecimals = Array.from(decimalSet)
@@ -1368,7 +1372,63 @@ function cmdPhaseAddBatch(cwd, descriptions, raw) {
     // found')` above, which terminates the process and never reaches here.
     publishStateContract(cwd);
 }
-function cmdPhaseInsert(cwd, afterPhase, description, raw) {
+// #4569: scans all three representations of an existing decimal sub-phase
+// under `base` — on-disk `phases/` directories, `### Phase BASE.N:` headings,
+// and `- [ ] Phase BASE.N:` roadmap SUMMARY CHECKLIST bullets. A bullet-only
+// roadmap with no heading yet and no on-disk directory yet must still be
+// seen, or an allocator can silently reallocate an already-used decimal
+// number. Shared by `cmdPhaseInsert`'s normalized-base scan and its
+// sibling-allocation parent-base scan so the two never drift apart.
+function scanExistingDecimalPhaseNumbers(phasesDir, rawContent, base) {
+    const decimalSet = new Set();
+    // #2245 audit: existsSync-guarded, mirroring cmdPhaseNextDecimal's identical
+    // scan above — a missing phasesDir (no decimal sub-phases yet) is the
+    // expected, silent case (empty decimalSet). A readdirSync failure once the
+    // dir is confirmed to EXIST is a genuine anomaly; swallowing it used to let
+    // `phase insert` proceed with an incomplete decimalSet and risk writing a
+    // decimal phase number that collides with an existing on-disk directory
+    // the scan simply never saw — surfaced loud instead, like the sibling.
+    //
+    // #4634 (lint-phase-enumeration-drift): routed through the canonical
+    // PHYSICAL-set owner (`listAllPhaseDirs`, phase-locator.cts) instead of a
+    // hand-rolled `readdirSync`. This scan — like its sibling `cmdPhaseNextDecimal`
+    // and its caller `cmdPhaseInsert` (both exempted in the drift guard for the
+    // same reason) — must see EVERY on-disk decimal sub-phase directory
+    // regardless of the current milestone window, so `listMilestonePhaseDirs`
+    // (windowed) is the wrong owner here; `includeSentinels: true` preserves this
+    // function's pre-existing behavior of never sentinel-filtering (the decimal
+    // regex below only ever matches `base.N`-shaped names, so sentinel inclusion
+    // is a no-op either way).
+    if (node_fs_1.default.existsSync(phasesDir)) {
+        const { value: dirs, scope } = listAllPhaseDirs(phasesDir, { includeSentinels: true });
+        if (scope === SCOPE.UNREADABLE) {
+            // The dir EXISTS but could not be read (EACCES/EIO) — a genuine anomaly,
+            // not the expected empty-decimalSet case above. Surfaced loud, matching
+            // this function's pre-migration `readdirSync` catch: swallowing it would
+            // let `phase insert` proceed with an incomplete decimalSet and collide
+            // with an existing on-disk decimal directory the scan never saw.
+            error(`Failed to scan phase directories for existing decimal phases: unable to read ${phasesDir}`);
+        }
+        const decimalPattern = new RegExp(`^${OPTIONAL_PROJECT_CODE_PREFIX_SOURCE}${(0, pattern_cjs_1.escapeRegex)(base)}\\.(\\d+)`);
+        for (const dir of dirs) {
+            const dm = dir.match(decimalPattern);
+            if (dm)
+                decimalSet.add(parseInt(dm[1], 10));
+        }
+    }
+    const rmPhasePattern = new RegExp(`#{2,4}\\s*Phase\\s+${phaseMarkdownRegexSource(base)}\\.(\\d+)${OPTIONAL_PHASE_TAG_SOURCE}\\s*:`, 'gi');
+    let rmMatch;
+    while ((rmMatch = rmPhasePattern.exec(rawContent)) !== null) {
+        decimalSet.add(parseInt(rmMatch[1], 10));
+    }
+    const checklistDecimalPattern = new RegExp(`-\\s*\\[[ x]\\]\\s*(?:\\*\\*)?Phase\\s+${phaseMarkdownRegexSource(base)}\\.(\\d+)${OPTIONAL_PHASE_TAG_SOURCE}[:\\s]`, 'gi');
+    let clMatch;
+    while ((clMatch = checklistDecimalPattern.exec(rawContent)) !== null) {
+        decimalSet.add(parseInt(clMatch[1], 10));
+    }
+    return decimalSet;
+}
+function cmdPhaseInsert(cwd, afterPhase, description, raw, allocation = 'nested') {
     if (!afterPhase || !description) {
         error('after-phase and description required for phase insert');
     }
@@ -1398,43 +1458,20 @@ function cmdPhaseInsert(cwd, afterPhase, description, raw) {
         }
         const phasesDir = node_path_1.default.join(planningDir(cwd), 'phases');
         const normalizedBase = normalizePhaseName(afterPhase);
-        const decimalSet = new Set();
-        // #2245 audit: existsSync-guarded, mirroring cmdPhaseNextDecimal's identical
-        // scan above — a missing phasesDir (no decimal sub-phases yet) is the
-        // expected, silent case (empty decimalSet). A readdirSync failure once the
-        // dir is confirmed to EXIST is a genuine anomaly; swallowing it used to let
-        // `phase insert` proceed with an incomplete decimalSet and risk writing a
-        // decimal phase number that collides with an existing on-disk directory
-        // the scan simply never saw — surfaced loud instead, like the sibling.
-        if (node_fs_1.default.existsSync(phasesDir)) {
-            // Initialized (not just declared) so TS's definite-assignment check is
-            // satisfied without relying on control-flow narrowing through error()'s
-            // `never` return, which TS does not propagate through a destructured
-            // module-property function reference — error() still halts the process
-            // before `dirs` below is ever computed from this placeholder value.
-            let entries = [];
-            try {
-                entries = node_fs_1.default.readdirSync(phasesDir, { withFileTypes: true });
-            }
-            catch (e) {
-                const msg = e instanceof Error ? e.message : String(e);
-                error(`Failed to scan phase directories for existing decimal phases: ${msg}`);
-            }
-            const dirs = entries.filter((e) => e.isDirectory()).map((e) => e.name);
-            const decimalPattern = new RegExp(`^${OPTIONAL_PROJECT_CODE_PREFIX_SOURCE}${(0, pattern_cjs_1.escapeRegex)(normalizedBase)}\\.(\\d+)`);
-            for (const dir of dirs) {
-                const dm = dir.match(decimalPattern);
-                if (dm)
-                    decimalSet.add(parseInt(dm[1], 10));
-            }
-        }
-        const rmPhasePattern = new RegExp(`#{2,4}\\s*Phase\\s+${phaseMarkdownRegexSource(normalizedBase)}\\.(\\d+)${OPTIONAL_PHASE_TAG_SOURCE}\\s*:`, 'gi');
-        let rmMatch;
-        while ((rmMatch = rmPhasePattern.exec(rawContent)) !== null) {
-            decimalSet.add(parseInt(rmMatch[1], 10));
-        }
+        const decimalSet = scanExistingDecimalPhaseNumbers(phasesDir, rawContent, normalizedBase);
         const nextDecimal = decimalSet.size === 0 ? 1 : Math.max(...decimalSet) + 1;
-        const _decimalPhase = `${normalizedBase}.${nextDecimal}`;
+        let _decimalPhase = `${normalizedBase}.${nextDecimal}`;
+        // #4569: sibling allocation joins afterPhase's PARENT level instead of nesting
+        // one level deeper under afterPhase itself. A top-level phase (no existing
+        // decimal segment) has no sibling level to join; nested is the only sensible
+        // allocation, so we silently fall back for that case.
+        const lastDotIndex = normalizedBase.lastIndexOf('.');
+        if (allocation === 'sibling' && lastDotIndex !== -1) {
+            const parentBase = normalizedBase.slice(0, lastDotIndex);
+            const siblingDecimalSet = scanExistingDecimalPhaseNumbers(phasesDir, rawContent, parentBase);
+            const siblingNextDecimal = siblingDecimalSet.size === 0 ? 1 : Math.max(...siblingDecimalSet) + 1;
+            _decimalPhase = `${parentBase}.${siblingNextDecimal}`;
+        }
         const insertConfig = loadConfig(cwd);
         const projectCode = insertConfig.project_code || '';
         const pfx = projectCode ? `${projectCode}-` : '';

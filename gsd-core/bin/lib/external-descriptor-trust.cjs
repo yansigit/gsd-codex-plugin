@@ -41,14 +41,25 @@ const node_path_1 = __importDefault(require("node:path"));
  * currently keeps every caller of this function's callers symlink-safe: they
  * reject symlinks upstream, before a target ever reaches a lexical-only check
  * like this one.
+ *
+ * `opts.pathImpl` (default: the ambient `path` module) lets a caller inject
+ * `path.win32` or `path.posix`. This is security-relevant: the win32 branch
+ * (drive letters, UNC paths, `\` separator) is otherwise only reachable by
+ * actually running this process on a Windows host, so without injection a
+ * win32-specific confinement escape would be unverified on every other
+ * platform. This mirrors the platform-injection seam already used elsewhere
+ * in this repo, e.g. src/shell-command-projection.cts's `opts.platform`
+ * (#4641). All existing 2-arg callers are unaffected: the default resolves to
+ * the ambient `path`, preserving byte-identical behaviour.
  */
-function isPathConfined(target, root) {
+function isPathConfined(target, root, opts = {}) {
     if (typeof target !== 'string' || typeof root !== 'string' || target.length === 0 || root.length === 0) {
         return false;
     }
-    const rootResolved = node_path_1.default.resolve(root);
-    const targetResolved = node_path_1.default.resolve(root, target);
-    const prefix = rootResolved + node_path_1.default.sep;
+    const p = opts.pathImpl ?? node_path_1.default;
+    const rootResolved = p.resolve(root);
+    const targetResolved = p.resolve(root, target);
+    const prefix = rootResolved + p.sep;
     return targetResolved === rootResolved || targetResolved.startsWith(prefix);
 }
 /**
