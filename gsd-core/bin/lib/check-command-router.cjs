@@ -14,7 +14,13 @@ const node_path_1 = __importDefault(require("node:path"));
 const node_child_process_1 = require("node:child_process");
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const io = require("./io.cjs");
-const { output, error, ERROR_REASON } = io;
+const { output, ERROR_REASON } = io;
+// Explicitly annotated so TypeScript applies never-return control-flow narrowing.
+// A destructured `const { error } = io` is a const WITHOUT a type annotation, and TS
+// only narrows after a never-returning call when the callee is a function declaration
+// or an annotated const. Without the annotation every `error(...)` guard below would
+// need a dead `throw` after it to convince the checker that the value is non-null.
+const error = io.error;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const planningWorkspaceMod = require("./planning-workspace.cjs");
 const { planningDir } = planningWorkspaceMod;
@@ -89,7 +95,12 @@ function readIfExists(filePath) {
     }
 }
 function resolvePath(inputPath, projectDir) {
-    return node_path_1.default.isAbsolute(inputPath) ? inputPath : node_path_1.default.join(projectDir, inputPath);
+    const candidate = node_path_1.default.isAbsolute(inputPath) ? inputPath : node_path_1.default.join(projectDir, inputPath);
+    const contained = (0, security_cjs_1.tryWithinRoot)(candidate, projectDir, security_cjs_1.PathAcceptance.AbsoluteInsideRoot);
+    if (contained === null) {
+        error(`path escapes its allowed directory: ${inputPath}`, ERROR_REASON.USAGE);
+    }
+    return contained;
 }
 function readWorkflowConfig(projectDir) {
     const configPath = node_path_1.default.join(projectDir, '.planning', 'config.json');
@@ -382,11 +393,6 @@ function recentCommitMessages(projectDir) {
         return '';
     }
 }
-function isInsideRoot(candidatePath, rootDir) {
-    const root = node_path_1.default.resolve(rootDir);
-    const target = node_path_1.default.resolve(root, candidatePath);
-    return target === root || target.startsWith(`${root}${node_path_1.default.sep}`);
-}
 function readModifiedFilesContent(projectDir, summaries) {
     const out = [];
     let total = 0;
@@ -399,9 +405,17 @@ function readModifiedFilesContent(projectDir, summaries) {
             for (const file of files) {
                 if (total >= 50)
                     break;
-                if (!file || !isInsideRoot(file, projectDir))
+                if (!file)
                     continue;
-                const raw = readIfExists(resolvePath(file, projectDir));
+                // Migrated off the hand-rolled prefix check (ADR-4650): resolve+contain in one
+                // step via the canonical realpath predicate — the eventual read below follows
+                // symlinks, so containment must be decided on the resolved target, not a lexical
+                // prefix. Read the value the predicate RETURNED; do not re-derive the path.
+                const candidate = node_path_1.default.isAbsolute(file) ? file : node_path_1.default.join(projectDir, file);
+                const contained = (0, security_cjs_1.tryWithinRoot)(candidate, projectDir, security_cjs_1.PathAcceptance.AbsoluteInsideRoot);
+                if (contained === null)
+                    continue;
+                const raw = readIfExists(contained);
                 out.push(raw.length > 256 * 1024 ? raw.slice(0, 256 * 1024) : raw);
                 total++;
             }
@@ -1049,8 +1063,9 @@ function cmdGapAnalysisPlanPost(projectDir, args, raw) {
         error('gap-analysis.plan-post requires a phase-dir argument: check gap-analysis.plan-post <phase-dir> [phase-req-ids]', ERROR_REASON.SDK_MISSING_ARG);
         return;
     }
+    const resolvedPhaseDir = resolvePath(phaseDir, projectDir);
     const phaseReqIds = args[3] ?? undefined;
-    const result = runGapAnalysis(projectDir, phaseDir, { phaseReqIds });
+    const result = runGapAnalysis(projectDir, resolvedPhaseDir, { phaseReqIds });
     // Uniform gate contract: block = false (gap-analysis is always advisory, never blocks).
     // `message` carries the human-readable gap analysis report so the dispatch's
     // advisory branch can surface it. --raw emits JSON (rawValue=undefined), not
@@ -1101,21 +1116,21 @@ function buildPredicateDeps() {
                 node_path_1.default.win32.basename(artifactSuffix) !== artifactSuffix) {
                 return null;
             }
-            const directPath = (0, security_cjs_1.validatePath)(artifactSuffix, phaseDir);
-            if (directPath.safe && node_fs_1.default.existsSync(directPath.resolved) && node_fs_1.default.statSync(directPath.resolved).isFile()) {
-                return directPath.resolved;
+            const directContained = (0, security_cjs_1.tryWithinRoot)(artifactSuffix, phaseDir);
+            if (directContained !== null && node_fs_1.default.existsSync(directContained) && node_fs_1.default.statSync(directContained).isFile()) {
+                return directContained;
             }
-            const planningPath = (0, security_cjs_1.validatePath)(node_path_1.default.join('.planning', artifactSuffix), phaseDir);
-            if (planningPath.safe && node_fs_1.default.existsSync(planningPath.resolved) && node_fs_1.default.statSync(planningPath.resolved).isFile()) {
-                return planningPath.resolved;
+            const planningContained = (0, security_cjs_1.tryWithinRoot)(node_path_1.default.join('.planning', artifactSuffix), phaseDir);
+            if (planningContained !== null && node_fs_1.default.existsSync(planningContained) && node_fs_1.default.statSync(planningContained).isFile()) {
+                return planningContained;
             }
             try {
                 const files = node_fs_1.default.readdirSync(phaseDir);
                 for (const f of files) {
                     if (f.endsWith('-' + artifactSuffix) || f === artifactSuffix) {
-                        const candidate = (0, security_cjs_1.validatePath)(f, phaseDir);
-                        if (candidate.safe && node_fs_1.default.statSync(candidate.resolved).isFile())
-                            return candidate.resolved;
+                        const candidateContained = (0, security_cjs_1.tryWithinRoot)(f, phaseDir);
+                        if (candidateContained !== null && node_fs_1.default.statSync(candidateContained).isFile())
+                            return candidateContained;
                     }
                 }
             }
@@ -1201,10 +1216,15 @@ function cmdCheckPredicate(projectDir, args, raw) {
         error('predicate --predicate value must be valid JSON', ERROR_REASON.USAGE);
         return;
     }
+    const rawPhaseDir = flags['phase-dir'];
+    let resolvedPhaseDir = rawPhaseDir;
+    if (typeof rawPhaseDir === 'string' && rawPhaseDir !== '') {
+        resolvedPhaseDir = resolvePath(rawPhaseDir, projectDir);
+    }
     const ctx = {
         cwd: projectDir,
         phaseNumber: flags['phase-number'],
-        phaseDir: flags['phase-dir'],
+        phaseDir: resolvedPhaseDir,
         phaseReqIds: flags['phase-req-ids'],
     };
     let result;
@@ -1298,7 +1318,12 @@ function cmdApiCoverageVerifyPre(projectDir, args, raw) {
     // Defense-in-depth: the resolved dir must be inside the phases root (or a
     // milestone archive under .planning/milestones).
     const milestonesRoot = node_path_1.default.join(pDir, 'milestones');
-    if (!isInsideRoot(resolvedDir, phasesRoot) && !isInsideRoot(resolvedDir, milestonesRoot)) {
+    // Lexical containment (ADR-4650): resolvedDir is a directory path, not read
+    // through here — mirrors the prior path.resolve(root, candidate)-based check
+    // without introducing a filesystem/realpath dependency this defense-in-depth
+    // recheck never had.
+    if ((0, security_cjs_1.tryWithinRootLexical)(resolvedDir, phasesRoot) === null &&
+        (0, security_cjs_1.tryWithinRootLexical)(resolvedDir, milestonesRoot) === null) {
         output({
             block: true,
             passed: false,

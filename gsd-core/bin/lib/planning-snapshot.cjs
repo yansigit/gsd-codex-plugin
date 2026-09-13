@@ -117,9 +117,12 @@ function worstScope(...scopes) {
  * uncorrelated (isPhaseComplete's readability check never re-derives or
  * requires scanPhasePlans, and vice versa).
  */
-function buildPhaseSnapshot(phasesDir, dir) {
+function buildPhaseSnapshot(phasesDir, dir, convention) {
     const fullPhaseDir = node_path_1.default.join(phasesDir, dir);
-    const completionResult = isPhaseComplete(fullPhaseDir);
+    // #612: the snapshot's single federated convention resolution rides into
+    // completion, so a bracket phase dir resolves and scopes its verification
+    // report exactly like its legacy twin.
+    const completionResult = isPhaseComplete(fullPhaseDir, { convention });
     const scanResult = scanPhasePlans(fullPhaseDir);
     return {
         dir,
@@ -665,7 +668,7 @@ function buildRoadmapBracketIncoherencesField(roadmapPath, convention) {
  * deliberate fail-open match to the pre-migration behavior, not a scope
  * degradation, since the original never surfaced these failures either.
  */
-function buildResearchValidationStatusField(phasesDir, phaseDirNames, enumerationScope) {
+function buildResearchValidationStatusField(phasesDir, phaseDirNames, enumerationScope, convention) {
     const value = phaseDirNames.map((dir) => {
         const fullPhaseDir = node_path_1.default.join(phasesDir, dir);
         let files;
@@ -679,7 +682,9 @@ function buildResearchValidationStatusField(phasesDir, phaseDirNames, enumeratio
         // phase-numbered-artifact predicates, so a stray cross-phase
         // -RESEARCH.md/-VALIDATION.md sitting in the wrong directory cannot flip
         // this phase's flags — mirrors core-utils.cts's getPhaseFileStats.
-        const scopedFiles = scopeToPhase(files, dir);
+        // #612: the snapshot's federated convention threaded, so a bracket dir
+        // scopes by its real token instead of the include-everything fail-safe.
+        const scopedFiles = scopeToPhase(files, dir, convention);
         const researchFile = scopedFiles.find((f) => f.endsWith('-RESEARCH.md'));
         const hasValidationMd = scopedFiles.some((f) => f.endsWith('-VALIDATION.md'));
         let hasValidationArchitecture = false;
@@ -1014,9 +1019,14 @@ function buildPlanningSnapshot(cwd) {
     // genuinely differ, and substituting one for the other would silently re-scope
     // `phaseDirs` — a change this PR does not need and no test covers. The
     // federation guarantee PR-2 exists to deliver is delivered where it is
-    // observable: in the rules that read `snapshot.phaseIdConvention`.
+    // observable: in the rules that read `snapshot.phaseIdConvention`. Per-phase
+    // completion and the research/validation scoping below deliberately use the
+    // FEDERATED `phaseIdConvention` (the same value `snapshot.phaseIdConvention`
+    // publishes), while `phaseDirs` keeps `listMilestonePhaseDirs`'s lazy
+    // PROJECT-only resolve — the divergence documented above is unchanged by
+    // this thread. No behavior change.
     const phaseDirs = listMilestonePhaseDirs(paths.phases, { cwd });
-    const phasesValue = phaseDirs.value.map((dir) => buildPhaseSnapshot(paths.phases, dir));
+    const phasesValue = phaseDirs.value.map((dir) => buildPhaseSnapshot(paths.phases, dir, phaseIdConvention));
     const stateFields = buildStateFields(paths.state);
     const allPhaseDirNames = buildAllPhaseDirNamesField(paths.phases);
     const roadmapDeclared = buildRoadmapDeclaredPhasesField(paths.roadmap, phaseIdConvention);
@@ -1039,7 +1049,7 @@ function buildPlanningSnapshot(cwd) {
         stateStatus: stateFields.stateStatus,
         roadmapDeclaredPhases: roadmapDeclared.declared,
         roadmapPhaseCheckboxes: buildRoadmapPhaseCheckboxesField(paths.roadmap, phaseIdConvention),
-        researchValidationStatus: buildResearchValidationStatusField(paths.phases, phaseDirs.value, phaseDirs.scope),
+        researchValidationStatus: buildResearchValidationStatusField(paths.phases, phaseDirs.value, phaseDirs.scope, phaseIdConvention),
         milestoneArchiveStatus: buildMilestoneArchiveStatusField(cwd),
         planningRootFiles: buildPlanningRootFilesField(cwd),
         allPhaseDirNames,

@@ -17,7 +17,11 @@ const pattern_cjs_1 = require("./pattern.cjs");
 const security_cjs_1 = require("./security.cjs");
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const ioMod = require("./io.cjs");
-const { output, error, ERROR_REASON } = ioMod;
+const { output, ERROR_REASON } = ioMod;
+// Explicitly annotated so TypeScript applies never-return control-flow narrowing.
+// See the identical note in check-command-router.cts: a destructured const carries no
+// type annotation, so TS will not narrow after `error(...)` without this.
+const error = ioMod.error;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const configLoaderMod = require("./config-loader.cjs");
 const { loadConfig, isGitIgnored } = configLoaderMod;
@@ -285,7 +289,7 @@ function cmdListSeeds(cwd, statusFilter, raw) {
             continue;
         let safeFilePath;
         try {
-            safeFilePath = (0, security_cjs_1.requireSafePath)(node_path_1.default.join(seedsDir, entry.name), planDir, 'seed file', { allowAbsolute: true });
+            safeFilePath = (0, security_cjs_1.requireSafePath)(node_path_1.default.join(seedsDir, entry.name), planDir, 'seed file', security_cjs_1.PathAcceptance.AbsoluteInsideRoot);
         }
         catch {
             continue;
@@ -556,13 +560,11 @@ function cmdResolveExecution(cwd, agentType, raw, opts) {
             // eslint-disable-next-line @typescript-eslint/no-require-imports, @typescript-eslint/unbound-method
             const { getGlobalConfigDir } = require('./runtime-homes.cjs');
             const agentsDirEff = node_path_1.default.join(getGlobalConfigDir(runtime), 'agents');
-            const agentPath = node_path_1.default.join(agentsDirEff, `${agentType}.md`);
             // agentType is an unvalidated CLI positional: keep the read inside the
             // agents dir so `../../x` cannot point it elsewhere (defense in depth —
-            // the reflected surface is only a frontmatter effort line).
-            if (!node_path_1.default.resolve(agentPath).startsWith(node_path_1.default.resolve(agentsDirEff) + node_path_1.default.sep)) {
-                throw new Error('agent path escapes the agents directory');
-            }
+            // the reflected surface is only a frontmatter effort line). Untrusted
+            // input feeding a real read → realpath family (ADR-4650 decision 6).
+            const agentPath = (0, security_cjs_1.assertWithinRoot)(`${agentType}.md`, agentsDirEff, 'agent file');
             const agentContent = node_fs_1.default.readFileSync(agentPath, 'utf8');
             // eslint-disable-next-line local/no-unbounded-quantifier -- same lazy `*?` bounded by the `^---$/m` closing anchor as the sibling frontmatter regexes in this file
             const fmMatchEff = /^---\r?\n([\s\S]*?)^---\r?$/m.exec(agentContent);
@@ -2483,7 +2485,7 @@ function groupFilesBySubrepo(files, subRepos) {
         let matchLen = -1;
         if (candidates) {
             for (const repo of candidates) {
-                if (file.startsWith(repo + '/')) {
+                if (file.startsWith(repo + '/')) { // allow-handrolled-containment: sub-repo file grouping, not a safety decision
                     const repoLen = String(repo).length;
                     if (repoLen > matchLen) {
                         match = repo;
@@ -2632,15 +2634,13 @@ function cmdPrSubrepo(cwd, repo, branch, commitMessage, raw) {
         error(`Branch name must not start with '-': ${branch}`);
     }
     // 0. Security: validate repo path is contained within the workspace root.
-    //    Uses security.cjs validatePath (symlink-safe realpathSync + startsWith guard)
+    //    Uses security.cjs tryWithinRoot (symlink-safe realpathSync + startsWith guard)
     //    to reject ../escape, absolute paths, and symlink traversal.
-    // eslint-disable-next-line @typescript-eslint/no-require-imports, @typescript-eslint/unbound-method
-    const { validatePath } = require('./security.cjs');
-    const pathCheck = validatePath(repo, cwd);
-    if (!pathCheck.safe) {
-        error(`Sub-repo path is unsafe: ${pathCheck.error}`);
+    const repoContained = (0, security_cjs_1.tryWithinRoot)(repo, cwd);
+    if (repoContained === null) {
+        error(`Sub-repo path is unsafe: resolves outside the workspace root`);
     }
-    const repoCwd = pathCheck.resolved;
+    const repoCwd = repoContained;
     if (!node_fs_1.default.existsSync(repoCwd)) {
         error(`Sub-repo not found: ${repoCwd}`);
     }
@@ -3164,11 +3164,52 @@ function cmdTodoComplete(cwd, filename, options, raw) {
     const todosRoot = todosDir(cwd);
     const pendingDir = node_path_1.default.join(todosRoot, 'pending');
     const completedDir = node_path_1.default.join(todosRoot, 'completed');
+    // #4652: containment against todosRoot only rejects paths that leave the
+    // root — it cannot express "a todo name is a basename, not a path" (see
+    // #4327). `../sibling.md`, `a/../../b.md`, and `sub/name.md` all resolve
+    // to a location inside todosRoot (or inside pending/) and would pass
+    // containment, yet none of them is a bare filename. Reject on basename
+    // shape FIRST, before any path is even joined — same predicate shape as
+    // findPhaseArtifact in check-command-router.cts. Checking both `/` and
+    // `\` explicitly (not just path.basename) matters on POSIX, where a
+    // literal backslash is just an ordinary filename character to
+    // path.basename but not to path.win32.basename or to the user's intent.
+    const rawFilename = filename;
+    if (rawFilename === '.' ||
+        rawFilename === '..' ||
+        rawFilename.includes('\0') ||
+        rawFilename.includes('/') ||
+        rawFilename.includes('\\') ||
+        node_path_1.default.basename(rawFilename) !== rawFilename ||
+        node_path_1.default.win32.basename(rawFilename) !== rawFilename) {
+        error(`todo name must be a plain filename inside the pending directory, not a path: ${rawFilename}`, ERROR_REASON.USAGE);
+    }
     const sourcePath = node_path_1.default.join(pendingDir, filename);
-    if (!node_fs_1.default.existsSync(sourcePath)) {
+    const targetPath = node_path_1.default.join(completedDir, filename);
+    const sourceContained = (0, security_cjs_1.tryWithinRoot)(sourcePath, todosRoot, security_cjs_1.PathAcceptance.AbsoluteInsideRoot);
+    if (sourceContained === null) {
+        error(`todo file escapes its allowed directory: ${filename}`, ERROR_REASON.USAGE);
+    }
+    const targetContained = (0, security_cjs_1.tryWithinRoot)(targetPath, todosRoot, security_cjs_1.PathAcceptance.AbsoluteInsideRoot);
+    if (targetContained === null) {
+        error(`todo file escapes its allowed directory: ${filename}`, ERROR_REASON.USAGE);
+    }
+    const resolvedSource = sourceContained;
+    const resolvedTarget = targetContained;
+    if (!node_fs_1.default.existsSync(resolvedSource)) {
         error(`Todo not found: ${filename}`);
     }
-    const content = node_fs_1.default.readFileSync(sourcePath, 'utf-8');
+    // #4652: a name that IS a bare basename can still resolve to something that
+    // is not a regular file — a directory, symlink-to-directory, FIFO or socket
+    // sitting in pending/ under an ordinary-looking name. `.` and `..` no longer
+    // reach here (the basename guard above rejects them first), so this is not
+    // about traversal; it stops fs.readFileSync from throwing an uncaught EISDIR
+    // with an absolute-path stack trace where every sibling case gives a clean
+    // USAGE rejection.
+    if (!node_fs_1.default.statSync(resolvedSource).isFile()) {
+        error(`todo name is not a file: ${filename}`, ERROR_REASON.USAGE);
+    }
+    const content = node_fs_1.default.readFileSync(resolvedSource, 'utf-8');
     const today = clock_cjs_1.realClock.localToday();
     // #4096: --dry-run mirrors `milestone complete --dry-run` (#2118) — every
     // existence check above still runs, nothing below mutates, and the payload
@@ -3180,8 +3221,8 @@ function cmdTodoComplete(cwd, filename, options, raw) {
             file: filename,
             date: today,
             would_move: {
-                source: node_path_1.default.relative(cwd, sourcePath).split(node_path_1.default.sep).join('/'),
-                target: node_path_1.default.relative(cwd, node_path_1.default.join(completedDir, filename)).split(node_path_1.default.sep).join('/'),
+                source: node_path_1.default.relative(cwd, resolvedSource).split(node_path_1.default.sep).join('/'),
+                target: node_path_1.default.relative(cwd, resolvedTarget).split(node_path_1.default.sep).join('/'),
             },
             would_set: { completed: today, status: 'completed' },
         }, raw);
@@ -3191,8 +3232,8 @@ function cmdTodoComplete(cwd, filename, options, raw) {
     // creates nothing).
     (0, shell_command_projection_cjs_1.platformEnsureDir)(completedDir);
     const completedContent = upsertTodoCompletionFields(content, today);
-    (0, shell_command_projection_cjs_1.platformWriteSync)(node_path_1.default.join(completedDir, filename), completedContent);
-    node_fs_1.default.unlinkSync(sourcePath);
+    (0, shell_command_projection_cjs_1.platformWriteSync)(resolvedTarget, completedContent);
+    node_fs_1.default.unlinkSync(resolvedSource);
     output({ completed: true, file: filename, date: today }, raw, 'completed');
 }
 function cmdScaffold(cwd, type, options, raw) {

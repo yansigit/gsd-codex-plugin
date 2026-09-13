@@ -3084,7 +3084,10 @@ function cmdPhaseComplete(cwd, phaseNum, raw) {
         // #2617: pass the project's runtime so the blocked-completion error below
         // suggests the command surface this runtime actually installs
         // ($gsd-… on Codex) rather than a hard-coded Claude-style string.
-        const verificationStatus = readVerificationStatus(phaseFullDir, { runtime: (0, runtime_slash_cjs_1.resolveRuntime)(cwd) });
+        const verificationStatus = readVerificationStatus(phaseFullDir, {
+            runtime: (0, runtime_slash_cjs_1.resolveRuntime)(cwd),
+            convention: resolvePhaseIdConvention(cwd),
+        });
         // #3057 B3: the staleness check inside readVerificationStatus can itself
         // fail (fs / scanPhasePlans / clock error), in which case `status` above
         // was routed as if nothing were stale (unchanged fail-open routing) — but

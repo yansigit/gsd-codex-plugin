@@ -13,6 +13,7 @@ const node_fs_1 = __importDefault(require("node:fs"));
 const node_path_1 = __importDefault(require("node:path"));
 const node_os_1 = __importDefault(require("node:os"));
 const validate_cjs_1 = require("./validate.cjs");
+const security_cjs_1 = require("./security.cjs");
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- planning-workspace.cjs is an export= CommonJS module
 const planningWorkspace = require("./planning-workspace.cjs");
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- frontmatter.cjs is an export= CommonJS module
@@ -37,7 +38,7 @@ const worktreeSafetyMod = require("./worktree-safety.cjs");
 // codebase-drift --name-status parse loop).
 const { decodeGitQuotedPath } = worktreeSafetyMod;
 const shell_command_projection_cjs_1 = require("./shell-command-projection.cjs");
-const security_cjs_1 = require("./security.cjs");
+const security_cjs_2 = require("./security.cjs");
 const runtime_slash_cjs_1 = require("./runtime-slash.cjs");
 const schema_detect_cjs_1 = require("./schema-detect.cjs");
 const markdown_sectionizer_cjs_1 = require("./markdown-sectionizer.cjs");
@@ -156,9 +157,12 @@ function verifySummaryCore(cwd, summaryPath, checkFileCount, opts) {
         if (firstSegment.indexOf('.') > 0)
             return false;
         // Containment guard: a `../`-bearing reference must not turn this advisory
-        // into a filesystem existence probe outside the project.
-        const resolved = node_path_1.default.resolve(projectRoot, candidate);
-        if (resolved !== projectRoot && !resolved.startsWith(projectRoot + node_path_1.default.sep))
+        // into a filesystem existence probe outside the project. Lexical (ADR-4650
+        // decision 6): the candidate is a string pulled from a SUMMARY document and
+        // by construction may not exist yet — existence is what gets probed
+        // downstream — and this is a pure string-heuristic filter with no other fs
+        // access, so a realpath call would also change its cost profile.
+        if ((0, security_cjs_1.tryWithinRootLexical)(candidate, projectRoot) === null)
             return false;
         return true;
     };
@@ -1382,11 +1386,11 @@ function cmdVerifyKeyLinks(cwd, planFilePath, raw) {
             // project. Leave sourceContent as null so the existing not-found /
             // pending classification below runs unchanged. Note this guard is
             // narrower than it may look: `from: "."` is a non-empty string, so it
-            // still reaches validatePath and safeReadFile below, and DOES read the
+            // still reaches tryWithinRoot and safeReadFile below, and DOES read the
             // cwd directory (yielding "Source read failed: EISDIR") — this branch
             // only short-circuits the true empty-string case.
-            const fromCheck = (0, security_cjs_1.validatePath)(fromPath, cwd);
-            if (!fromCheck.safe) {
+            const fromContained = (0, security_cjs_2.tryWithinRoot)(fromPath, cwd);
+            if (fromContained === null) {
                 // Do not echo result.error — it embeds absolute host paths.
                 check['path_rejected'] = 'from';
                 check['detail'] = 'Source path rejected — resolves outside the project directory';
@@ -1394,7 +1398,7 @@ function cmdVerifyKeyLinks(cwd, planFilePath, raw) {
                 continue;
             }
             try {
-                sourceContent = (0, shell_command_projection_cjs_1.platformReadSync)(fromCheck.resolved);
+                sourceContent = (0, shell_command_projection_cjs_1.platformReadSync)(fromContained);
             }
             catch (err) {
                 // Report the errno only — never the message or path (untrusted `from:`
@@ -1462,8 +1466,8 @@ function cmdVerifyKeyLinks(cwd, planFilePath, raw) {
                             // An empty/missing `to:` is a malformed plan, not a
                             // path-confinement violation — only a non-empty path that
                             // actually resolves outside the project is path_rejected.
-                            const toCheck = (0, security_cjs_1.validatePath)(toPath, cwd);
-                            if (!toCheck.safe) {
+                            const toContained = (0, security_cjs_2.tryWithinRoot)(toPath, cwd);
+                            if (toContained === null) {
                                 // Do not read a rejected `to:` — treat as no target content
                                 // and do not echo result.error, which embeds absolute host
                                 // paths.
@@ -1471,7 +1475,7 @@ function cmdVerifyKeyLinks(cwd, planFilePath, raw) {
                                 check['detail'] = `Pattern "${link['pattern']}" not found in source; target path rejected — resolves outside the project directory`;
                             }
                             else {
-                                targetContent = (0, shell_command_projection_cjs_1.platformReadSync)(toCheck.resolved);
+                                targetContent = (0, shell_command_projection_cjs_1.platformReadSync)(toContained);
                             }
                         }
                         if (targetContent && pat.test(targetContent)) {
@@ -1827,9 +1831,9 @@ function resolvePhaseDirByToken(phasesDir, phaseArg) {
     const matched = matchPhaseDirs(dirNames, normalizedPhase).matches[0];
     if (matched)
         return node_path_1.default.join(phasesDir, matched);
-    const check = (0, security_cjs_1.validatePath)(phaseArg, phasesDir);
-    if (check.safe && node_fs_1.default.existsSync(check.resolved))
-        return check.resolved;
+    const contained = (0, security_cjs_2.tryWithinRoot)(phaseArg, phasesDir);
+    if (contained !== null && node_fs_1.default.existsSync(contained))
+        return contained;
     return null;
 }
 /**

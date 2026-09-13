@@ -42,6 +42,7 @@ exports.dispatchReviewerLanes = dispatchReviewerLanes;
 const node_fs_1 = __importDefault(require("node:fs"));
 const node_path_1 = __importDefault(require("node:path"));
 const prompt_budget_cjs_1 = require("./prompt-budget.cjs");
+const security_cjs_1 = require("./security.cjs");
 const review_lane_invocation_cjs_1 = require("./review-lane-invocation.cjs");
 const review_reviewer_selection_cjs_1 = require("./review-reviewer-selection.cjs");
 /** Closed set of request-level (not per-lane) halt reasons. Mirrors `LANE_UNAVAILABLE`'s shape. */
@@ -97,8 +98,13 @@ function validatePaths(repoRoot, paths) {
         if (typeof p !== 'string' || p.length === 0 || CONTROL_CHAR.test(p)) {
             return { ok: false, reason: exports.DISPATCH_REASON.INVALID_PATHS };
         }
+        // ADR-4650 decision 6: lexical family — this is the first of the two
+        // deliberate halves (#4209 WR-05); the ENOENT-tolerant realpath half
+        // below cannot be folded into a single `tryWithinRoot` call (its
+        // ancestor-walk would accept a deleted path via the nearest existing
+        // ancestor, not the explicit `continue` this code requires).
         const resolved = node_path_1.default.resolve(root, p);
-        if (resolved !== root && !resolved.startsWith(root + node_path_1.default.sep)) {
+        if ((0, security_cjs_1.tryWithinRootLexical)(p, root) === null) {
             return { ok: false, reason: exports.DISPATCH_REASON.PATH_ESCAPES_REPO_ROOT };
         }
         // #4209 WR-05: `path.resolve` is lexical only — a symlink whose OWN path sits inside
@@ -113,7 +119,7 @@ function validatePaths(repoRoot, paths) {
         catch {
             continue;
         }
-        if (real !== realRoot && !real.startsWith(realRoot + node_path_1.default.sep)) {
+        if ((0, security_cjs_1.tryWithinRootLexical)(real, realRoot) === null) {
             return { ok: false, reason: exports.DISPATCH_REASON.PATH_ESCAPES_REPO_ROOT };
         }
     }

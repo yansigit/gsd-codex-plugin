@@ -321,13 +321,10 @@ function readTextArgOrFile(cwd, value, filePath, label) {
         return value;
     // Path traversal guard: ensure file resolves within project directory
     // eslint-disable-next-line @typescript-eslint/no-require-imports, @typescript-eslint/unbound-method
-    const { validatePath } = require('./security.cjs');
-    const pathCheck = validatePath(filePath, cwd, { allowAbsolute: true });
-    if (!pathCheck.safe) {
-        throw new Error(`${label} path rejected: ${pathCheck.error}`);
-    }
+    const { assertWithinRoot, PathAcceptance } = require('./security.cjs');
+    const contained = assertWithinRoot(filePath, cwd, `${label} path`, PathAcceptance.AbsoluteInsideRoot);
     try {
-        return node_fs_1.default.readFileSync(pathCheck.resolved, 'utf-8').trimEnd();
+        return node_fs_1.default.readFileSync(contained, 'utf-8').trimEnd();
     }
     catch {
         throw new Error(`${label} file not found: ${filePath}`);
@@ -2555,7 +2552,10 @@ storedCompletedPhases, storedTotalPlans, storedCompletedPlans) {
                         // own comment on that field). Folding this consumer onto the raw
                         // summaries-met flag was the exact "consolidate two of three and
                         // leave the third" gap §7.4's forcing function rules out.
-                        if (isPhaseComplete(phaseDir).value.complete)
+                        // #612: `phaseConvention` threaded so a bracket phase dir resolves
+                        // and scopes its verification report like its legacy twin — the
+                        // read-side half of the same thread cmdStateSync gets below.
+                        if (isPhaseComplete(phaseDir, { convention: phaseConvention }).value.complete)
                             diskCompletedPhases++;
                     }
                     // Count phase headings from ROADMAP — single source of truth for
@@ -5324,7 +5324,10 @@ function cmdStateValidate(cwd, raw, opts = {}) {
         // ("verification passed" drift), not a false S007.
         const files = node_fs_1.default.readdirSync(phaseDirPath);
         const phaseDirBaseName = node_path_1.default.basename(phaseDirPath);
-        const verificationFiles = scopeToPhase(files.filter(f => f.includes('VERIFICATION') && f.endsWith('.md')), phaseDirBaseName);
+        // #612: `validateConvention` threaded (already resolved above for
+        // `phaseKeyFromDir`) so the S006/S007 scan scopes bracket dirs by
+        // their real token instead of the include-everything fail-safe.
+        const verificationFiles = scopeToPhase(files.filter(f => f.includes('VERIFICATION') && f.endsWith('.md')), phaseDirBaseName, validateConvention);
         for (const vf of verificationFiles) {
             try {
                 const vContent = node_fs_1.default.readFileSync(node_path_1.default.join(phaseDirPath, vf), 'utf-8');
@@ -5515,7 +5518,10 @@ function cmdStateSync(cwd, options, raw) {
         // was a second, independent consumer of the same raw field the initial
         // migration missed — without it, `state sync` and `state json` disagreed
         // on completed_phases for the identical disk state.
-        if (isPhaseComplete(dirPath).value.complete)
+        // #612: `syncConvention` threaded — the write-side half of
+        // buildStateFrontmatter's thread above, so `state sync` and `state json`
+        // keep agreeing on completed_phases under the bracket convention.
+        if (isPhaseComplete(dirPath, { convention: syncConvention }).value.complete)
             diskCompletedPhases++;
         // Track the highest phase with incomplete plans (or any plans)
         const phaseMatch = dir.match(new RegExp(`^(${PHASE_NUMBER_TOKEN_SOURCE})`, 'i'));

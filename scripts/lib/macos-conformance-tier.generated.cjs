@@ -6,6 +6,7 @@
 
 module.exports = {
   MACOS_CONFORMANCE_TIER_FILES: [
+  "tests/adr-612-bracket-phase-counting.test.cjs",
   "tests/adr-index-gate.test.cjs",
   "tests/adr-parser.property.test.cjs",
   "tests/adr-parser.unit.test.cjs",
@@ -30,6 +31,7 @@ module.exports = {
   "tests/capability-trust.test.cjs",
   "tests/changeset-parse.test.cjs",
   "tests/check-contract-drift.test.cjs",
+  "tests/check-predicate.test.cjs",
   "tests/check-ui-safety-gate.test.cjs",
   "tests/check-update-config-dir.test.cjs",
   "tests/chunked-planning-parallel.test.cjs",
