@@ -457,7 +457,10 @@ function convertClaudeCommandToClaudeSkill(content, skillName, runtime = null, c
     // calls fall back to reading the list.
     const names = cmdNames || readGsdCommandNames();
     const normalizedBody = transformContentToHyphen(body, names);
-    const description = extractFrontmatterField(frontmatter, 'description') || '';
+    // #4324: the description is the text the host's skill picker renders, so it
+    // needs the same hyphen normalisation the body gets — otherwise a `/gsd:<cmd>`
+    // mention in a command description ships the retired colon form to the user.
+    const description = transformContentToHyphen(extractFrontmatterField(frontmatter, 'description') || '', names);
     const argumentHint = extractFrontmatterField(frontmatter, 'argument-hint');
     const agent = extractFrontmatterField(frontmatter, 'agent');
     // #769: preserve context: from source command files so it is emitted into
@@ -1670,6 +1673,8 @@ function convertClaudeCommandToClineSkill(content, skillName, _runtime = null, c
     if (!description)
         description = `Run GSD workflow ${skillName}.`;
     description = toSingleLine(description);
+    // #4324: same reason as the Claude skill converter above.
+    description = transformContentToHyphen(description, names);
     // Cline documented max is 1024 code points (not UTF-16 code units).
     // Use Array.from to iterate by code point so that multibyte characters
     // (e.g. emoji, astral-plane chars) are never split, which would produce
