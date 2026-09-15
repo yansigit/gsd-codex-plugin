@@ -25,6 +25,7 @@ exports.getFieldClassification = getFieldClassification;
 exports.getPreserveWhenUnchangedFields = getPreserveWhenUnchangedFields;
 exports.openStateTransaction = openStateTransaction;
 exports.rebuildStateTransaction = rebuildStateTransaction;
+exports.createStateWriteIntent = createStateWriteIntent;
 exports.applyPreserveWhenUnchanged = applyPreserveWhenUnchanged;
 exports.applyStatePreservation = applyStatePreservation;
 exports.transitionCore = transitionCore;
@@ -400,6 +401,28 @@ function openStateTransaction(init) {
  */
 function rebuildStateTransaction(init) {
     return createStateTransaction('rebuild', init, 'rebuildStateTransaction');
+}
+/**
+ * Extend an existing StateTransaction into a StateWriteIntent. The base
+ * transaction is REQUIRED — an absent base is a construction failure, mirroring
+ * `createStateTransaction`'s ADR-3473 §8.6 posture (do not tolerate null). `scope`
+ * defaults to the conservative `'narrow'`; `assertions` defaults to none. Frozen
+ * so an intent, like a transaction, cannot be mutated after construction.
+ */
+function createStateWriteIntent(transaction, init = {}) {
+    if (transaction === null || typeof transaction !== 'object' || Array.isArray(transaction)) {
+        const err = new Error('createStateWriteIntent: a base StateTransaction is required (build it with ' +
+            'openStateTransaction / rebuildStateTransaction first). Per ADR-4629 §8.1, an absent ' +
+            'transaction is a construction failure — do not tolerate null.');
+        err.code = 'STATE_WRITE_INTENT_TRANSACTION_REQUIRED';
+        throw err;
+    }
+    const assertions = Object.freeze((init.assertions ?? []).map((a) => Object.freeze({ field: a.field, requirement: a.requirement })));
+    return Object.freeze({
+        ...transaction,
+        assertions,
+        scope: init.scope ?? 'narrow',
+    });
 }
 /**
  * ADR-3408 §8.2: an unenforced `preserve-when-unchanged` row throws. Both

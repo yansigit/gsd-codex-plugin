@@ -87,9 +87,9 @@ const { resolveModelInternal, resolveGranularityInternal, assertValidGranularity
 const { findPhaseInternal, listMilestonePhaseDirs, listAllPhaseDirs } = phaseLocator;
 const { getRoadmapPhaseInternal, getMilestoneInfo, stripShippedMilestones, extractCurrentMilestone, } = roadmapParser;
 const { pathExistsInternal, generateSlugInternal, toPosixPath } = coreUtils;
-const { comparePhaseNum, normalizePhaseName, matchPhaseDirs, stripProjectCodePrefix, PHASE_NUMBER_TOKEN_SOURCE, isForeignPrefixedPhaseQuery, isSentinelPhaseId, extractPhaseToken, scopeToPhase, renderPhaseBranchName } = phaseId;
+const { comparePhaseNum, normalizePhaseName, matchPhaseDirs, stripProjectCodePrefix, PHASE_NUMBER_TOKEN_SOURCE, isForeignPrefixedPhaseQuery, isSentinelPhaseId, extractPhaseToken, scopeToPhase, renderPhaseBranchName, parsePhaseId, renderPhaseId, phaseHeadingPrefixSrcFor, PHASE_HEADING_BASELINE, } = phaseId;
 const { pruneOrphanedWorktrees } = worktreeSafety;
-const { planningPaths, planningDir, planningRoot, todosDir, listAvailableWorkstreams, peekActiveWorkstream, diagnoseUnresolvedActiveWorkstream, describeUnresolvedWorkstreamReason, findContextMdIn, } = planningWorkspace;
+const { planningPaths, planningDir, planningRoot, todosDir, listAvailableWorkstreams, peekActiveWorkstream, resolveEnvWorkstream, diagnoseUnresolvedActiveWorkstream, describeUnresolvedWorkstreamReason, findContextMdIn, resolvePhaseIdConvention, } = planningWorkspace;
 const { determinePhaseStatus } = commandsMod;
 const { extractFrontmatter } = frontmatterMod;
 const { isPhaseComplete, resolveVerificationFile, resolveUatFile } = verificationMod;
@@ -1336,7 +1336,7 @@ function cmdInitNewMilestone(cwd, raw, options = {}) {
     // would otherwise silently delete a stale/invalid pointer as a side effect
     // of building a JSON report field, and (per #3579) could change what a
     // LATER resolution in the same process observes.
-    const resolvedWorkstream = process.env['GSD_WORKSTREAM'] || peekActiveWorkstream(cwd);
+    const resolvedWorkstream = resolveEnvWorkstream() ?? peekActiveWorkstream(cwd);
     const workstreamActive = !!resolvedWorkstream;
     const flatMode = !workstreamActive;
     // #2992 (Phase 6.1): additive, optional field — degrades to null, never throws.
@@ -2375,6 +2375,10 @@ function cmdInitManager(cwd, raw) {
     const config = loadConfig(cwd);
     const milestone = milestoneRecord(cwd);
     const _slashRuntime = (0, runtime_slash_cjs_1.resolveRuntime)(cwd);
+    const phaseIdConvention = resolvePhaseIdConvention(cwd);
+    const capturesBracketId = phaseIdConvention === 'bracket';
+    const phaseHeadingPrefix = phaseHeadingPrefixSrcFor(PHASE_HEADING_BASELINE.LABEL_ONLY, phaseIdConvention, capturesBracketId);
+    const phaseHeadingPrefixNoCapture = phaseHeadingPrefixSrcFor(PHASE_HEADING_BASELINE.LABEL_ONLY, phaseIdConvention);
     const paths = planningPaths(cwd);
     if (!node_fs_1.default.existsSync(paths.roadmap)) {
         error(`No ROADMAP.md found. Run ${(0, runtime_slash_cjs_1.formatGsdSlash)('new-milestone', _slashRuntime)} first.`);
@@ -2390,23 +2394,40 @@ function cmdInitManager(cwd, raw) {
     // routed through it instead of a hand-rolled readdirSync + a separate
     // getMilestonePhaseFilter window check (which also never excluded
     // sentinels, unlike the owner).
-    const _phaseDirEntries = listMilestonePhaseDirs(phasesDir, { cwd }).value;
+    const _phaseDirEntries = listMilestonePhaseDirs(phasesDir, {
+        cwd,
+        phaseIdConvention,
+    }).value;
     const _checkboxStates = new Map();
-    const _cbPattern = new RegExp(`-\\s*\\[(x| )\\]\\s*.*Phase\\s+(${PHASE_NUMBER_TOKEN_SOURCE})[:\\s]`, 'gi');
+    const _cbPattern = new RegExp(`-\\s*\\[(x| )\\]\\s*.*${phaseHeadingPrefix}(${PHASE_NUMBER_TOKEN_SOURCE})[:\\s]`, 'gi');
     let _cbMatch;
     while ((_cbMatch = _cbPattern.exec(content)) !== null) {
-        _checkboxStates.set(_cbMatch[2], _cbMatch[1].toLowerCase() === 'x');
+        const phaseGroup = capturesBracketId ? 3 : 2;
+        _checkboxStates.set(_cbMatch[phaseGroup], _cbMatch[1].toLowerCase() === 'x');
     }
     // #1729: `(?:\s*\([^)\n]{0,200}\))?` tolerates a pre-colon ( ) tag (literal mirror of OPTIONAL_PHASE_TAG_SOURCE).
-    const phasePattern = new RegExp(`#{2,4}\\s*Phase\\s+(${PHASE_NUMBER_TOKEN_SOURCE})(?:\\s*\\([^)\\n]{0,200}\\))?\\s*:\\s*([^\\n]+)`, 'gi');
+    const phasePattern = new RegExp(`#{2,4}\\s*${phaseHeadingPrefix}(${PHASE_NUMBER_TOKEN_SOURCE})(?:\\s*\\([^)\\n]{0,200}\\))?\\s*:\\s*([^\\n]+)`, 'gi');
     const phases = [];
     let match;
     while ((match = phasePattern.exec(content)) !== null) {
-        const phaseNum = match[1];
-        const phaseName = match[2].replace(/\(INSERTED\)/i, '').trim();
+        const bracketId = capturesBracketId ? match[1] : undefined;
+        const phaseNum = capturesBracketId ? match[2] : match[1];
+        const phaseName = (capturesBracketId ? match[3] : match[2])
+            .replace(/\(INSERTED\)/i, '')
+            .trim();
+        let displayId;
+        if (bracketId) {
+            try {
+                displayId = renderPhaseId(parsePhaseId(`${bracketId}-${phaseNum}`));
+            }
+            catch {
+                // The bracket selector is deliberately read-tolerant. If a heading is
+                // non-canonical, retain the manager row without fabricating display_id.
+            }
+        }
         const sectionStart = match.index;
         const restOfContent = content.slice(sectionStart);
-        const nextHeader = restOfContent.match(/\n#{2,4}\s+Phase\s+\d[\d.]*/i);
+        const nextHeader = restOfContent.match(new RegExp(`\\n#{2,4}\\s+${phaseHeadingPrefixNoCapture}\\d[\\d.]*`, 'i'));
         const sectionEnd = nextHeader
             ? sectionStart + nextHeader.index
             : content.length;
@@ -2432,7 +2453,7 @@ function cmdInitManager(cwd, raw) {
             // milestone-scoped set and onto the physical one; that scope choice is
             // kept. Only the matcher is this PR's: matchPhaseDirs resolves
             // digit-leading directory names the token predicate cannot (#2528).
-            const dirMatch = matchPhaseDirs(_phaseDirEntries, normalized).matches[0];
+            const dirMatch = matchPhaseDirs(_phaseDirEntries, normalized, phaseIdConvention).matches[0];
             if (dirMatch) {
                 const fullDir = node_path_1.default.join(phasesDir, dirMatch);
                 const phaseDirRel = toPosixPath(node_path_1.default.relative(cwd, fullDir));
@@ -2509,6 +2530,7 @@ function cmdInitManager(cwd, raw) {
         const roadmapComplete = _checkboxStates.get(phaseNum) || false;
         phases.push({
             number: phaseNum,
+            ...(displayId ? { display_id: displayId } : {}),
             name: phaseName,
             goal,
             depends_on,
@@ -2549,7 +2571,7 @@ function cmdInitManager(cwd, raw) {
         .filter((p) => p['phase_complete'] === true)
         .map((p) => normalizePhaseNumber(p['number'])));
     const phaseMap = new Map(phases.map((p) => [normalizePhaseNumber(p['number']), p]));
-    const _allCompletedPattern = new RegExp(`-\\s*\\[x\\]\\s*.*Phase\\s+(${PHASE_NUMBER_TOKEN_SOURCE})[:\\s]`, 'gi');
+    const _allCompletedPattern = new RegExp(`-\\s*\\[x\\]\\s*.*${phaseHeadingPrefixNoCapture}(${PHASE_NUMBER_TOKEN_SOURCE})[:\\s]`, 'gi');
     let _allMatch;
     while ((_allMatch = _allCompletedPattern.exec(rawContent)) !== null) {
         const phaseNum = normalizePhaseNumber(_allMatch[1]);
@@ -2921,7 +2943,7 @@ function cmdInitUpdate(cwd, raw, options = {}) {
 function cmdInitTransition(cwd, raw, options = {}) {
     // #3579 root-cause fix: read-only informational field — peek, don't
     // self-heal (see cmdInitNewMilestone's identical rationale above).
-    const resolvedWorkstream = process.env['GSD_WORKSTREAM'] || peekActiveWorkstream(cwd);
+    const resolvedWorkstream = resolveEnvWorkstream() ?? peekActiveWorkstream(cwd);
     const workstreamActive = !!resolvedWorkstream;
     const result = {
         other_active_workstreams: workstreamActive
@@ -3013,7 +3035,7 @@ function cmdInitProgress(cwd, raw, options = {}) {
     // non-mutating peek so an unresolvable pointer isn't self-healed (cleared)
     // here and then found "absent" by diagnoseUnresolvedActiveWorkstream below,
     // which would misreport a present-but-bad marker as no marker at all.
-    const _resolvedWorkstream = process.env['GSD_WORKSTREAM'] || peekActiveWorkstream(cwd);
+    const _resolvedWorkstream = resolveEnvWorkstream() ?? peekActiveWorkstream(cwd);
     if (_availableWorkstreams.length > 0 && !_resolvedWorkstream) {
         // #3579: getActiveWorkstream now inherits a pointer-less session's read
         // from the shared .planning/active-workstream marker, so reaching this

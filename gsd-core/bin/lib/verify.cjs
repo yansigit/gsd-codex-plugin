@@ -1165,6 +1165,11 @@ function cmdVerifyPhaseCompleteness(cwd, phase, raw) {
         warnings,
     }, raw, errors.length === 0 ? 'complete' : 'incomplete');
 }
+// #4678: citations may carry a trailing line suffix (":42", ":1-20") that
+// describes a location inside the file, not part of the path itself.
+function stripLineSuffix(ref) {
+    return ref.replace(/:\d+(?:-\d+)?$/, '');
+}
 function cmdVerifyReferences(cwd, filePath, raw) {
     if (!filePath) {
         error('file path required');
@@ -1180,9 +1185,10 @@ function cmdVerifyReferences(cwd, filePath, raw) {
     const atRefs = content.match(/@([^\s\n,)]+\/[^\s\n,)]+)/g) || [];
     for (const ref of atRefs) {
         const cleanRef = ref.slice(1);
-        const resolved = cleanRef.startsWith('~/')
-            ? node_path_1.default.join(process.env['HOME'] || '', cleanRef.slice(2))
-            : node_path_1.default.join(cwd, cleanRef);
+        const fsRef = stripLineSuffix(cleanRef);
+        const resolved = fsRef.startsWith('~/')
+            ? node_path_1.default.join(process.env['HOME'] || '', fsRef.slice(2))
+            : node_path_1.default.join(cwd, fsRef);
         if (node_fs_1.default.existsSync(resolved)) {
             found.push(cleanRef);
         }
@@ -1190,14 +1196,14 @@ function cmdVerifyReferences(cwd, filePath, raw) {
             missing.push(cleanRef);
         }
     }
-    const backtickRefs = content.match(/`([^`]+\/[^`]+\.[a-zA-Z]{1,10})`/g) || [];
+    const backtickRefs = content.match(/`([^`]+\/[^`]+\.[a-zA-Z]{1,10}(?::\d+(?:-\d+)?)?)`/g) || [];
     for (const ref of backtickRefs) {
         const cleanRef = ref.slice(1, -1);
         if (cleanRef.startsWith('http') || cleanRef.includes('${') || cleanRef.includes('{{'))
             continue;
         if (found.includes(cleanRef) || missing.includes(cleanRef))
             continue;
-        const resolved = node_path_1.default.join(cwd, cleanRef);
+        const resolved = node_path_1.default.join(cwd, stripLineSuffix(cleanRef));
         if (node_fs_1.default.existsSync(resolved)) {
             found.push(cleanRef);
         }

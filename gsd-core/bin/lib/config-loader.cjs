@@ -614,7 +614,7 @@ function loadConfigResolved(cwd, options = {}) {
         : (options['workstreamContext'] && Object.prototype.hasOwnProperty.call(options['workstreamContext'], 'ws'))
             ? options['workstreamContext']['ws']
             : (process.env['GSD_WORKSTREAM'] || null);
-    const ws = typeof activeWorkstream === 'string' ? activeWorkstream : (activeWorkstream === null ? null : null);
+    const ws = typeof activeWorkstream === 'string' ? activeWorkstream.trim() || null : null;
     // wsRequested: true when caller explicitly requested a non-empty workstream.
     // Used for source labeling (Fix 4) and early absent-dir intercept (Fix 2).
     const wsRequested = ws != null && ws !== '';

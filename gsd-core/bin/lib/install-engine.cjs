@@ -1881,6 +1881,9 @@ function installOpencodeFamilyArtifacts(runtime, configDir, scope, resolvedProfi
         isWindowsHost: process.platform === 'win32',
         resolvedTarget: (0, shell_command_projection_cjs_1.posixNormalize)(node_path_1.default.resolve(configDir)),
         homeDir: (0, shell_command_projection_cjs_1.posixNormalize)(node_os_1.default.homedir()),
+        // #4377: the runtime's own localConfigDir, so an opted-in local install
+        // emits `<dir>/...` instead of this checkout's absolute path.
+        localDirName: runtimeArtifactConversion._localIncludeDirName(runtime),
     });
     // #2329: destDir is derived from the SAME hostBehaviors.flatCommandDir
     // descriptor value read by writeManifest's manifest-key prefix and by

@@ -451,10 +451,13 @@ function parsePhaseId(input) {
     // tokens unchanged.
     throw new Error(`parsePhaseId: not a bracket phase id: ${JSON.stringify(input)}`);
 }
+function renderMilestoneId(id) {
+    return `[${id.project}.${id.milestone}]`;
+}
 function renderPhaseId(id) {
     const sub = id.subphase ? `.${id.subphase}` : '';
     const plan = id.plan ? `-${id.plan}` : '';
-    return `[${id.project}.${id.milestone}] ${id.phase}${sub}${plan}`;
+    return `${renderMilestoneId(id)} ${id.phase}${sub}${plan}`;
 }
 // PhaseId is a structural type: nothing forces a caller through parsePhaseId,
 // so toDir cannot trust project/milestone/phase/subphase are already
@@ -1561,6 +1564,7 @@ module.exports = {
     getMilestoneFromPhaseId,
     getPhaseDirFromPhaseId,
     parsePhaseId,
+    renderMilestoneId,
     renderPhaseId,
     toDir,
     SENTINEL_RANGES,
