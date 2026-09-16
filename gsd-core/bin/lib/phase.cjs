@@ -744,12 +744,12 @@ function cmdPhasePlanIndex(cwd, phase, raw) {
             phase: normalized,
             error: `Phase ${normalized} is ambiguous: ${ambiguousMatches.length} directories match (${ambiguousMatches.map((m) => `"${m}"`).join(', ')}).`,
             ambiguous_matches: ambiguousMatches,
-            plans: [], waves: {}, incomplete: [], has_checkpoints: false,
+            plans: [], waves: {}, incomplete: [], runnable: [], ready_plans: [], has_checkpoints: false,
         }, raw);
         return;
     }
     if (!phaseDir) {
-        output({ phase: normalized, error: 'Phase not found', plans: [], waves: {}, incomplete: [], runnable: [], has_checkpoints: false }, raw);
+        output({ phase: normalized, error: 'Phase not found', plans: [], waves: {}, incomplete: [], runnable: [], ready_plans: [], has_checkpoints: false }, raw);
         return;
     }
     void phaseDirName; // used only to set phaseDir above
@@ -888,6 +888,10 @@ function cmdPhasePlanIndex(cwd, phase, raw) {
     const waves = {};
     const incomplete = [];
     const runnable = [];
+    // #4628: DAG-ready view — see the per-plan emission below. Keyed by id so
+    // the per-plan pass can resolve each plan's dependency edges.
+    const resolvedDepsByPlan = new Map(haltNodes.map((n) => [n.id, n.resolvedDependsOn]));
+    const readyPlans = [];
     let hasCheckpoints = false;
     const warnings = [];
     // #3427 / ADR-3473 §8.5: name every dropped depends_on edge (plan AND
@@ -897,8 +901,12 @@ function cmdPhasePlanIndex(cwd, phase, raw) {
     // plan with no dropped edges and a genuinely wrong `wave:` still warns
     // (N3, D6, T25).
     const plansWithUnresolvedTokens = new Set();
+    const unresolvedTokensByPlan = new Map();
     for (const { plan, token } of unresolved) {
         plansWithUnresolvedTokens.add(plan);
+        const tokens = unresolvedTokensByPlan.get(plan) ?? [];
+        tokens.push(formatDiagnosticToken(token));
+        unresolvedTokensByPlan.set(plan, tokens);
         warnings.push(`Plan ${plan}: depends_on token ${formatDiagnosticToken(token)} does not resolve to any plan in this phase — edge dropped, wave placement for this plan may be unreliable`);
     }
     for (const rawPlan of rawPlans) {
@@ -906,13 +914,33 @@ function cmdPhasePlanIndex(cwd, phase, raw) {
             hasCheckpoints = true;
         }
         const blockedByIds = blockedBy.get(rawPlan.id) ?? [];
+        // #4628: readiness fails closed — every resolved dependency must have
+        // completion evidence (has_summary), and a depends_on edge that never
+        // resolved (#3427 — a dropped edge) carries no evidence to check. A
+        // single evaluation feeds both the ready_plans list and the per-plan
+        // `ready` / `unresolved_dependencies` fields below.
+        // Case-fold the dep before the planMap lookup: planMap is lowercase-keyed
+        // (#2237) while resolveDependencyId returns the raw id — a mixed-case id
+        // must not read as 'no evidence' (over-blocking a ready plan).
+        const missingEvidence = (resolvedDepsByPlan.get(rawPlan.id) ?? [])
+            .filter((dep) => planMap.get(dep.toLowerCase())?.hasSummary !== true);
+        if (plansWithUnresolvedTokens.has(rawPlan.id)) {
+            missingEvidence.push(...(unresolvedTokensByPlan.get(rawPlan.id) ?? []));
+        }
+        const isReady = blockedByIds.length === 0 && missingEvidence.length === 0;
         if (!rawPlan.hasSummary) {
             incomplete.push(rawPlan.id);
             // #2830: the runnable-only view — incomplete AND not transitively
             // blocked by a halted upstream plan. Additive alongside `incomplete`,
             // which keeps its existing "no SUMMARY yet" meaning unchanged.
+            // #4628: runnable says NOTHING about completion evidence — a runnable
+            // plan whose dependencies lack a SUMMARY is not DAG-ready. Consumers
+            // dispatch from `ready_plans`.
             if (blockedByIds.length === 0) {
                 runnable.push(rawPlan.id);
+            }
+            if (isReady) {
+                readyPlans.push(rawPlan.id);
             }
         }
         const computedWave = (level.get(rawPlan.id) ?? 0) + levelOffset;
@@ -955,6 +983,15 @@ function cmdPhasePlanIndex(cwd, phase, raw) {
             halted: rawPlan.halted,
             blocked_by: blockedByIds,
         };
+        if (!rawPlan.hasSummary) {
+            // #4628: readiness is a property of INCOMPLETE plans (a summarized plan
+            // is filtered by has_summary before readiness is ever consulted). The
+            // unresolved_dependencies list names exactly which predecessors lack
+            // completion evidence, for the named-skip report.
+            plan['ready'] = isReady;
+            if (missingEvidence.length > 0)
+                plan['unresolved_dependencies'] = missingEvidence;
+        }
         plans.push(plan);
         const waveKey = String(effectiveWave);
         if (!waves[waveKey]) {
@@ -968,6 +1005,7 @@ function cmdPhasePlanIndex(cwd, phase, raw) {
         waves,
         incomplete,
         runnable,
+        ready_plans: readyPlans,
         has_checkpoints: hasCheckpoints,
     };
     if (planNamingWarning)
