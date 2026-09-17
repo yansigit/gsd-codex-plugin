@@ -227,7 +227,13 @@ function parseUatResultItems(cleanContent) {
  * Pass requires at least one real passing check AND no blockers.
  */
 function evaluateUatPassed(phaseFullDir, opts) {
-    const requireVerification = opts?.policy?.requireVerification === true;
+    // uatOnly (#4663) takes precedence: it evaluates the UAT rows ONLY, skipping
+    // the VERIFICATION-file blockers entirely. The verify-work canonicalize
+    // pre-check needs exactly that — it runs while the report still reads
+    // `human_needed`, which is itself a blocking verification status, so the
+    // full predicate could never pass there and the flip would deadlock.
+    const uatOnly = opts?.policy?.uatOnly === true;
+    const requireVerification = !uatOnly && opts?.policy?.requireVerification === true;
     const blockers = [];
     const checks = [];
     const uatFiles = [];
@@ -250,7 +256,7 @@ function evaluateUatPassed(phaseFullDir, opts) {
             checks: [],
             blockers,
             no_uat_artifacts,
-            policy: { require_verification: requireVerification },
+            policy: { require_verification: requireVerification, uat_only: uatOnly },
             // readVerificationStatus was never reached on this early-return path.
             verification_stale_check_indeterminate: false,
         };
@@ -320,7 +326,7 @@ function evaluateUatPassed(phaseFullDir, opts) {
     }
     // ── Process VERIFICATION files ─────────────────────────────────────────────
     let hasPassingVerification = false;
-    for (const file of verFileNames) {
+    for (const file of uatOnly ? [] : verFileNames) {
         verificationFiles.push(file);
         const verificationFilePath = node_path_1.default.join(phaseFullDir, file);
         let raw = '';
@@ -376,6 +382,7 @@ function evaluateUatPassed(phaseFullDir, opts) {
         no_uat_artifacts,
         policy: {
             require_verification: requireVerification,
+            uat_only: uatOnly,
         },
         verification_stale_check_indeterminate: verificationStaleCheckIndeterminate,
     };
