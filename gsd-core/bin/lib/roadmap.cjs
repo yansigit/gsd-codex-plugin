@@ -170,9 +170,9 @@ function searchPhaseInContent(content, escapedPhase, phaseNum, convention) {
         .find((candidate) => candidate.level <= currentHeading.level);
     const sectionEnd = nextHeading ? nextHeading.offset : content.length;
     const section = content.slice(headerIndex, sectionEnd).trim();
-    // Extract goal if present (supports both **Goal:** and **Goal**: formats)
-    const goalMatch = section.match(/\*\*Goal(?::\*\*|\*\*:)\s*([^\n]+)/i);
-    const goal = goalMatch ? goalMatch[1].trim() : null;
+    // Extract goal if present (supports both **Goal:** and **Goal**: formats).
+    // #4731: multiline-aware — hard-wrapped Goals read past the line break.
+    const goal = roadmapParserModule.extractPhaseFieldMultiline(section, 'Goal');
     // Mode: vertical-MVP slice mode flag. Lowercased + trimmed for canonical
     // comparison; unrecognized values are preserved verbatim for forward-compat.
     const modeMatch = section.match(/\*\*Mode(?::\*\*|\*\*:)\s*([^\n]+)/i);
@@ -392,8 +392,7 @@ function collectAnalyzePhases(content, phasesDir, phaseDirNames, convention) {
         const nextHeader = restOfContent.match(new RegExp(`\\n {0,3}#{2,4}\\s+${phaseHeadingPrefixSrcFor(PHASE_HEADING_BASELINE.ANY_BRACKET, convention)}[A-Za-z]?\\d[\\d.-]*`, 'i'));
         const sectionEnd = nextHeader ? sectionStart + nextHeader.index : content.length;
         const section = content.slice(sectionStart, sectionEnd);
-        const goalMatch = section.match(/\*\*Goal(?::\*\*|\*\*:)\s*([^\n]+)/i);
-        const goal = goalMatch ? goalMatch[1].trim() : null;
+        const goal = roadmapParserModule.extractPhaseFieldMultiline(section, 'Goal');
         const modeMatch = section.match(/\*\*Mode(?::\*\*|\*\*:)\s*([^\n]+)/i);
         const mode = modeMatch ? modeMatch[1].trim().toLowerCase() : null;
         const dependsMatch = section.match(/\*\*Depends on(?::\*\*|\*\*:)\s*([^\n]+)/i);
@@ -1067,10 +1066,17 @@ function cmdRoadmapUpdatePlanProgress(cwd, phaseNum, raw) {
             roadmapContent = replaceInCurrentMilestone(roadmapContent, checkboxPattern, `$1x$2 (completed ${today})`);
         }
         // Mark completed plan checkboxes (e.g. "- [ ] 50-01-PLAN.md", "- [ ] 50-01:", or "- [ ] **50-01**")
-        for (const summaryFile of phaseInfo.summaries) {
-            const planId = summaryFile.replace('-SUMMARY.md', '').replace('SUMMARY.md', '');
-            if (!planId)
-                continue;
+        // #4741: tick only plans the phase's own COUNT still counts. `plans` is the
+        // superseded-filtered set (#2349 via scanPhasePlans) while `summaries` is
+        // the raw *-SUMMARY.md listing — a superseded plan can carry a SUMMARY
+        // (e.g. `status: halted`), and ticking it read as "executed" right under a
+        // count line that excludes it. The prefix match mirrors the checkbox regex
+        // below (rows match by planId prefix, which the PLAN-01.md naming shape
+        // relies on), so non-superseded plans tick exactly as before.
+        const tickableSummaries = phaseInfo.summaries
+            .map((summaryFile) => ({ summaryFile, planId: summaryFile.replace('-SUMMARY.md', '').replace('SUMMARY.md', '') }))
+            .filter(({ planId }) => planId !== '' && phaseInfo.plans.some((planFile) => planFile.startsWith(planId)));
+        for (const { planId } of tickableSummaries) {
             const planEscaped = (0, pattern_cjs_1.escapeRegex)(planId);
             const planCheckboxPattern = new RegExp(`(-\\s*\\[) (\\]\\s*(?:\\*\\*)?${planEscaped}(?:\\*\\*)?)`, 'i');
             roadmapContent = roadmapContent.replace(planCheckboxPattern, '$1x$2');
@@ -1139,10 +1145,9 @@ function cmdRoadmapUpdatePlanProgress(cwd, phaseNum, raw) {
             if (withRows !== roadmapContent) {
                 roadmapContent = withRows;
                 // Mark any newly-inserted rows that already have summaries as complete
-                for (const summaryFile of phaseInfo.summaries) {
-                    const planId = summaryFile.replace('-SUMMARY.md', '').replace('SUMMARY.md', '');
-                    if (!planId)
-                        continue;
+                // (#4741: same superseded-filtered tick list as the loop above — a
+                // pre-existing superseded row must stay unchecked on this path too).
+                for (const { planId } of tickableSummaries) {
                     const planEscaped = (0, pattern_cjs_1.escapeRegex)(planId);
                     const planCheckboxPattern = new RegExp(`(-\\s*\\[) (\\]\\s*(?:\\*\\*)?${planEscaped}(?:\\*\\*)?)`, 'i');
                     roadmapContent = roadmapContent.replace(planCheckboxPattern, '$1x$2');

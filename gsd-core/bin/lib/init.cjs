@@ -41,6 +41,8 @@ const { SCOPE } = planningScopeMod;
 const secrets_cjs_1 = require("./secrets.cjs");
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- plan-scan.cjs is an export= CommonJS module
 const scanPhasePlans = require("./plan-scan.cjs");
+// eslint-disable-next-line @typescript-eslint/no-require-imports -- plan-document.cjs is an export= CommonJS module
+const planDocument = require("./plan-document.cjs");
 const state_document_cjs_1 = require("./state-document.cjs");
 const runtime_slash_cjs_1 = require("./runtime-slash.cjs");
 const host_runtime_detection_cjs_1 = require("./host-runtime-detection.cjs");
@@ -100,7 +102,6 @@ const { resolveCapabilityRuntimeState } = capabilityStateMod;
 // Unused but imported for structural parity
 void stripShippedMilestones;
 // Accept all bold/colon variants of the Requirements header (#2769)
-const REQUIREMENTS_HEADER_RE = /^\*\*Requirements:?\*\*[^\S\n]*:?[^\S\n]*([^\n]*)$/m;
 // #2056/#2104: isForeignPrefixedPhaseQuery is imported from phase-id.cts
 // (the canonical predicate). parsePhasePrefix is no longer needed locally.
 // phaseInfoMatchesExactPrefix and roadmapPhaseMatchesExactPrefix are local
@@ -751,6 +752,54 @@ function buildSectionManifestField(cwd, phaseInfo, options, workflow, overrides 
 function milestoneRecord(cwd) {
     return (getMilestoneInfo(cwd).value ?? {});
 }
+/**
+ * #4683 — threat IDs claimed by more than one of the phase's live PLAN files.
+ * `scanPhasePlans().planFiles` is the right input set twice over: it excludes
+ * derivative files (OUTLINE / PLAN-REVIEW / pre-bounce) AND `status: superseded`
+ * plans (#2349) — a superseded plan's IDs were deliberately reassigned to its
+ * replacement, so they must not hold against it. The per-document row parse is
+ * planDocument.extractThreatRegisterIds; only `<threat_model>` register rows
+ * count, and the reserved `T-{phase}-SC` shape is excluded there by grammar
+ * (every plan keeps that row by design). A missing/unreadable phase directory
+ * degrades to "no duplicates" — planning a brand-new phase has nothing to
+ * collide with.
+ */
+function findDuplicateThreatIds(cwd, phaseDirRel) {
+    if (!phaseDirRel)
+        return [];
+    const phaseDir = node_path_1.default.join(cwd, phaseDirRel);
+    let planFiles;
+    try {
+        planFiles = scanPhasePlans(phaseDir).planFiles;
+    }
+    catch {
+        return [];
+    }
+    const owners = new Map();
+    for (const planFile of planFiles) {
+        let content;
+        try {
+            content = node_fs_1.default.readFileSync(node_path_1.default.join(phaseDir, planFile), 'utf-8');
+        }
+        catch {
+            continue;
+        }
+        for (const id of planDocument.extractThreatRegisterIds(content)) {
+            const claimed = owners.get(id);
+            if (claimed) {
+                if (!claimed.includes(planFile))
+                    claimed.push(planFile);
+            }
+            else {
+                owners.set(id, [planFile]);
+            }
+        }
+    }
+    return [...owners.entries()]
+        .filter(([, claims]) => claims.length > 1)
+        .map(([id, plans]) => ({ id, plans: [...plans].sort() }))
+        .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+}
 function cmdInitExecutePhase(cwd, phase, raw, options = {}) {
     if (!phase) {
         error('phase required for init execute-phase');
@@ -788,9 +837,14 @@ function cmdInitExecutePhase(cwd, phase, raw, options = {}) {
             has_reviews: false,
         };
     });
-    const reqMatch = roadmapPhase?.['section']?.match(REQUIREMENTS_HEADER_RE);
-    const reqExtracted = reqMatch
-        ? reqMatch[1].replace(/[\[\]]/g, '').split(',').map((s) => s.trim()).filter(Boolean).join(', ')
+    // #4731: multiline-aware — the Requirements field may hard-wrap, so the
+    // value is extracted past the line break before the ID scan.
+    const phaseSection = roadmapPhase?.['section'];
+    const reqLine = phaseSection
+        ? roadmapParser.extractPhaseFieldMultiline(phaseSection, 'Requirements')
+        : null;
+    const reqExtracted = reqLine
+        ? reqLine.replace(/[\[\]]/g, '').split(',').map((s) => s.trim()).filter(Boolean).join(', ')
         : null;
     const phase_req_ids = reqExtracted && reqExtracted !== 'TBD' ? reqExtracted : null;
     // #3188: these paths are null when the file is absent, matching the contract
@@ -800,6 +854,8 @@ function cmdInitExecutePhase(cwd, phase, raw, options = {}) {
     const statePath = node_path_1.default.join(planningDir(cwd), 'STATE.md');
     const roadmapPath = node_path_1.default.join(planningDir(cwd), 'ROADMAP.md');
     const requirementsPath = node_path_1.default.join(planningDir(cwd), 'REQUIREMENTS.md');
+    // #4683: computed once — see the threat_id_duplicates fields in the payload.
+    const threatIdDuplicates = findDuplicateThreatIds(cwd, phaseInfo?.['directory']);
     const result = {
         executor_model: resolveModelInternal(cwd, 'gsd-executor'),
         verifier_model: resolveModelInternal(cwd, 'gsd-verifier'),
@@ -837,6 +893,12 @@ function cmdInitExecutePhase(cwd, phase, raw, options = {}) {
         incomplete_plans: phaseInfo?.['incomplete_plans'] || [],
         plan_count: phaseInfo?.['plans']?.length || 0,
         incomplete_count: phaseInfo?.['incomplete_plans']?.length || 0,
+        // #4683: cross-plan threat-ID collisions (gap-closure plans renumbering
+        // from T-{phase}-01 again). execute-phase.md hard-stops on a non-empty
+        // list BEFORE any dispatch — SECURITY.md rows and VALIDATION.md's Threat
+        // Ref column key on this ID, so a reused ID is ambiguous downstream.
+        threat_id_duplicates: threatIdDuplicates,
+        threat_id_duplicate_count: threatIdDuplicates.length,
         // #2830: the halt-aware view, forwarded from the shared computation in
         // phase-locator. Additive — `incomplete_plans`/`incomplete_count` above keep
         // their exact name, type and semantics. Without this passthrough the shared
@@ -930,9 +992,14 @@ function cmdInitPlanPhase(cwd, phase, raw, options = {}) {
             has_reviews: false,
         };
     });
-    const reqMatch = roadmapPhase?.['section']?.match(REQUIREMENTS_HEADER_RE);
-    const reqExtracted = reqMatch
-        ? reqMatch[1].replace(/[\[\]]/g, '').split(',').map((s) => s.trim()).filter(Boolean).join(', ')
+    // #4731: multiline-aware — the Requirements field may hard-wrap, so the
+    // value is extracted past the line break before the ID scan.
+    const phaseSection = roadmapPhase?.['section'];
+    const reqLine = phaseSection
+        ? roadmapParser.extractPhaseFieldMultiline(phaseSection, 'Requirements')
+        : null;
+    const reqExtracted = reqLine
+        ? reqLine.replace(/[\[\]]/g, '').split(',').map((s) => s.trim()).filter(Boolean).join(', ')
         : null;
     const phase_req_ids = reqExtracted && reqExtracted !== 'TBD' ? reqExtracted : null;
     const phaseDirPlan = phaseInfo?.['directory'] || null;
@@ -952,6 +1019,8 @@ function cmdInitPlanPhase(cwd, phase, raw, options = {}) {
     }
     const granularityOverride = options['granularity'];
     assertValidGranularityOverride(granularityOverride, error);
+    // #4683: computed once — see the threat_id_duplicates fields in the payload.
+    const threatIdDuplicatesPlan = findDuplicateThreatIds(cwd, phaseDirPlan);
     const granularity = resolveGranularityInternal(cwd, 'planning', granularityOverride || undefined);
     // #3188: see cmdInitExecutePhase — null when absent, parity with the
     // conditional sibling fields in this same result object.
@@ -996,6 +1065,11 @@ function cmdInitPlanPhase(cwd, phase, raw, options = {}) {
         has_reviews: phaseInfo?.['has_reviews'] || false,
         has_plans: (phaseInfo?.['plans']?.length || 0) > 0,
         plan_count: phaseInfo?.['plans']?.length || 0,
+        // #4683: the same cross-plan threat-ID duplicate list execute-phase gates
+        // on, surfaced at PLAN time so the checker/reviewer catches the collision
+        // before the plans are approved — not just before execution.
+        threat_id_duplicates: threatIdDuplicatesPlan,
+        threat_id_duplicate_count: threatIdDuplicatesPlan.length,
         planning_exists: node_fs_1.default.existsSync(planningDir(cwd)),
         roadmap_exists: node_fs_1.default.existsSync(node_path_1.default.join(planningDir(cwd), 'ROADMAP.md')),
         // #2376: absolute — see comment on phase_dir above.
@@ -2432,8 +2506,7 @@ function cmdInitManager(cwd, raw) {
             ? sectionStart + nextHeader.index
             : content.length;
         const section = content.slice(sectionStart, sectionEnd);
-        const goalMatch = section.match(/\*\*Goal(?::\*\*|\*\*:)\s*([^\n]+)/i);
-        const goal = goalMatch ? goalMatch[1].trim() : null;
+        const goal = roadmapParser.extractPhaseFieldMultiline(section, 'Goal');
         const dependsMatch = section.match(/\*\*Depends on(?::\*\*|\*\*:)\s*([^\n]+)/i);
         const depends_on = dependsMatch ? dependsMatch[1].trim() : null;
         const normalized = normalizePhaseName(phaseNum);
