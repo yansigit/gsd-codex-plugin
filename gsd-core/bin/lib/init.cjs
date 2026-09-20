@@ -89,7 +89,7 @@ const { resolveModelInternal, resolveGranularityInternal, assertValidGranularity
 const { findPhaseInternal, listMilestonePhaseDirs, listAllPhaseDirs } = phaseLocator;
 const { getRoadmapPhaseInternal, getMilestoneInfo, stripShippedMilestones, extractCurrentMilestone, } = roadmapParser;
 const { pathExistsInternal, generateSlugInternal, toPosixPath } = coreUtils;
-const { comparePhaseNum, normalizePhaseName, matchPhaseDirs, stripProjectCodePrefix, PHASE_NUMBER_TOKEN_SOURCE, isForeignPrefixedPhaseQuery, isSentinelPhaseId, extractPhaseToken, scopeToPhase, renderPhaseBranchName, parsePhaseId, renderPhaseId, phaseHeadingPrefixSrcFor, PHASE_HEADING_BASELINE, } = phaseId;
+const { comparePhaseNum, normalizePhaseName, stripProjectCodePrefix, PHASE_NUMBER_TOKEN_SOURCE, PHASE_DEP_REF_SOURCE, isForeignPrefixedPhaseQuery, isSentinelPhaseId, extractPhaseToken, scopeToPhase, renderPhaseBranchName, parsePhaseId, renderPhaseId, phaseHeadingPrefixSrcFor, PHASE_HEADING_BASELINE, } = phaseId;
 const { pruneOrphanedWorktrees } = worktreeSafety;
 const { planningPaths, planningDir, planningRoot, todosDir, listAvailableWorkstreams, peekActiveWorkstream, resolveEnvWorkstream, diagnoseUnresolvedActiveWorkstream, describeUnresolvedWorkstreamReason, findContextMdIn, resolvePhaseIdConvention, } = planningWorkspace;
 const { determinePhaseStatus } = commandsMod;
@@ -875,6 +875,13 @@ function cmdInitExecutePhase(cwd, phase, raw, options = {}) {
             ? toPosixPath(node_path_1.default.join(cwd, phaseInfo['directory']))
             : null,
         phase_number: phaseInfo?.['phase_number'] || null,
+        // #4748: the disk path hands back the directory's padded number (`03A`)
+        // but the ROADMAP fallback above hands back the heading's bare one (`3A`),
+        // and execute-phase.md's review lookup needs the padded form for
+        // `{PADDED}-REVIEW.md`. It used to re-pad in shell with `printf "%02d"`,
+        // which cannot pad a letter id and reads an already-padded `08` as octal.
+        // Emit the canonical normalization, as the plan-phase/code-review inits do.
+        padded_phase: phaseInfo?.['phase_number'] ? normalizePhaseName(phaseInfo['phase_number']) : null,
         // #3171: prefer the ROADMAP's curated display name for `phase_name`. When
         // the phase directory already exists on disk, the disk-lookup path
         // (searchPhaseInDir) derives phase_name from the directory-name remainder
@@ -2462,16 +2469,11 @@ function cmdInitManager(cwd, raw) {
     }
     const rawContent = node_fs_1.default.readFileSync(paths.roadmap, 'utf-8');
     const content = extractCurrentMilestone(rawContent, cwd);
-    const phasesDir = paths.phases;
     // #3185 (ADR-3180 Decision 1): "which phase directories belong to the
     // CURRENT milestone" is the scoped question listMilestonePhaseDirs owns —
     // routed through it instead of a hand-rolled readdirSync + a separate
     // getMilestonePhaseFilter window check (which also never excluded
     // sentinels, unlike the owner).
-    const _phaseDirEntries = listMilestonePhaseDirs(phasesDir, {
-        cwd,
-        phaseIdConvention,
-    }).value;
     const _checkboxStates = new Map();
     const _cbPattern = new RegExp(`-\\s*\\[(x| )\\]\\s*.*${phaseHeadingPrefix}(${PHASE_NUMBER_TOKEN_SOURCE})[:\\s]`, 'gi');
     let _cbMatch;
@@ -2509,7 +2511,6 @@ function cmdInitManager(cwd, raw) {
         const goal = roadmapParser.extractPhaseFieldMultiline(section, 'Goal');
         const dependsMatch = section.match(/\*\*Depends on(?::\*\*|\*\*:)\s*([^\n]+)/i);
         const depends_on = dependsMatch ? dependsMatch[1].trim() : null;
-        const normalized = normalizePhaseName(phaseNum);
         let diskStatus = 'no_directory';
         let planCount = 0;
         let summaryCount = 0;
@@ -2522,14 +2523,23 @@ function cmdInitManager(cwd, raw) {
         let contextScope = SCOPE.COMPLETE;
         let completion = buildPhaseCompletionProjection(cwd, phaseNum, null, planCount, summaryCount, _slashRuntime);
         try {
-            // #3185 (ADR-3180 Decision 2) moved this lookup off the
-            // milestone-scoped set and onto the physical one; that scope choice is
-            // kept. Only the matcher is this PR's: matchPhaseDirs resolves
-            // digit-leading directory names the token predicate cannot (#2528).
-            const dirMatch = matchPhaseDirs(_phaseDirEntries, normalized, phaseIdConvention).matches[0];
+            // #4801: resolve through the canonical locator instead of a private
+            // current-milestone-only scan. findPhaseInternal searches the live
+            // .planning/phases directory FIRST (same set the retired
+            // matchPhaseDirs/_phaseDirEntries pair scanned — the #3185 physical-dir
+            // scope choice is inherited by the locator's live arm) and then falls
+            // back through listArchiveVersionDirs (workstream-scoped, #2855), so an
+            // ARCHIVED phase directory with a passing verification resolves instead
+            // of reporting no_directory/phase_complete:false. Five other init
+            // commands already route through this same primitive; this was the
+            // holdout private copy (#4793-family declared-owner drift).
+            const located = findPhaseInternal(cwd, phaseNum, phaseIdConvention);
+            const dirMatch = located && located['found']
+                ? node_path_1.default.posix.basename(String(located['directory']))
+                : null;
             if (dirMatch) {
-                const fullDir = node_path_1.default.join(phasesDir, dirMatch);
-                const phaseDirRel = toPosixPath(node_path_1.default.relative(cwd, fullDir));
+                const fullDir = node_path_1.default.join(cwd, String(located['directory']));
+                const phaseDirRel = String(located['directory']);
                 // #4014 (epic #3473 B4-unreadable): this whole block used to swallow
                 // ANY readdirSync failure below into the bare `catch { /* empty */ }`
                 // at the bottom — an unreadable phase directory reported the exact
@@ -2670,13 +2680,47 @@ function cmdInitManager(cwd, raw) {
     function hasDepRelationship(numA, numB) {
         return reaches(numA, numB) || reaches(numB, numA);
     }
+    // #4764: a phase reference in depends_on prose is a PHASE-SHAPED token in
+    // context — directly following "Phase"/"Phases" — never a bare digit run.
+    // The previous whole-field scrape matched the token grammar against every
+    // digit run, so calendar dates ("2026-09-14" → 2026, 09, 14), git shas
+    // ("8bf403100d" → 8b, 403100d, …), bracketed ledger ids (WINDOWS #1843) and
+    // the row's OWN number all became "dependencies", and deps_satisfied came
+    // back false for phases whose prose declares none (50 of 92 phases in the
+    // reporter's milestone). The anchored grammar (owned by phase-id.cts as
+    // PHASE_DEP_REF_SOURCE, shared with planning-inspect's dependencies) keeps
+    // lists fully extracted ("Phases 601 and 602", "Phase 601, 602, and 603",
+    // "Phase 1-3") — silently dropping a REAL dependency would clear
+    // deps_satisfied prematurely, the dangerous direction. Negation prose
+    // ("dropped the dependency on Phase 654") is NOT detected: the issue's own
+    // minimum keeps such tokens.
+    const depPhaseRefRe = new RegExp(`${PHASE_DEP_REF_SOURCE}`, 'gi');
+    const depTokenRe = new RegExp(`${PHASE_NUMBER_TOKEN_SOURCE}`, 'gi');
     for (const phase of phases) {
         if (!phase['depends_on'] ||
             /^none$/i.test(phase['depends_on'].trim())) {
             phase['deps_satisfied'] = true;
         }
         else {
-            const depNums = phase['depends_on'].match(new RegExp(`${PHASE_NUMBER_TOKEN_SOURCE}`, 'gi')) || [];
+            const prose = phase['depends_on'];
+            const ownNumber = normalizePhaseNumber(phase['number']);
+            const depNums = [];
+            const seen = new Set();
+            let refMatch;
+            depPhaseRefRe.lastIndex = 0;
+            while ((refMatch = depPhaseRefRe.exec(prose)) !== null) {
+                let tok;
+                depTokenRe.lastIndex = 0;
+                while ((tok = depTokenRe.exec(refMatch[1])) !== null) {
+                    const normalized = normalizePhaseNumber(tok[0]);
+                    if (normalized === ownNumber)
+                        continue; // #4764: never the row's own phase
+                    if (seen.has(normalized))
+                        continue;
+                    seen.add(normalized);
+                    depNums.push(tok[0]);
+                }
+            }
             phase['deps_satisfied'] = depNums.every((n) => completedNums.has(normalizePhaseNumber(n)));
             phase['dep_phases'] = depNums;
         }
