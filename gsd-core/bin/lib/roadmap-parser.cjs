@@ -982,6 +982,7 @@ function extractCurrentMilestoneScoped(content, cwd, ws, phaseIdConvention) {
                 const preambleCutoff = firstMilestoneMatch ? firstMilestoneMatch.index : detailsOpenIdx;
                 const preamble = (0, markdown_sectionizer_cjs_1.stripTaggedBlocks)(content.slice(0, preambleCutoff), 'details')
                     // #1729: `(?:\s*\([^)\n]{0,200}\))?` tolerates a pre-colon ( ) tag (literal mirror of OPTIONAL_PHASE_TAG_SOURCE).
+                    // phase-id-owner: pre-existing hand-rolled Phase-heading pattern — grandfathered pending Phase 6 migration (ADR-4910 §8, epic #4906)
                     .replace(/^#{2,4}\s*Phase\s+[\w][\w.-]*(?:\s*\([^)\n]{0,200}\))?\s*:[^\n]*(?:\n(?!#{1,6}\s)[^\n]*)*\n?/gim, '')
                     .replace(/^#{1,4}\s*Phase Details\b[^\n]*\n?/gim, '');
                 const value = preamble + content.slice(detailsOpenIdx, detailsEnd);
@@ -1217,6 +1218,7 @@ function extractCurrentMilestoneScoped(content, cwd, ws, phaseIdConvention) {
     // every phase (phase_count: 0, exit 0). Only strip preamble phase details when
     // the selected milestone section actually contains its own — otherwise the
     // preamble phases ARE this milestone's phases and must be preserved.
+    // phase-id-owner: pre-existing hand-rolled Phase-heading pattern — grandfathered pending Phase 6 migration (ADR-4910 §8, epic #4906)
     const currentSectionHasPhaseDetails = /^#{2,4}\s*Phase\s+\S/im.test(currentSection);
     const preambleBase = (0, markdown_sectionizer_cjs_1.stripTaggedBlocks)(beforeMilestones, 'details');
     // #3235: the conditional wraps the REPLACE, not the pattern. This used to select between the
@@ -1225,6 +1227,7 @@ function extractCurrentMilestoneScoped(content, cwd, ws, phaseIdConvention) {
     // replacement argument, so changing `''` would silently give the no-op branch a real effect.
     // #1729: `(?:\s*\([^)\n]{0,200}\))?` tolerates a pre-colon ( ) tag (literal mirror of OPTIONAL_PHASE_TAG_SOURCE).
     const preambleWithoutPhaseDetails = currentSectionHasPhaseDetails
+        // phase-id-owner: pre-existing hand-rolled Phase-heading pattern — grandfathered pending Phase 6 migration (ADR-4910 §8, epic #4906)
         ? preambleBase.replace(/^#{2,4}\s*Phase\s+[\w][\w.-]*(?:\s*\([^)\n]{0,200}\))?\s*:[^\n]*(?:\n(?!#{1,6}\s)[^\n]*)*\n?/gim, '')
         : preambleBase;
     // Unconditional in BOTH branches -- the #730 `Phase Details` heading strip is independent of

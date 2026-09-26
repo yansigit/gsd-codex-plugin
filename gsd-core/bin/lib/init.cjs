@@ -89,7 +89,7 @@ const { resolveModelInternal, resolveGranularityInternal, assertValidGranularity
 const { findPhaseInternal, listMilestonePhaseDirs, listAllPhaseDirs } = phaseLocator;
 const { getRoadmapPhaseInternal, getMilestoneInfo, stripShippedMilestones, extractCurrentMilestone, } = roadmapParser;
 const { pathExistsInternal, generateSlugInternal, toPosixPath } = coreUtils;
-const { comparePhaseNum, normalizePhaseName, stripProjectCodePrefix, PHASE_NUMBER_TOKEN_SOURCE, PHASE_DEP_REF_SOURCE, isForeignPrefixedPhaseQuery, isSentinelPhaseId, extractPhaseToken, scopeToPhase, renderPhaseBranchName, parsePhaseId, renderPhaseId, phaseHeadingPrefixSrcFor, PHASE_HEADING_BASELINE, } = phaseId;
+const { comparePhaseNum, normalizePhaseName, stripProjectCodePrefix, PHASE_NUMBER_TOKEN_SOURCE, PHASE_DEP_REF_SOURCE, isForeignPrefixedPhaseQuery, isSentinelPhaseId, extractPhaseToken, scopeToPhase, renderPhaseBranchName, parsePhaseId, renderPhaseId, phaseHeadingPrefixSrcFor, PHASE_HEADING_BASELINE, buildPhaseHeadingScanRegex, } = phaseId;
 const { pruneOrphanedWorktrees } = worktreeSafety;
 const { planningPaths, planningDir, planningRoot, todosDir, listAvailableWorkstreams, peekActiveWorkstream, resolveEnvWorkstream, diagnoseUnresolvedActiveWorkstream, describeUnresolvedWorkstreamReason, findContextMdIn, resolvePhaseIdConvention, } = planningWorkspace;
 const { determinePhaseStatus } = commandsMod;
@@ -111,9 +111,18 @@ function phaseInfoMatchesExactPrefix(phaseInfo, phase) {
     const numStr = typeof num === 'string' ? num : (typeof num === 'number' ? String(num) : '');
     return numStr.toUpperCase() === phase.toUpperCase();
 }
+// #4906 Phase 5 (#4984): NOT migrated onto the heading-baseline selector —
+// this site was never one of the five ADR-4910 §8 call sites this phase owns
+// (init milestone/progress heading scans + milestone.cts's unstarted-phase
+// guard, all via buildPhaseHeadingScanRegex), and adding a NEW direct
+// any-bracket selector consumer here inflated init.cts's
+// tests/adr-612-bracket-heading-selection.test.cjs census past its pinned
+// count. Left bracket-blind deliberately, matching this call's pre-#4984
+// behavior; folding it into the census is Phase 6 work.
 function roadmapPhaseMatchesExactPrefix(roadmapPhase, phase) {
     const sectionRaw = roadmapPhase?.['section'];
     const section = typeof sectionRaw === 'string' ? sectionRaw : '';
+    // phase-id-owner: deliberately unmigrated (#4984 revert) — see comment above the function.
     return new RegExp(`^#{2,4}\\s*Phase\\s+${(0, pattern_cjs_1.escapeRegex)(phase)}(?:\\b|\\s|:)`, 'i').test(section);
 }
 // #2104: shared helpers that wrap findPhaseInternal / getRoadmapPhaseInternal
@@ -585,6 +594,13 @@ function detectPhaseMvpMode(cwd, phaseNumber) {
         const rawContent = node_fs_1.default.readFileSync(roadmapPath, 'utf-8');
         const content = extractCurrentMilestone(rawContent, cwd);
         const escapedPhase = (0, pattern_cjs_1.escapeRegex)(phaseNumber);
+        // #4906 Phase 5 (#4984): NOT migrated onto phaseHeadingPrefixSrcFor — same
+        // out-of-scope reasoning as roadmapPhaseMatchesExactPrefix above (only the
+        // five buildPhaseHeadingScanRegex sites in init.cts/milestone.cts are this
+        // phase's owned migration); a direct selector call here would have added
+        // a fourth uncounted ANY_BRACKET consumer to init.cts's pinned
+        // tests/adr-612-bracket-heading-selection.test.cjs census.
+        // phase-id-owner: deliberately unmigrated (#4984 revert) — see comment above.
         const phaseHeader = new RegExp(`#{2,4}\\s*Phase\\s+${escapedPhase}(?:\\s*\\([^)\\n]{0,200}\\))?\\s*:`, 'i');
         const headerMatch = content.match(phaseHeader);
         if (!headerMatch || headerMatch.index === undefined)
@@ -2306,14 +2322,16 @@ function cmdInitMilestoneOp(cwd, raw) {
         const roadmapPath = node_path_1.default.join(planningDir(cwd), 'ROADMAP.md');
         const roadmapRaw = node_fs_1.default.readFileSync(roadmapPath, 'utf-8');
         const currentSection = extractCurrentMilestone(roadmapRaw, cwd);
-        // #1729: `(?:\s*\([^)\n]{0,200}\))?` tolerates a pre-colon ( ) tag (literal mirror of OPTIONAL_PHASE_TAG_SOURCE).
-        const phasePattern = new RegExp(`#{2,4}\\s*Phase\\s+(${PHASE_NUMBER_TOKEN_SOURCE})(?:\\s*\\([^)\\n]{0,200}\\))?\\s*:`, 'gi');
+        // #1729: `(?:\s*\([^)\n]{0,200}\))?` tolerates a pre-colon ( ) tag, owned by
+        // buildPhaseHeadingScanRegex (phase-id.cts) so this scan also recognizes
+        // bracket-convention headings instead of hand-rolling a literal `Phase\s+`.
+        const { regex: phasePattern, phaseNumGroup } = buildPhaseHeadingScanRegex(PHASE_HEADING_BASELINE.ANY_BRACKET, resolvePhaseIdConvention(cwd));
         let m;
         while ((m = phasePattern.exec(currentSection)) !== null) {
             // #3185: canonical sentinel predicate (SENTINEL_RANGES [0,999]) — this was a local 999-only literal that admitted Phase 0.
-            if (isSentinelPhaseId(m[1]))
+            if (isSentinelPhaseId(m[phaseNumGroup]))
                 continue;
-            roadmapPhaseNumbers.push(m[1]);
+            roadmapPhaseNumbers.push(m[phaseNumGroup]);
         }
     }
     catch {
@@ -3179,13 +3197,22 @@ function cmdInitProgress(cwd, raw, options = {}) {
     const roadmapCheckboxStates = new Map();
     try {
         const roadmapContent = extractCurrentMilestone(node_fs_1.default.readFileSync(node_path_1.default.join(planningDir(cwd), 'ROADMAP.md'), 'utf-8'), cwd);
-        // #1729: `(?:\s*\([^)\n]{0,200}\))?` tolerates a pre-colon ( ) tag (literal mirror of OPTIONAL_PHASE_TAG_SOURCE).
-        const headingPattern = new RegExp(`#{2,4}\\s*Phase\\s+(${PHASE_NUMBER_TOKEN_SOURCE})(?:\\s*\\([^)\\n]{0,200}\\))?\\s*:\\s*([^\\n]+)`, 'gi');
+        const progressConvention = resolvePhaseIdConvention(cwd);
+        // #1729: `(?:\s*\([^)\n]{0,200}\))?` tolerates a pre-colon ( ) tag, owned by
+        // buildPhaseHeadingScanRegex (phase-id.cts) so this scan also recognizes
+        // bracket-convention headings instead of hand-rolling a literal `Phase\s+`.
+        const { regex: headingPattern, phaseNumGroup: hNumGroup, phaseNameGroup: hNameGroup } = buildPhaseHeadingScanRegex(PHASE_HEADING_BASELINE.ANY_BRACKET, progressConvention);
         let hm;
         while ((hm = headingPattern.exec(roadmapContent)) !== null) {
-            roadmapPhaseNums.add(hm[1]);
-            roadmapPhaseNames.set(hm[1], hm[2].replace(/\(INSERTED\)/i, '').trim());
+            roadmapPhaseNums.add(hm[hNumGroup]);
+            roadmapPhaseNames.set(hm[hNumGroup], hm[hNameGroup].replace(/\(INSERTED\)/i, '').trim());
         }
+        // #4906 Phase 5 (#4984): NOT migrated onto phaseHeadingPrefixSrcFor — same
+        // out-of-scope reasoning as roadmapPhaseMatchesExactPrefix/detectPhaseMvpMode
+        // above; a direct LABEL_ONLY selector call here would have added a third
+        // uncounted LABEL_ONLY consumer to init.cts's pinned
+        // tests/adr-612-bracket-heading-selection.test.cjs census.
+        // phase-id-owner: deliberately unmigrated (#4984 revert) — see comment above.
         const cbPattern = new RegExp(`-\\s*\\[(x| )\\]\\s*.*Phase\\s+(${PHASE_NUMBER_TOKEN_SOURCE})[:\\s]`, 'gi');
         let cbm;
         while ((cbm = cbPattern.exec(roadmapContent)) !== null) {
