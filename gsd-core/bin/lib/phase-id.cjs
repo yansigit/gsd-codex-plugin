@@ -497,6 +497,20 @@ function renderPhaseId(id) {
     const plan = id.plan ? `-${id.plan}` : '';
     return `${renderMilestoneId(id)} ${id.phase}${sub}${plan}`;
 }
+/** Whether a legacy phase token has a lossless spelling in bracket display grammar. */
+function isBracketPhaseTokenRepresentable(token) {
+    try {
+        const bracketToken = normalizePhaseName(token)
+            .split('.')
+            .map((segment) => segment.padStart(2, '0'))
+            .join('.');
+        parsePhaseId(`[GSD.00] ${bracketToken}`);
+        return true;
+    }
+    catch {
+        return false;
+    }
+}
 // PhaseId is a structural type: nothing forces a caller through parsePhaseId,
 // so toDir cannot trust project/milestone/phase/subphase are already
 // canonical — each is validated below against the exact shape parsePhaseId
@@ -1058,7 +1072,7 @@ function isPhaseArtifact(fileName, phaseDirName, convention) {
  * whichever path produced the candidates, which is what makes a bracket dir
  * read exactly what its legacy twin reads.
  */
-function matchesPhaseTokenCandidates(fileName, rawCandidates) {
+function expandPhaseTokenCandidates(rawCandidates) {
     // Each reading is compared in BOTH its padded and de-padded form: files are
     // written padded by `normalizePhaseName` (`cmdScaffold`) while directories
     // are often not (`1-unpadded`), and legacy trees carry the reverse pairing.
@@ -1066,9 +1080,19 @@ function matchesPhaseTokenCandidates(fileName, rawCandidates) {
     // sub-phase (`03A`, `03.1`) has no meaningful de-padded form and is left
     // alone, so this only ever ADDS a reading and can never drop one.
     const depad = (t) => (/^\d+$/.test(t) ? String(Number(t)) : t);
-    const candidates = new Set(rawCandidates
+    return new Set(rawCandidates
         .flatMap(t => [t, normalizePhaseName(t), depad(t)])
         .map(t => t.toUpperCase()));
+}
+function matchesPhaseTokenCandidates(fileName, rawCandidates) {
+    const candidates = expandPhaseTokenCandidates(rawCandidates);
+    if (matchPhaseTokenCandidateSpan(fileName, candidates) !== null)
+        return true;
+    // FIX 2: token-less filename (bare "VERIFICATION.md"/"UAT.md") — containment
+    // in this phase's own directory listing is sufficient.
+    return derivePhaseTokenSegments(fileName).tokenSegments.length === 0;
+}
+function matchPhaseTokenCandidateSpan(fileName, candidates) {
     const fileUpper = fileName.toUpperCase();
     for (const candidate of candidates) {
         // A dotted sub-phase segment (e.g. `01.1-CONTEXT.md`) is a legitimate
@@ -1094,11 +1118,43 @@ function matchesPhaseTokenCandidates(fileName, rawCandidates) {
         if (fileUpper.startsWith(`${candidate}-`) ||
             fileUpper.startsWith(`${candidate}.`) ||
             fileUpper.startsWith(`${candidate}_`))
-            return true;
+            return { start: 0, end: candidate.length };
     }
-    // FIX 2: token-less filename (bare "VERIFICATION.md"/"UAT.md") — containment
-    // in this phase's own directory listing is sufficient.
-    return derivePhaseTokenSegments(fileName).tokenSegments.length === 0;
+    return null;
+}
+/**
+ * Return the exact leading token span by which the phase-artifact reader
+ * attributes a phase-qualified filename to `phaseDirName`.
+ *
+ * Membership is first decided by `isPhaseArtifact`, then the span is selected
+ * from the same padded, de-padded, case-folded candidate set used by
+ * `matchesPhaseTokenCandidates`. Token-less containment fallbacks return null
+ * because there is no phase token in the filename to replace.
+ */
+function phaseArtifactTokenSpan(fileName, phaseDirName, convention) {
+    if (!isPhaseArtifact(fileName, phaseDirName, convention))
+        return null;
+    if (convention === 'bracket') {
+        const bracketDir = phaseDirName.match(BRACKET_DIR_TOKEN_RE);
+        if (bracketDir) {
+            const qualified = fileName.match(BRACKET_QUALIFIED_KEY_RE);
+            if (qualified && bracketQualifiedKey(fileName, convention) !== null) {
+                return { start: 0, end: qualified[0].length };
+            }
+            const bracketCandidates = expandPhaseTokenCandidates([bracketDir[1]]);
+            return matchPhaseTokenCandidateSpan(fileName, bracketCandidates);
+        }
+    }
+    const { tokenSegments } = derivePhaseTokenSegments(phaseDirName);
+    if (tokenSegments.length === 0)
+        return null;
+    const literalToken = extractPhaseToken(phaseDirName);
+    const strippedDir = stripProjectCodePrefix(phaseDirName);
+    const strippedToken = strippedDir !== phaseDirName ? extractPhaseToken(strippedDir) : literalToken;
+    const leadingRunMatch = strippedDir.match(LEADING_DIGIT_RUN_RE);
+    const rawCandidates = [literalToken, strippedToken, leadingRunMatch?.[1]].filter((token) => Boolean(token));
+    const candidates = expandPhaseTokenCandidates(rawCandidates);
+    return matchPhaseTokenCandidateSpan(fileName, candidates);
 }
 /**
  * #3511: scope `fileNames` to the subset that passes
@@ -1606,6 +1662,7 @@ module.exports = {
     parsePhaseId,
     renderMilestoneId,
     renderPhaseId,
+    isBracketPhaseTokenRepresentable,
     toDir,
     SENTINEL_RANGES,
     isSentinelPhaseId,
@@ -1615,6 +1672,7 @@ module.exports = {
     comparePhaseNum,
     extractPhaseToken,
     isPhaseArtifact,
+    phaseArtifactTokenSpan,
     scopeToPhase,
     phaseTokenMatches,
     matchPhaseDirs,

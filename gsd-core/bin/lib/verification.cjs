@@ -334,7 +334,7 @@ function computeCoveredDigest(projectRoot, coveredFiles, version = FINGERPRINT_V
     // Canonicalize the root ONCE — every candidate's realpath is checked against
     // this, not the possibly-symlinked `projectRoot` argument itself. Always via
     // the REAL fs, never fsImpl: `projectRoot` is a trusted anchor the CALLER
-    // derived (findProjectRoot), not attacker-influenced covered-input data —
+    // derived (resolveProjectRoot), not attacker-influenced covered-input data —
     // routing it through a caller-scoped containment seam (e.g. #4155's
     // containmentEnforcingVerificationFs, confined to `.planning/`, a proper
     // SUBSET of `projectRoot`) would reject the root itself and fail every
@@ -890,7 +890,7 @@ function readVerificationStatus(phaseDir, opts = {}) {
         isStale =
             !hasWellFormedFingerprint ||
                 storedVersion === null ||
-                computeCoveredDigest((0, project_root_cjs_1.findProjectRoot)(phaseDir), coveredFilesVal, storedVersion, { phaseDir }) !== coveredDigestVal ||
+                computeCoveredDigest((0, project_root_cjs_1.resolveProjectRoot)(phaseDir), coveredFilesVal, storedVersion, { phaseDir }) !== coveredDigestVal ||
                 !allCurrentArtifactsCovered(phaseDir, coveredFilesVal);
     }
     else {
@@ -1167,7 +1167,7 @@ function cmdVerificationFingerprint(cwd, phaseDirArg, fileArgs, raw) {
         error('at least one covered file required for verification.fingerprint');
         return;
     }
-    const projectRoot = (0, project_root_cjs_1.findProjectRoot)(phaseDir);
+    const projectRoot = (0, project_root_cjs_1.resolveProjectRoot)(phaseDir);
     // canonicalizeCoveredFiles here is for the emitted `covered_files` field —
     // computeCoveredDigest canonicalizes its own `coveredFiles` argument
     // internally too (it must, for callers like readVerificationStatus that

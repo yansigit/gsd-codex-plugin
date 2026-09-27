@@ -572,6 +572,55 @@ function sliceMilestoneWindow(content, version) {
     return content.slice(selected.index, computeMilestoneSectionEnd(content, selected[0], selected.index));
 }
 /**
+ * Enumerate the milestone section ranges recognized by the ROADMAP readers.
+ * Markdown boundaries reuse the reader's heading tokenizer, milestone-signal
+ * vocabulary, name/version extractor, and section-end owner. Collapsed
+ * archives reuse the same `<details><summary>` shape handled by
+ * `extractCurrentMilestoneScoped`.
+ */
+function milestoneSections(content) {
+    const sections = [];
+    const headings = (0, markdown_sectionizer_cjs_1.tokenizeHeadings)(content);
+    for (const heading of headings) {
+        if (heading.level < 1 || heading.level > 3)
+            continue;
+        if (/^Phase\s+\S/i.test(heading.text))
+            continue;
+        if (!MILESTONE_HEADING_SIGNAL_PATTERN.test(heading.text))
+            continue;
+        const extracted = extractMilestoneHeadingName(heading.text);
+        const version = extracted?.version ?? null;
+        const versionMajor = version?.match(/^v(\d+)/i);
+        const milestoneInt = versionMajor ? parseInt(versionMajor[1], 10) : null;
+        const lineEnd = content.indexOf('\n', heading.offset);
+        const fullLine = content.slice(heading.offset, lineEnd === -1 ? content.length : lineEnd);
+        sections.push({
+            start: heading.offset,
+            end: computeMilestoneSectionEnd(content, fullLine, heading.offset, undefined, headings),
+            version,
+            milestoneInt: milestoneInt !== null && Number.isSafeInteger(milestoneInt) ? milestoneInt : null,
+        });
+    }
+    const detailsPattern = /<details\b[^>]*>[\s\S]*?<\/details>/gi;
+    let detailsMatch;
+    while ((detailsMatch = detailsPattern.exec(content)) !== null) {
+        const summary = detailsMatch[0].match(/<summary[^>]*>([^<]*)<\/summary>/i)?.[1]?.trim() ?? '';
+        if (!MILESTONE_HEADING_SIGNAL_PATTERN.test(summary))
+            continue;
+        const extracted = extractMilestoneHeadingName(summary);
+        const version = extracted?.version ?? null;
+        const versionMajor = version?.match(/^v(\d+)/i);
+        const milestoneInt = versionMajor ? parseInt(versionMajor[1], 10) : null;
+        sections.push({
+            start: detailsMatch.index,
+            end: detailsMatch.index + detailsMatch[0].length,
+            version,
+            milestoneInt: milestoneInt !== null && Number.isSafeInteger(milestoneInt) ? milestoneInt : null,
+        });
+    }
+    return sections.sort((a, b) => a.start - b.start || a.end - b.end);
+}
+/**
  * #3184: counts RAW phase references — a `#{2,4} Phase <id>:` heading
  * (fence-aware via `tokenizeHeadings`) or a `#2199` bullet entry — BEFORE any
  * sentinel filter. Used for BOTH sides of `classifyMilestoneWindow`'s row-8
@@ -600,17 +649,37 @@ function sliceMilestoneWindow(content, version) {
 // decoy `### [GSD.04] Notes:` outside the window manufactured a false V005
 // while suppressing the correct V004. The digit anchor forecloses both.
 const BRACKET_PHASE_ENTRY_HEADING_RE = new RegExp(`^${PHASE_HEADING_PREFIX_SRC}${PHASE_NUMBER_TOKEN_SOURCE}${OPTIONAL_PHASE_TAG_SOURCE}\\s*:`, 'i');
+// #1729: `(?:\s*\([^)\n]{0,200}\))?` tolerates a pre-colon ( ) tag (literal
+// mirror of OPTIONAL_PHASE_TAG_SOURCE). Hoisted out of hasPhaseEntries (#4144
+// round 5 Blocker 1) so a consumer OUTSIDE this file's own phase-entry count —
+// the bracket roadmap migrator's "phase-like but unparsed" refusal
+// (src/roadmap-upgrade.cts) — can ask "is this heading text a phase heading
+// by the readers' own rules" without re-deriving the pattern. A heading with
+// no phase-number token and no trailing colon (`## Phase Details`, `##
+// Phase Lifecycle`, `### Phase Notes`) is NOT a phase heading by this
+// grammar — it is an ordinary section heading that happens to start with the
+// word "Phase".
+const PHASE_HEADING_TEXT_RE = /^(?:\[[^\]]{1,200}\]\s*)?Phase\s+([\w][\w.-]*)(?:\s*\([^)\n]{0,200}\))?\s*:/i;
+/**
+ * #4144 round 5 Blocker 1: whether `headingText` — a heading's text with its
+ * leading `#{1,6}` markers and surrounding whitespace already stripped
+ * (`tokenizeHeadings`'s own `h.text`, or the equivalent for a line a caller
+ * already knows is a `#{2,4}` heading) — is a phase heading by the readers'
+ * own grammar. The single owner of this test; `hasPhaseEntries` below is
+ * itself just the first caller.
+ */
+function isPhaseHeadingText(headingText) {
+    return PHASE_HEADING_TEXT_RE.test(headingText);
+}
 function hasPhaseEntries(markdown, phaseIdConvention) {
-    // #1729: `(?:\s*\([^)\n]{0,200}\))?` tolerates a pre-colon ( ) tag (literal mirror of OPTIONAL_PHASE_TAG_SOURCE).
     // #3641: the widened grammar engages ONLY when the resolved convention is
     // 'bracket' — a project that has not opted in runs the legacy pattern
     // alone, byte-identically.
-    const phaseHeadingPattern = /^(?:\[[^\]]{1,200}\]\s*)?Phase\s+([\w][\w.-]*)(?:\s*\([^)\n]{0,200}\))?\s*:/i;
     const bracketMode = phaseIdConvention === 'bracket';
     for (const h of (0, markdown_sectionizer_cjs_1.tokenizeHeadings)(markdown)) {
         if (h.level < 2 || h.level > 4)
             continue;
-        if (phaseHeadingPattern.test(h.text))
+        if (isPhaseHeadingText(h.text))
             return true;
         if (bracketMode && BRACKET_PHASE_ENTRY_HEADING_RE.test(h.text))
             return true;
@@ -857,6 +926,24 @@ function classifyMilestoneWindow(input) {
                         SCOPE.COMPLETE // rows 6, 7
     );
 }
+// #5007 (Phase 6 / ADR-4910 §8): the bulk phase-heading-block strip (heading
+// line + body through to the next heading of any level) used by BOTH the
+// <details>-fallback branch and preambleWithoutPhaseDetails inside
+// extractCurrentMilestoneScoped below — literally the same regex, previously
+// duplicated verbatim at both call sites. Composed from
+// phaseHeadingPrefixSrcFor (LABEL_ONLY, no convention argument — reproduces
+// the prior bare `Phase\s+` literal byte-for-byte, same non-widening
+// discipline as the phase.cts counter sites) rather than routed through
+// buildPhaseHeadingScanRegex, since this site needs the whole matched block
+// (heading + body), not a phase-number/title capture. The one real behavior
+// change here is the phase-number token itself: the prior literal admitted
+// any `[\w][\w.-]*` (including non-numeric garbage); PHASE_NUMBER_TOKEN_SOURCE
+// tightens it to the real phase-number grammar (digits, optional trailing
+// letter, dotted subphases) — verified against real phase-number fixtures
+// (plain, decimal, and bracket-tag-bearing) in tests/roadmap-parser.test.cjs.
+const PHASE_HEADING_BLOCK_STRIP_RE = new RegExp(
+// #1729: `(?:\s*\([^)\n]{0,200}\))?` (OPTIONAL_PHASE_TAG_SOURCE) tolerates a pre-colon ( ) tag.
+`^#{2,4}\\s*${phaseHeadingPrefixSrcFor(PHASE_HEADING_BASELINE.LABEL_ONLY)}${PHASE_NUMBER_TOKEN_SOURCE}${OPTIONAL_PHASE_TAG_SOURCE}\\s*:[^\\n]*(?:\\n(?!#{1,6}\\s)[^\\n]*)*\\n?`, 'gim');
 /**
  * Extract the current milestone section from ROADMAP.md by positive lookup,
  * carrying a `scope` discriminator (ADR-3180 Decision 2) alongside the value.
@@ -981,9 +1068,9 @@ function extractCurrentMilestoneScoped(content, cwd, ws, phaseIdConvention) {
                 const firstMilestoneMatch = content.match(anyMilestoneOrDetails);
                 const preambleCutoff = firstMilestoneMatch ? firstMilestoneMatch.index : detailsOpenIdx;
                 const preamble = (0, markdown_sectionizer_cjs_1.stripTaggedBlocks)(content.slice(0, preambleCutoff), 'details')
-                    // #1729: `(?:\s*\([^)\n]{0,200}\))?` tolerates a pre-colon ( ) tag (literal mirror of OPTIONAL_PHASE_TAG_SOURCE).
-                    // phase-id-owner: pre-existing hand-rolled Phase-heading pattern — grandfathered pending Phase 6 migration (ADR-4910 §8, epic #4906)
-                    .replace(/^#{2,4}\s*Phase\s+[\w][\w.-]*(?:\s*\([^)\n]{0,200}\))?\s*:[^\n]*(?:\n(?!#{1,6}\s)[^\n]*)*\n?/gim, '')
+                    // #5007 (Phase 6 / ADR-4910 §8): shared owner, see
+                    // PHASE_HEADING_BLOCK_STRIP_RE above.
+                    .replace(PHASE_HEADING_BLOCK_STRIP_RE, '')
                     .replace(/^#{1,4}\s*Phase Details\b[^\n]*\n?/gim, '');
                 const value = preamble + content.slice(detailsOpenIdx, detailsEnd);
                 return {
@@ -1218,17 +1305,23 @@ function extractCurrentMilestoneScoped(content, cwd, ws, phaseIdConvention) {
     // every phase (phase_count: 0, exit 0). Only strip preamble phase details when
     // the selected milestone section actually contains its own — otherwise the
     // preamble phases ARE this milestone's phases and must be preserved.
-    // phase-id-owner: pre-existing hand-rolled Phase-heading pattern — grandfathered pending Phase 6 migration (ADR-4910 §8, epic #4906)
-    const currentSectionHasPhaseDetails = /^#{2,4}\s*Phase\s+\S/im.test(currentSection);
+    // #5007 (Phase 6 / ADR-4910 §8): a pure "does this section have ANY phase
+    // heading" boolean — same shape as phase.cts:1691's anyHeadingPattern
+    // (composed directly from phaseHeadingPrefixSrcFor, no shared owner exposes
+    // a captureless existence check), but this site's terminal token is `\S`
+    // (any non-whitespace), not phase.cts:1691's `\d` — kept as `\S` to
+    // reproduce this site's own prior behavior byte-for-byte rather than
+    // forcing the two sites onto an identical terminal token that would be a
+    // behavior change here.
+    const currentSectionHasPhaseDetails = new RegExp(`^#{2,4}\\s*${phaseHeadingPrefixSrcFor(PHASE_HEADING_BASELINE.LABEL_ONLY)}\\S`, 'im').test(currentSection);
     const preambleBase = (0, markdown_sectionizer_cjs_1.stripTaggedBlocks)(beforeMilestones, 'details');
     // #3235: the conditional wraps the REPLACE, not the pattern. This used to select between the
     // strip regex and a `/$/` sentinel, which made the do-not-strip branch an identity replacement
     // (CodeQL js/identity-replacement, alert 53) -- correct, but it left both branches sharing one
     // replacement argument, so changing `''` would silently give the no-op branch a real effect.
-    // #1729: `(?:\s*\([^)\n]{0,200}\))?` tolerates a pre-colon ( ) tag (literal mirror of OPTIONAL_PHASE_TAG_SOURCE).
+    // #5007 (Phase 6 / ADR-4910 §8): shared owner, see PHASE_HEADING_BLOCK_STRIP_RE above.
     const preambleWithoutPhaseDetails = currentSectionHasPhaseDetails
-        // phase-id-owner: pre-existing hand-rolled Phase-heading pattern — grandfathered pending Phase 6 migration (ADR-4910 §8, epic #4906)
-        ? preambleBase.replace(/^#{2,4}\s*Phase\s+[\w][\w.-]*(?:\s*\([^)\n]{0,200}\))?\s*:[^\n]*(?:\n(?!#{1,6}\s)[^\n]*)*\n?/gim, '')
+        ? preambleBase.replace(PHASE_HEADING_BLOCK_STRIP_RE, '')
         : preambleBase;
     // Unconditional in BOTH branches -- the #730 `Phase Details` heading strip is independent of
     // whether the selected milestone section carries phase details of its own.
@@ -2160,6 +2253,7 @@ module.exports = {
     // own doc comment. milestone.cts's destructive-consumer guard consumes
     // this instead of composing locate+select+section-end itself.
     sliceMilestoneWindow,
+    milestoneSections,
     hasVersionedMilestones,
     hasMilestoneSectioning,
     // #3642: the >=1 sibling buildStateFrontmatter's unbounded branch consumes.
@@ -2180,4 +2274,9 @@ module.exports = {
     // owner (and its convention gate) instead of a private inline copy.
     extractPhaseFieldMultiline,
     hasPhaseEntries,
+    // #4144 round 5 Blocker 1: the readers' own phase-heading grammar, so the
+    // bracket roadmap migrator's "phase-like but unparsed" refusal
+    // (src/roadmap-upgrade.cts) can gate on it instead of a private, looser
+    // "starts with the word Phase" regex.
+    isPhaseHeadingText,
 };

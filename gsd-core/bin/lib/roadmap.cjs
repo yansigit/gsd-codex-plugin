@@ -1061,6 +1061,9 @@ function cmdRoadmapUpdatePlanProgress(cwd, phaseNum, raw) {
         const phaseCellRe = new RegExp(`^${phasePattern}\\.?(?:\\s|$)`, 'i');
         const rowMatch = (row) => phaseCellRe.test((row['Phase'] ?? '').trim());
         const dateShape = /^\d{4}-\d{2}-\d{2}$/;
+        // The status tokens this verb and the roadmap template write into the
+        // Status cell (`Not started` is the template's initial value).
+        const statusTokenRe = /^(?:not started|planned|in progress|complete)(?!\w)/i;
         roadmapContent = editProgressTableSlice(roadmapContent, (scoped) => {
             let text = scoped;
             const plansResult = (0, markdown_table_cjs_1.updateTableCell)(text, rowMatch, 'Plans Complete', ` ${summaryCount}/${planCount} `);
@@ -1068,7 +1071,24 @@ function cmdRoadmapUpdatePlanProgress(cwd, phaseNum, raw) {
                 text = plansResult.value;
                 tableRowFound = true;
             }
-            const statusResult = (0, markdown_table_cjs_1.updateTableCell)(text, rowMatch, 'Status', ` ${status.padEnd(11)}`);
+            // #4925: the verb owns the Status cell's leading status TOKEN only — the
+            // same split #2853/#3584 made for the `Plans:` line below. It used to
+            // overwrite the whole cell with ` ${status.padEnd(11)}` (no trailing
+            // space), discarding any operator prose kept after the token. Three arms:
+            //   1. empty or a dash placeholder → write the token, padded exactly as
+            //      phase complete writes ` Complete    ` (phase.cts).
+            //   2. a leading status token → rewrite the token only and keep the prose
+            //      after it; an unchanged token leaves the cell byte-identical.
+            //   3. freeform prose with no leading token → operator-owned, untouched.
+            const statusResult = (0, markdown_table_cjs_1.updateTableCell)(text, rowMatch, 'Status', (current) => {
+                if (current === '' || /^[-–—]$/.test(current))
+                    return ` ${status.padEnd(11)} `;
+                const token = statusTokenRe.exec(current);
+                if (!token || token[0] === status)
+                    return current;
+                const rest = current.slice(token[0].length);
+                return rest === '' ? ` ${status.padEnd(11)} ` : ` ${(0, markdown_table_cjs_1.escapeCell)(status + rest)} `;
+            });
             if (statusResult.ok) {
                 text = statusResult.value;
                 tableRowFound = true;
@@ -1085,7 +1105,9 @@ function cmdRoadmapUpdatePlanProgress(cwd, phaseNum, raw) {
                 if (isComplete) {
                     return dateShape.test(current.trim()) ? current : ` ${today} `;
                 }
-                return '  ';
+                // #4925: only a stale ISO completion date — this verb's own stamp — is
+                // cleared; a `-` placeholder or operator text stays byte-identical.
+                return dateShape.test(current) ? '  ' : current;
             });
             if (completedResult.ok) {
                 text = completedResult.value;

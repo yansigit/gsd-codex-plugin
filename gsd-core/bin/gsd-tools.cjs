@@ -64,7 +64,7 @@
  *   roadmap update-plan-progress <N>   Update progress table row from disk (PLAN vs SUMMARY counts)
  *   roadmap annotate-dependencies <N>  Add wave dependency notes + cross-cutting constraints to ROADMAP.md
  *   roadmap validate                   Validate phase ID convention compliance
- *   roadmap upgrade [--apply] --convention milestone-prefixed  Migrate phase IDs to M-NN convention
+ *   roadmap upgrade [--apply] --convention <milestone-prefixed|bracket>  Migrate phase IDs (dry-run by default)
  *
  * Requirements Operations:
  *   requirements mark-complete <ids>   Mark requirement IDs as complete in REQUIREMENTS.md
@@ -5214,6 +5214,10 @@ async function main() {
     cwd = resolvedProjectDir;
     projectDirExplicit = true;
   }
+  // #4894: verification derives its root from a phase directory, not `cwd`, so
+  // hand it the validated explicit root. Always (re)set — `null` when the flag is
+  // absent — so a prior in-process main() call can never leak an override.
+  projectRoot.setExplicitProjectRoot(projectDirExplicit ? cwd : null);
 
   // Resolve worktree root: in a linked worktree, .planning/ lives in the main worktree.
   // However, in monorepo worktrees where the subdirectory itself owns .planning/,
