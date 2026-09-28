@@ -70,6 +70,8 @@ const runtime_slash_cjs_1 = require("./runtime-slash.cjs");
 const clock_cjs_1 = require("./clock.cjs");
 const state_transition_cjs_1 = require("./state-transition.cjs");
 const markdown_table_cjs_1 = require("./markdown-table.cjs");
+// #5060: the Phase Status Module owns the ROADMAP Status-cell token vocabulary.
+const phase_status_cjs_1 = require("./phase-status.cjs");
 const markdown_sectionizer_cjs_1 = require("./markdown-sectionizer.cjs");
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- roadmap.cjs is an export= CommonJS module
 const roadmapMod = require("./roadmap.cjs");
@@ -3515,7 +3517,7 @@ function cmdPhaseComplete(cwd, phaseNum, raw) {
                         const plansResult = (0, markdown_table_cjs_1.updateTableCell)(text, rowMatch, 'Plans Complete', ` ${summaryCount}/${planCount} `);
                         if (plansResult.ok)
                             text = plansResult.value;
-                        const statusResult = (0, markdown_table_cjs_1.updateTableCell)(text, rowMatch, 'Status', ' Complete    ');
+                        const statusResult = (0, markdown_table_cjs_1.updateTableCell)(text, rowMatch, 'Status', ` ${(0, phase_status_cjs_1.toRoadmapStatusCell)(phase_status_cjs_1.PHASE_STATUS.COMPLETE).padEnd(11)} `);
                         if (statusResult.ok)
                             text = statusResult.value;
                         // Preserve only a valid ISO date (#1161: idempotent; self-heal

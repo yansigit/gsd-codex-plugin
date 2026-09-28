@@ -62,7 +62,7 @@ const planningWorkspace = require("./planning-workspace.cjs");
 const { planningDir, planningPaths, todosDir, resolvePhaseIdConvention } = planningWorkspace;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const frontmatter = require("./frontmatter.cjs");
-const { extractFrontmatter, agentScalarNeedsDoubleQuoting, escapeDoubleQuotedScalar } = frontmatter;
+const { extractFrontmatter, agentScalarNeedsDoubleQuoting, escapeDoubleQuotedScalar, FRONTMATTER_UNPARSEABLE } = frontmatter;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const modelProfiles = require("./model-profiles.cjs");
 const { MODEL_PROFILES, VALID_PHASE_TYPES } = modelProfiles;
@@ -72,9 +72,10 @@ const phase_lifecycle_cjs_1 = require("./phase-lifecycle.cjs");
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const planScanMod = require("./plan-scan.cjs");
 const { scanPhasePlans } = planScanMod;
-// eslint-disable-next-line @typescript-eslint/no-require-imports -- verification.cjs is an export= CommonJS module
-const verificationMod = require("./verification.cjs");
-const { resolveVerificationFile } = verificationMod;
+// #5060: Phase Status Module — the single owner of "what state is phase P
+// in?" (ADR-5057 §1/§2). Replaces this file's own precedence ladder and
+// determinePhaseStatus derivation.
+const phase_status_cjs_1 = require("./phase-status.cjs");
 /**
  * Project one canonical bracket directory onto its display identity and slug.
  *
@@ -100,94 +101,6 @@ function recoverBracketPhaseName(dir, phaseToken) {
         return '';
     const afterToken = dir.slice(tokenOffset + tokenBoundary.length).replace(/^-/, '');
     return afterToken ? afterToken.replace(/-/g, ' ') : '';
-}
-// ─── Phase Status ─────────────────────────────────────────────────────────────
-/**
- * Phase-status precedence ladder — furthest-along wins (#2408).
- *
- * `cmdStats` builds `phasesByNumber` by scanning on-disk phase directories.
- * When two directories normalize to the same phase key (e.g. `05-real/` and
- * `05-real-stray/`), the status field must be folded by precedence rather
- * than overwritten last-write-wins — otherwise `/gsd-stats` reports whatever
- * directory `fs.readdirSync` happened to yield last, which is non-deterministic
- * across platforms and can silently call a `Complete` phase `Not Started`.
- */
-const PHASE_STATUS_PRECEDENCE = [
-    'Complete',
-    'Needs Review',
-    'Executed',
-    'In Progress',
-    'Planned',
-    'Not Started',
-    'Pending',
-];
-const PHASE_STATUS_RANK = new Map(PHASE_STATUS_PRECEDENCE.map((s, i) => [s, i]));
-/**
- * Fold two phase statuses by precedence — returns whichever is further along
- * the {@link PHASE_STATUS_PRECEDENCE} ladder. Unrecognized statuses fall behind
- * every recognized one (so a recognized status always wins over an unknown one;
- * two unrecognized statuses favor `a` for determinism).
- */
-function foldPhaseStatus(a, b) {
-    const ra = PHASE_STATUS_RANK.get(a);
-    const rb = PHASE_STATUS_RANK.get(b);
-    if (ra === undefined && rb === undefined)
-        return a;
-    if (ra === undefined)
-        return b;
-    if (rb === undefined)
-        return a;
-    // Lower rank = higher precedence (Complete=0 wins over Not Started=5).
-    return ra <= rb ? a : b;
-}
-/**
- * Determine phase status by checking plan/summary counts AND verification state.
- * Introduces "Executed" for phases with all summaries but no passing verification.
- */
-function determinePhaseStatus(plans, summaries, phaseDir, defaultPending) {
-    if (plans === 0)
-        return defaultPending;
-    if (summaries < plans && summaries > 0)
-        return 'In Progress';
-    if (summaries < plans)
-        return 'Planned';
-    // summaries >= plans — check verification
-    try {
-        const files = node_fs_1.default.readdirSync(phaseDir);
-        // #3473 F2: routed through the shared resolver (readdir order is
-        // filesystem-dependent, so the prior hand-rolled `.find()` could pick
-        // either file when a phase held both a canonical report and an ad-hoc
-        // `-CORRECTION-VERIFICATION.md` worksheet — see #3357).
-        // #3492: pin selection to THIS phase's own token so a stray cross-phase
-        // or sentinel-numbered canonically-shaped file cannot outrank this
-        // phase's own (possibly non-canonical) report.
-        const phaseDirName = node_path_1.default.basename(phaseDir);
-        const phaseToken = extractPhaseToken(phaseDirName);
-        const verificationFile = resolveVerificationFile(files, { allowBare: true, phaseToken, phaseDirName });
-        if (verificationFile) {
-            const verificationFilePath = node_path_1.default.join(phaseDir, verificationFile);
-            const content = (0, shell_command_projection_cjs_1.platformReadSync)(verificationFilePath) || '';
-            // #1159 (Defect A): read ONLY the frontmatter `status` key to avoid false
-            // matches from historical body metadata such as `previous_status: gaps_found`.
-            // Full-text regexes like /status:\s*gaps_found/ match the substring inside
-            // `previous_status: gaps_found`, producing incorrect phase status labels.
-            const fm = extractFrontmatter(content, verificationFilePath);
-            // Normalise to lower-case to preserve the prior case-insensitive behaviour
-            // while reading only the frontmatter `status` key (not the full body text).
-            const fmStatus = typeof fm['status'] === 'string' ? fm['status'].trim().toLowerCase() : '';
-            if (fmStatus === 'passed')
-                return 'Complete';
-            if (fmStatus === 'human_needed')
-                return 'Needs Review';
-            if (fmStatus === 'gaps_found')
-                return 'Executed';
-            // Verification exists but unrecognized status — treat as executed
-            return 'Executed';
-        }
-    }
-    catch { /* directory read failed — fall through */ }
-    // No verification file — executed but not verified
-    return 'Executed';
 }
 function cmdGenerateSlug(text, raw) {
     if (!text) {
@@ -2883,13 +2796,38 @@ function cmdSummaryExtract(cwd, summaryPath, fields, raw) {
     if (!summaryPath) {
         error('summary-path required for summary-extract');
     }
-    const fullPath = node_path_1.default.join(cwd, summaryPath);
+    // #5013: requireSafePath (not path.join) so an absolute summaryPath resolves to
+    // that literal path instead of being concatenated onto cwd — path.join has no
+    // special case for an absolute second argument the way path.resolve does. Uses
+    // requireSafePath (the same PathAcceptance.AbsoluteInsideRoot pattern
+    // cmdAuditAcknowledge's write-side counterpart already uses in audit.cts)
+    // rather than a bare path.resolve: a plain path.resolve would also have made
+    // an absolute summaryPath anywhere on the filesystem resolve and have its
+    // content echoed back (this command reads and returns file content, unlike
+    // cmdVerifyPathExists's exists-only check) — an orthogonal-review finding on
+    // this same fix. requireSafePath keeps the acceptance criterion (an absolute
+    // path within the project resolves correctly) while refusing one that
+    // escapes cwd, and rejects relative `../` escapes the same way (pre-existing
+    // in this function, closed as a direct consequence, not separately in scope).
+    const fullPath = (0, security_cjs_1.requireSafePath)(summaryPath, cwd, 'summary-extract target', security_cjs_1.PathAcceptance.AbsoluteInsideRoot);
     if (!node_fs_1.default.existsSync(fullPath)) {
         output({ error: 'File not found', path: summaryPath }, raw, undefined);
         return;
     }
     const content = node_fs_1.default.readFileSync(fullPath, 'utf-8');
     const fm = extractFrontmatter(content, fullPath);
+    // #5013: an unparseable frontmatter block (malformed YAML in the fence) is
+    // NOT the same as an absent/empty one — extractFrontmatter marks it with
+    // FRONTMATTER_UNPARSEABLE (mirrors state.cts's isUnparseableFrontmatter /
+    // state-transition.cts's identical helper). Left unchecked, every field
+    // below silently falls back to its empty default and this command exits 0,
+    // so a milestone audit reading requirements_completed through it would
+    // report "zero requirements completed" for a plan that completed several,
+    // with nothing on stderr. Refuse instead, naming the file, the same way
+    // cmdAuditAcknowledge (audit.cts) refuses on the write-side counterpart.
+    if (fm[FRONTMATTER_UNPARSEABLE] === true) {
+        error(`summary-extract: the frontmatter of "${summaryPath}" is not parseable YAML — fix the syntax error in the file (e.g. an unquoted ": " inside a block-sequence item) before re-running; every field would otherwise silently read as empty`, ERROR_REASON.SUMMARY_EXTRACT_UNPARSEABLE, { path: summaryPath });
+    }
     // Parse key-decisions into structured format
     const parseDecisions = (decisionsList) => {
         if (!decisionsList || !Array.isArray(decisionsList))
@@ -3096,14 +3034,15 @@ function cmdProgressRender(cwd, format, raw) {
                 phaseNum = dm ? dm[1] : dir;
                 phaseName = dm && dm[2] ? dm[2].replace(/-/g, ' ') : '';
             }
-            // #3183: canonical plan/summary counts (root+nested, superseded-excluded,
-            // canonical pairing) from the single owner.
-            const phaseScan = scanPhasePlans(node_path_1.default.join(phasesDir, dir));
-            const plans = phaseScan.planCount;
-            const summaries = phaseScan.summaryCount;
+            // #3183/#5060: canonical plan/summary counts and lifecycle status
+            // (root+nested, superseded-excluded, canonical pairing) from the
+            // single owner (Phase Status Module, ADR-5057).
+            const ps = (0, phase_status_cjs_1.phaseStatus)(node_path_1.default.join(phasesDir, dir), { convention: phaseIdConvention });
+            const plans = ps.value.planCount;
+            const summaries = ps.value.summaryCount;
             totalPlans += plans;
             totalSummaries += summaries;
-            const status = determinePhaseStatus(plans, summaries, node_path_1.default.join(phasesDir, dir), 'Pending');
+            const status = (0, phase_status_cjs_1.toDisplayLabel)(ps.value.status, { pendingWord: 'Pending' });
             phases.push({
                 number: phaseNum,
                 ...(displayId ? { display_id: displayId } : {}),
@@ -3448,6 +3387,9 @@ function cmdStats(cwd, format, raw) {
         : null;
     const milestoneVersion = milestoneDisplay ?? milestone?.version ?? null;
     // Phase & plan stats (reuse progress pattern)
+    // #5060: `phaseStatus` here is the internal PHASE_STATUS ladder value, never
+    // a display label — the output projection below is the only place a label
+    // is produced (toDisplayLabel).
     const phasesByNumber = new Map();
     let totalPlans = 0;
     let totalSummaries = 0;
@@ -3505,7 +3447,7 @@ function cmdStats(cwd, format, raw) {
                 name: phaseName.replace(/\(INSERTED\)/i, '').trim(),
                 plans: 0,
                 summaries: 0,
-                status: 'Not Started',
+                phaseStatus: phase_status_cjs_1.PHASE_STATUS.NOT_STARTED,
             });
         }
     }
@@ -3546,14 +3488,14 @@ function cmdStats(cwd, format, raw) {
                 const afterToken = dir.slice(phaseToken ? phaseToken.length : 0).replace(/^-/, '');
                 phaseName = afterToken ? afterToken.replace(/-/g, ' ') : '';
             }
-            // #3183: canonical plan/summary counts (root+nested, superseded-excluded,
-            // canonical pairing) from the single owner.
-            const phaseScan = scanPhasePlans(node_path_1.default.join(phasesDir, dir));
-            const plans = phaseScan.planCount;
-            const summaries = phaseScan.summaryCount;
+            // #3183/#5060: canonical plan/summary counts and lifecycle status
+            // (root+nested, superseded-excluded, canonical pairing) from the
+            // single owner (Phase Status Module, ADR-5057).
+            const ps = (0, phase_status_cjs_1.phaseStatus)(node_path_1.default.join(phasesDir, dir), { convention: phaseIdConvention });
+            const plans = ps.value.planCount;
+            const summaries = ps.value.summaryCount;
             totalPlans += plans;
             totalSummaries += summaries;
-            const status = determinePhaseStatus(plans, summaries, node_path_1.default.join(phasesDir, dir), 'Not Started');
             const normalizedNum = normalizePhaseName(phaseNum);
             const existing = phasesByNumber.get(normalizedNum);
             phasesByNumber.set(normalizedNum, {
@@ -3569,13 +3511,23 @@ function cmdStats(cwd, format, raw) {
                 // platforms, so a naive overwrite can report a Complete phase as Not
                 // Started (or vice versa) depending on read order. The fold picks the
                 // furthest-along status, matching what an operator expects.
-                status: existing ? foldPhaseStatus(existing.status, status) : status,
+                phaseStatus: existing ? (0, phase_status_cjs_1.foldPhaseStatuses)(existing.phaseStatus, ps.value.status) : ps.value.status,
             });
         }
     }
     catch { /* intentionally empty */ }
-    const phases = [...phasesByNumber.values()].sort((a, b) => comparePhaseNum(a.number, b.number));
-    const completedPhases = phases.filter(p => p.status === 'Complete').length;
+    const internalPhases = [...phasesByNumber.values()].sort((a, b) => comparePhaseNum(a.number, b.number));
+    const completedPhases = internalPhases.filter(p => p.phaseStatus === phase_status_cjs_1.PHASE_STATUS.COMPLETE).length;
+    // #5060: project the internal PHASE_STATUS ladder to the display label at
+    // the output boundary only — the internal `phaseStatus` field is never emitted.
+    const phases = internalPhases.map(p => ({
+        number: p.number,
+        ...(p.display_id ? { display_id: p.display_id } : {}),
+        name: p.name,
+        plans: p.plans,
+        summaries: p.summaries,
+        status: (0, phase_status_cjs_1.toDisplayLabel)(p.phaseStatus, { pendingWord: 'Not Started' }),
+    }));
     // #3217 (ADR-3180 §7.6 rule 4): both percentages here are derived from the
     // same `phaseScope`-carrying directory enumeration above (Phase 3, #3222) —
     // withhold both when that scope is not COMPLETE, same rationale as
@@ -3901,9 +3853,6 @@ function cmdCommitDocsGuardDisable(cwd, raw) {
 module.exports = {
     effortSurfaceForHost,
     groupFilesBySubrepo,
-    determinePhaseStatus,
-    foldPhaseStatus,
-    PHASE_STATUS_PRECEDENCE,
     cmdGenerateSlug,
     cmdCurrentTimestamp,
     cmdListTodos,

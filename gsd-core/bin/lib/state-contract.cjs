@@ -73,6 +73,12 @@ exports.buildStateContract = buildStateContract;
 exports.publishStateContract = publishStateContract;
 const node_path_1 = __importDefault(require("node:path"));
 const node_fs_1 = __importDefault(require("node:fs"));
+// #5060: `phase-status.cjs` is a LOAD-TIME LEAF — no top-level requires of
+// its own (verification.cjs/plan-scan.cjs are required lazily, only inside
+// `phaseStatus()`) — so importing it here at top level does not reopen the
+// documented `state.cjs -> state-contract.cjs -> smart-entry.cjs -> state.cjs`
+// require cycle the file header warns about.
+const phase_status_cjs_1 = require("./phase-status.cjs");
 // ─── Public wire vocabulary ────────────────────────────────────────────────
 exports.STATE_CONTRACT_VERSION = '1.0.0';
 exports.STATE_CONTRACT_FLAVOR = 'core';
@@ -80,12 +86,14 @@ exports.STATE_CONTRACT_FLAVOR = 'core';
 exports.CONTRACT_KEY_ORDER = Object.freeze(['contract', 'flavor', 'milestone', 'phases', 'next', 'updated_at']);
 /** Key order of each emitted phase object — an observable, pinned by test. */
 exports.PHASE_KEY_ORDER = Object.freeze(['number', 'name', 'status']);
-/** Frozen three-value phase status vocabulary. Conservative in what we send (Postel's Law). */
-exports.PHASE_STATUS = Object.freeze({
-    COMPLETE: 'complete',
-    IN_PROGRESS: 'in_progress',
-    PENDING: 'pending',
-});
+/**
+ * Frozen three-value phase status vocabulary. Conservative in what we send
+ * (Postel's Law). #5060: identity-pinned to the Phase Status Module's own
+ * `WIRE_STATUS` — this is not a copy, it IS that frozen object, so
+ * `state-contract`'s `PHASE_STATUS` and `phase-status.cjs`'s `WIRE_STATUS`
+ * can never independently drift.
+ */
+exports.PHASE_STATUS = phase_status_cjs_1.WIRE_STATUS;
 /** Frozen `publishStateContract` result reasons. */
 exports.PUBLISH_REASON = Object.freeze({
     PUBLISHED: 'published',
@@ -146,17 +154,6 @@ function buildMilestone(cwd) {
 }
 // ─── phases: Progress-table (primary) enumerator ───────────────────────────
 const PHASE_CELL_RE = /^(\d+(?:\.\d+)*)\s*[.:)–—-]?\s*(.*)$/;
-function statusFromProgressCell(raw) {
-    const normalized = (raw ?? '').trim().toLowerCase().replace(/\s+/g, ' ');
-    if (normalized === 'complete')
-        return exports.PHASE_STATUS.COMPLETE;
-    if (normalized === 'in progress')
-        return exports.PHASE_STATUS.IN_PROGRESS;
-    // Everything else — 'not started', 'deferred' (design row 12, lossy by
-    // design), '', and any unrecognized word — folds to pending. An
-    // unrecognized status must never reach the wire as a 4th value.
-    return exports.PHASE_STATUS.PENDING;
-}
 function phasesFromProgressTable(table) {
     const { isSentinelPhaseId } = owners();
     const phases = [];
@@ -169,7 +166,7 @@ function phasesFromProgressTable(table) {
         const m = PHASE_CELL_RE.exec(cell);
         const number = m ? m[1] : cell;
         const name = m && m[2].trim().length > 0 ? m[2].trim() : null;
-        phases.push({ number, name, status: statusFromProgressCell(row['Status']) });
+        phases.push({ number, name, status: (0, phase_status_cjs_1.parseRoadmapStatusCell)(row['Status']) });
     }
     return phases;
 }

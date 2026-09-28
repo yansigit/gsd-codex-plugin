@@ -128,6 +128,19 @@ const SCHEMA_DEFAULTS = {
     // WARNING_THRESHOLD/CRITICAL_THRESHOLD so the copies cannot drift.
     'hooks.context_warning_threshold': 35,
     'hooks.context_critical_threshold': 25,
+    // #4974: gates.* confirmation toggles — an absent key must resolve to the
+    // documented default (true) rather than "Key not found", matching
+    // config-defaults.manifest.json's `gates` block. Literal here (like
+    // git.create_tag above) rather than derived from config-loader.cjs's flat
+    // CONFIG_DEFAULTS: that flat projection is enumerated 1:1 against
+    // gsd-core/references/planning-config.md by
+    // tests/config-field-docs.test.cjs, and these 3 keys are internal workflow
+    // wiring, not part of that public flat-key surface. Only the 3 keys
+    // actually read by workflow conditions are registered — see
+    // gsd-core/bin/shared/config-schema.manifest.json.
+    'gates.execute_next_plan': true,
+    'gates.confirm_transition': true,
+    'gates.confirm_milestone_scope': true,
 };
 /**
  * Resolve a schema-level default for an absent key (#2256). Checks the legacy
@@ -818,6 +831,13 @@ function cmdConfigSet(cwd, keyPath, value, raw, options = {}) {
     const VALID_CONTEXT_VALUES = ['dev', 'research', 'review'];
     if (kp === 'context')
         assertEnumValue(parsedValue, val, VALID_CONTEXT_VALUES, 'context value');
+    // #4974: `mode` was never enum-validated — `config-set mode custom` (or any
+    // other string) silently succeeded, even though only "interactive" and
+    // "yolo" are documented/read values (gsd-core/references/planning-config.md,
+    // docs/CONFIGURATION.md, pinned by tests/config-field-docs.test.cjs).
+    const VALID_MODE_VALUES = ['interactive', 'yolo'];
+    if (kp === 'mode')
+        assertEnumValue(parsedValue, val, VALID_MODE_VALUES, 'mode');
     if (kp === 'phase_id_convention') {
         assertEnumValue(parsedValue, val, VALID_PHASE_ID_CONVENTIONS, 'phase_id_convention');
     }

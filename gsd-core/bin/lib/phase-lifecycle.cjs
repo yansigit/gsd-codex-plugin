@@ -31,6 +31,9 @@ const markdown_table_cjs_1 = require("./markdown-table.cjs");
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- phase-id.cjs is an export= CommonJS module
 const phaseIdMod = require("./phase-id.cjs");
 const { isSentinelPhaseId } = phaseIdMod;
+// #5060: `phase-status.cjs` is a load-time leaf (no top-level requires), safe
+// to import here for the ROADMAP Status-cell reader.
+const phase_status_cjs_1 = require("./phase-status.cjs");
 /**
  * #3227: the single owner of "where is this ROADMAP's Progress table".
  * Lifted verbatim out of deriveProgressFromRoadmap so `state-contract.cts`
@@ -93,8 +96,6 @@ function deriveProgressFromRoadmap(roadmapContent) {
     const table = locateProgressTable(roadmapContent);
     if (table) {
         const allRows = table.rows;
-        const completed = allRows.filter((r) => /^complete$/i.test((r['Status'] ?? '').trim())).length;
-        completedPhases = completed > 0 ? completed : null;
         // Data rows only (exclude sentinel phases 0 and 999.x).
         // #3185: canonical sentinel predicate (SENTINEL_RANGES [0,999]) — this was a local 999-only literal that admitted Phase 0.
         const dataRows = allRows.filter((r) => {
@@ -102,6 +103,12 @@ function deriveProgressFromRoadmap(roadmapContent) {
             return /^\d/.test(phase) && !isSentinelPhaseId(phase);
         });
         totalPhases = dataRows.length > 0 ? dataRows.length : null;
+        // #5060: routed through the Phase Status Module's `parseRoadmapStatusCell`
+        // owner (rather than a local `/^complete$/i` regex) and counted over
+        // `dataRows` (not `allRows`) — a sentinel row's Status cell must never
+        // contribute to `completedPhases`.
+        const completed = dataRows.filter((r) => (0, phase_status_cjs_1.parseRoadmapStatusCell)(r['Status']) === phase_status_cjs_1.WIRE_STATUS.COMPLETE).length;
+        completedPhases = completed > 0 ? completed : null;
         let totalPlansSum = 0;
         for (const r of allRows) {
             const cell = (r['Plans Complete'] ?? '').trim();

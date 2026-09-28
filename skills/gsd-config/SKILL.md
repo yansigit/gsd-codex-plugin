@@ -60,7 +60,7 @@ Parse the first token of $ARGUMENTS:
 - If it is `--integrations`: strip the flag, execute settings-integrations workflow
 - If it starts with `--profile`: extract the profile name (remainder after `--profile`), then:
   1. Verify `{{GSD_PLUGIN_ROOT}}/gsd-core/bin/gsd-tools.cjs` exists; if absent, report a broken GSD Core plugin installation and stop.
-  2. Run: `gsd-tools query config-set-model-profile <profile-name> --raw` and display the output verbatim.
+  2. Run: `gsd_run query config-set-model-profile <profile-name> --raw` and display the output verbatim.
 - Otherwise: execute settings workflow (no argument needed)
 </context>
 
