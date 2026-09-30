@@ -282,6 +282,11 @@ function routePhaseCommand({ phase, args, cwd, raw, error }) {
             error(result.reason);
             return;
         }
+        if (result.kind === ERROR_KINDS.VerificationStatusInvalid) {
+            // #5118: typed reason survives to the CLI surface
+            error(result.message, result.reason);
+            return;
+        }
         // HandlerFailure: message field
         error(result.message);
         return;

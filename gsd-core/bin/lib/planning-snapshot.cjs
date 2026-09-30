@@ -124,10 +124,12 @@ function buildPhaseSnapshot(phasesDir, dir, convention) {
     // report exactly like its legacy twin.
     const completionResult = isPhaseComplete(fullPhaseDir, { convention });
     const scanResult = scanPhasePlans(fullPhaseDir);
+    const statusError = completionResult.value.statusError;
     return {
         dir,
         complete: completionResult.value.complete,
         verificationStatus: completionResult.value.verification.status,
+        verificationStatusError: statusError ? { file: statusError.file, message: statusError.message } : null,
         planCount: scanResult.planCount,
         summaryCount: scanResult.summaryCount,
         scope: worstScope(completionResult.scope, scanResult.scope),

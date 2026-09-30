@@ -33,7 +33,7 @@ const frontmatter = require("./frontmatter.cjs");
 // does not require this module, so the edge is acyclic.
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const commandsModule = require("./commands.cjs");
-const { extractFrontmatter, FRONTMATTER_UNPARSEABLE, spliceFrontmatter } = frontmatter;
+const { extractFrontmatter, frontmatterBlock, spliceFrontmatter, isFrontmatterWriteRefusal } = frontmatter;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const phaseIdMod = require("./phase-id.cjs");
 const { PHASE_NUMBER_TOKEN_SOURCE, scopeToPhase } = phaseIdMod;
@@ -46,6 +46,10 @@ const shell_command_projection_cjs_2 = require("./shell-command-projection.cjs")
 const io = require("./io.cjs");
 const { output, error: ioError } = io;
 const command_arg_projection_cjs_1 = require("./command-arg-projection.cjs");
+// #5118: the verification-status owner's report reader and closed enum.
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const verificationMod = require("./verification.cjs");
+const { reportStatusOf, VERIFICATION_STATUS, VerificationStatusError } = verificationMod;
 // The SCOPE BOUNDARY convention's filename (`agents/gsd-executor.md`), shared
 // verbatim with the #2287 phase-boundary reader in `uat.cts`.
 const DEFERRED_ITEMS_FILENAME = 'deferred-items.md';
@@ -591,9 +595,11 @@ function scanTodos(todosBase) {
     }
     const displayFiles = openFiles.slice(0, 5);
     for (const { entry, content, fm } of displayFiles) {
-        // Extract first line of body after frontmatter
-        const bodyMatch = content.replace(/^---[\s\S]*?---\r?\n?/, '');
-        const firstLine = (0, text_lines_cjs_1.splitLines)(bodyMatch.trim())[0] || '';
+        // Extract first line of body after frontmatter — the block `extractFrontmatter` read above
+        // (the one fence owner), so a `---` inside a value cannot end it early.
+        const block = frontmatterBlock(content);
+        const todoBody = block ? block.rest : content;
+        const firstLine = (0, text_lines_cjs_1.splitLines)(todoBody.trim())[0] || '';
         const summary = (0, security_cjs_1.sanitizeForDisplay)(firstLine.slice(0, 100));
         results.push({
             filename: (0, security_cjs_1.sanitizeLabel)(entry.name),
@@ -897,8 +903,10 @@ function scanVerificationGaps(planDir, cwd) {
                 continue;
             const content = normalizeLineEndings(rawContent);
             const fm = extractFrontmatter(content, safeFilePath);
-            const status = (fm.status || 'unknown').toLowerCase();
-            if (status !== 'gaps_found' && status !== 'human_needed')
+            // #5118: the owner's report reader judges `status` — exact match, no
+            // case folding; an out-of-set value throws VerificationStatusError.
+            const status = reportStatusOf(fm, safeFilePath);
+            if (status !== VERIFICATION_STATUS.GAPS_FOUND && status !== VERIFICATION_STATUS.HUMAN_NEEDED)
                 continue;
             if (isAuditItemAcknowledged(fm, { snapshotKey: 'status', currentValue: status })) {
                 acknowledged++;
@@ -1130,7 +1138,11 @@ function auditOpenArtifacts(cwd) {
         try {
             return scanVerificationGaps(planDir, cwd);
         }
-        catch {
+        catch (err) {
+            // #5118: an out-of-set report status is the owner's hard error, not a
+            // scan failure to fold into a sentinel — let it reach the CLI seam.
+            if (err instanceof VerificationStatusError)
+                throw err;
             return { items: [{ scan_error: true, phase: '', file: '', status: '' }], acknowledged: 0 };
         }
     })();
@@ -1399,6 +1411,26 @@ function resolvePhaseTargetDir(planDir, cwd, phase, archivedMilestone) {
  * artifact identifier that resolves outside the project is refused before
  * any read or write is attempted.
  */
+/**
+ * #4802: splice the acknowledgement marker, surfacing `spliceFrontmatter`'s
+ * write refusal (the one owner of that decision) as an `ioError` naming the
+ * file — an unparseable frontmatter block is NOT an empty one, and splicing
+ * over it would discard every field the author actually wrote.
+ */
+function spliceAcknowledgement(content, fm, fileLabel) {
+    try {
+        return spliceFrontmatter(content, fm);
+    }
+    catch (err) {
+        if (!isFrontmatterWriteRefusal(err))
+            throw err;
+        if (err.code === 'FRONTMATTER_UNPARSEABLE') {
+            ioError(`refusing to acknowledge — the frontmatter of "${fileLabel}" is not parseable YAML (splicing would discard every other frontmatter field); fix the YAML syntax error first, then re-run`);
+        }
+        ioError(`refusing to acknowledge "${fileLabel}" — ${err.message}`);
+        throw err; // unreachable — ioError throws
+    }
+}
 function cmdAuditAcknowledge(cwd, args, raw) {
     // args already has the family + subcommand tokens stripped by the caller
     // (audit-command-router.cts:147 passes `hubArgs.slice(2)`), so validation
@@ -1479,13 +1511,6 @@ function cmdAuditAcknowledge(cwd, args, raw) {
         }
         const content = node_fs_1.default.readFileSync(safeFilePath, 'utf-8');
         const fm = extractFrontmatter(content, safeFilePath);
-        // #4802: an unparseable frontmatter block is NOT an empty one — splicing
-        // the marker-marked object over the file would discard every field the
-        // author actually wrote. Refuse and name the file (the write-path
-        // counterpart of the read-side FRONTMATTER_UNPARSEABLE contract).
-        if (fm[FRONTMATTER_UNPARSEABLE] === true) {
-            ioError(`refusing to acknowledge — the frontmatter of "${file}" is not parseable YAML (splicing would discard every other frontmatter field); fix the YAML syntax error first, then re-run`);
-        }
         // Mixed-frame fix (security review, 4th instance on this branch): the
         // splice above and below stays keyed to RAW `content` (raw byte offsets
         // must not shift), but `scanUatGaps`/`scanContextQuestions` now derive
@@ -1516,7 +1541,7 @@ function cmdAuditAcknowledge(cwd, args, raw) {
             currentValue = deriveOpenQuestionsDigest(deriveOpenQuestions(normalizedContent, fm));
         }
         fm.audit_acknowledged = { ...markerBase, [snapshotKey]: currentValue };
-        const newContent = spliceFrontmatter(content, fm);
+        const newContent = spliceAcknowledgement(content, fm, file);
         (0, shell_command_projection_cjs_2.platformWriteSync)(safeFilePath, newContent);
         output({ acknowledged: true, category, phase, file, [snapshotKey]: currentValue }, raw, 'true');
         return;
@@ -1645,18 +1670,12 @@ function cmdAuditAcknowledge(cwd, args, raw) {
         return; // unreachable — ioError throws — satisfies TS control-flow analysis
     }
     const presenceOnly = category === 'todos';
-    const fm = createIfMissing ? fmForCreate : extractFrontmatter(node_fs_1.default.readFileSync(safeFilePath, 'utf-8'), safeFilePath);
-    // #4802: same unparseable-frontmatter refusal as the phase-scoped branch —
-    // createIfMissing never reaches this extract (it only fires when the file is
-    // absent), so an existing file with broken YAML refuses instead of splicing
-    // a near-empty object over every field the author wrote.
-    if (!createIfMissing && fm[FRONTMATTER_UNPARSEABLE] === true) {
-        ioError(`refusing to acknowledge — the frontmatter of "${safeFilePath}" is not parseable YAML (splicing would discard every other frontmatter field); fix the YAML syntax error first, then re-run`);
-    }
+    const existingContent = createIfMissing ? '' : node_fs_1.default.readFileSync(safeFilePath, 'utf-8');
+    const fm = createIfMissing ? fmForCreate : extractFrontmatter(existingContent, safeFilePath);
     fm.audit_acknowledged = presenceOnly ? { ...markerBase } : { ...markerBase, [snapshotKey]: currentValue };
-    const newContent = createIfMissing
-        ? spliceFrontmatter('', fm)
-        : spliceFrontmatter(node_fs_1.default.readFileSync(safeFilePath, 'utf-8'), fm);
+    // #4802: createIfMissing splices into '' (no block to refuse on); an existing
+    // file with broken YAML is refused by `spliceAcknowledgement`.
+    const newContent = spliceAcknowledgement(existingContent, fm, safeFilePath);
     (0, shell_command_projection_cjs_2.platformWriteSync)(safeFilePath, newContent);
     output({ acknowledged: true, category, ...(presenceOnly ? {} : { [snapshotKey]: currentValue }) }, raw, 'true');
 }

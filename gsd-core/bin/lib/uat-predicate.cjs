@@ -18,13 +18,13 @@ const node_fs_1 = __importDefault(require("node:fs"));
 const node_path_1 = __importDefault(require("node:path"));
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const frontmatter = require("./frontmatter.cjs");
-const { extractFrontmatter } = frontmatter;
+const { extractFrontmatter, frontmatterBlock } = frontmatter;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const markdownSectionizer = require("./markdown-sectionizer.cjs");
 const { stripFencedCode } = markdownSectionizer;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const verification = require("./verification.cjs");
-const { readVerificationStatus } = verification;
+const { readVerificationStatus, reportStatusOf, isReportContained, VERIFICATION_STATUS } = verification;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const phaseIdMod = require("./phase-id.cjs");
 const { scopeToPhase } = phaseIdMod;
@@ -51,13 +51,11 @@ const BLOCKING_UAT_FM_STATUSES = new Set([
 ]);
 // UAT file frontmatter `result` values that indicate failure
 const BLOCKING_UAT_FM_RESULTS = new Set(['pending', 'blocked', 'failed']);
-// Canonical VERIFICATION frontmatter `status` value that indicates passing.
-const PASSING_VERIFICATION_STATUSES = new Set(['passed']);
-// VERIFICATION file frontmatter `status` values that explicitly block
-const BLOCKING_VERIFICATION_FM_STATUSES = new Set([
-    'human_needed', 'gaps_found', 'pending', 'blocked', 'partial',
-    'failed', 'in_progress',
-]);
+// #5118: the VERIFICATION report's `status` vocabulary is the owner's closed
+// enum (src/verification.cts) — this module no longer keeps its own passing /
+// blocking sets. `pending|blocked|partial|failed|in_progress` were never
+// written by the verifier; a report carrying one (or any other out-of-set
+// value) is now a VerificationStatusError from the owner, not a blocker.
 // UAT test-item `result` values that count as passing
 const PASSING_RESULTS = new Set(['passed', 'pass']);
 // #4546 — a `skipped` test-item whose reason carries the verify-work writer's
@@ -100,8 +98,10 @@ const DEFERRED_REASON_RE = /^["']?deferred follow-up\b/i;
  * Returns surviving lines joined by '\n'. Robust to CRLF input.
  */
 function stripFalsePositiveContexts(content) {
-    // Step (a): strip leading frontmatter block only at byte 0
-    let stripped = content.replace(/^---\r?\n[\s\S]*?\r?\n---[ \t]*(\r?\n|$)/, '');
+    // Step (a): strip the leading frontmatter block — the one `frontmatterBlock` (the one fence
+    // owner) finds — with its closing fence line's line ending.
+    const block = frontmatterBlock(content);
+    let stripped = block ? block.rest.replace(/^\r?\n/, '') : content;
     // Step (b): remove HTML comments anywhere; unterminated comment swallows to EOF
     stripped = stripped.replace(/<!--[\s\S]*?(?:-->|$)/g, '');
     // Step (c): remove fenced code blocks via the canonical seam (ADR-1372 T5)
@@ -522,8 +522,15 @@ function evaluateUatPassed(phaseFullDir, opts) {
     const verFileNames = scopeToPhase(dirEntries.filter(f => f.includes('-VERIFICATION') && f.endsWith('.md')), phaseDirBaseName);
     // ── Process UAT files ──────────────────────────────────────────────────────
     for (const file of uatFileNames) {
-        uatFiles.push(file);
         const uatFilePath = node_path_1.default.join(phaseFullDir, file);
+        // #5118 security review (SEC-1): containment BEFORE the read, exactly as
+        // for the VERIFICATION loop below — a `*-UAT.md` / `*-HUMAN-UAT.md` whose
+        // real path escapes the phase directory is treated as absent (not listed,
+        // no blocker naming it), so the `### N. <name>` text it points at never
+        // reaches a blocker or a check row.
+        if (!isReportContained(phaseFullDir, uatFilePath))
+            continue;
+        uatFiles.push(file);
         let raw = '';
         try {
             // #3078-CR MEDIUM: normalize line endings at the read boundary — the
@@ -590,6 +597,11 @@ function evaluateUatPassed(phaseFullDir, opts) {
     for (const file of uatOnly ? [] : verFileNames) {
         verificationFiles.push(file);
         const verificationFilePath = node_path_1.default.join(phaseFullDir, file);
+        // #5118 security review (S1): containment BEFORE the read — a report whose
+        // real path escapes the planning root reads `missing` (no status counts,
+        // no blocker) and not a byte of it reaches any message.
+        if (!isReportContained(phaseFullDir, verificationFilePath))
+            continue;
         let raw = '';
         try {
             // #3078-CR MEDIUM: same read-boundary normalization as the UAT loop above.
@@ -599,16 +611,17 @@ function evaluateUatPassed(phaseFullDir, opts) {
             blockers.push(`${file}: could not read verification file`);
             continue;
         }
-        const vfm = extractFrontmatter(raw, verificationFilePath);
-        const vStatus = vfm['status'];
-        if (vStatus && BLOCKING_VERIFICATION_FM_STATUSES.has(vStatus)) {
+        // #5118: judged by the owner's report reader — a status outside the
+        // closed writer set throws VerificationStatusError (no silent pass-through).
+        const vStatus = reportStatusOf(extractFrontmatter(raw, verificationFilePath), verificationFilePath);
+        if (vStatus === VERIFICATION_STATUS.HUMAN_NEEDED || vStatus === VERIFICATION_STATUS.GAPS_FOUND) {
             blockers.push(`${file}: verification status=${vStatus}`);
         }
-        else if (vStatus && PASSING_VERIFICATION_STATUSES.has(vStatus)) {
-            // Allowlist: only explicitly-passing statuses count
+        else if (vStatus === VERIFICATION_STATUS.PASSED) {
+            // Allowlist: only an explicitly-passing status counts
             hasPassingVerification = true;
         }
-        // Missing or unknown status: does NOT count as passing, does NOT push a blocker
+        // No status: does NOT count as passing, does NOT push a blocker
         // (handled by the requireVerification policy check below if needed)
     }
     // ── Policy: requireVerification ───────────────────────────────────────────
@@ -621,10 +634,10 @@ function evaluateUatPassed(phaseFullDir, opts) {
         const verificationResult = readVerificationStatus(phaseFullDir);
         const verificationStatus = verificationResult.status;
         verificationStaleCheckIndeterminate = verificationResult.staleCheckIndeterminate === true;
-        if (verificationStatus === 'stale') {
-            blockers.push('policy: verification status=stale');
+        if (verificationStatus === VERIFICATION_STATUS.STALE) {
+            blockers.push(`policy: verification status=${VERIFICATION_STATUS.STALE}`);
         }
-        else if (verificationStatus !== 'passed' || !hasPassingVerification) {
+        else if (verificationStatus !== VERIFICATION_STATUS.PASSED || !hasPassingVerification) {
             blockers.push('policy: verification required but no passing *-VERIFICATION.md found');
         }
     }

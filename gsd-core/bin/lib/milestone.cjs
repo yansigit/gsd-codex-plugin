@@ -63,7 +63,7 @@ const { extractFrontmatter } = frontmatterMod;
 // divergence signal). Routed through the single write-seam composition
 // (`syncAndPreserveStateMd`) instead, under `withStateLock` — see
 // `cmdMilestoneComplete`'s own STATE.md-update block for the full rationale.
-const { syncAndPreserveStateMd, withStateLock, readModifyWriteStateMd } = stateMod;
+const { syncAndPreserveStateMd, withStateLock, readModifyWriteStateMd, assertVerificationReportsReadable } = stateMod;
 // #2288 security: a milestone version label becomes a filesystem directory
 // component (`milestones/<label>-phases/`) into which phase directories are
 // MOVED. Any label used as a path segment must be a safe version token —
@@ -868,6 +868,15 @@ function cmdMilestoneComplete(cwd, version, options, raw) {
         };
         output(dryRunResult, raw);
         return;
+    }
+    // #5118 (no write before the error): the STATE.md update further down
+    // rebuilds the frontmatter from every phase's report and throws on a
+    // `status` outside the closed set — AFTER the archive directory, the
+    // archived ROADMAP/REQUIREMENTS copies, MILESTONES.md and the moved audit
+    // and quick-task files. Validate first, so the refusal leaves the tree
+    // untouched.
+    if (node_fs_1.default.existsSync(statePath)) {
+        assertVerificationReportsReadable((0, shell_command_projection_cjs_1.platformReadSync)(statePath) || '', cwd);
     }
     // Ensure archive directory exists. Deliberately placed AFTER the dry-run
     // early return and every refusal/guard above (missingExplicitVersion, the
@@ -1701,6 +1710,15 @@ function cmdQuickArchive(cwd, version, options, raw) {
             archive_dir: toPosixRel(node_path_1.default.join(planningBase, 'milestones', `${version}-quick`)),
         }, raw);
         return;
+    }
+    // #5118 (no write before the error): the STATE.md reset below goes through
+    // `readModifyWriteStateMd`, whose frontmatter rebuild reads every phase's
+    // report and throws on a `status` outside the closed set — AFTER the quick
+    // task directories have been MOVED. Validate first, so the refusal leaves the
+    // tree untouched. Gated on there being anything to archive: a run that would
+    // move nothing never reaches that rebuild.
+    if (node_fs_1.default.existsSync(statePath) && listQuickTaskDirsForArchive(cwd).length > 0) {
+        assertVerificationReportsReadable(node_fs_1.default.readFileSync(statePath, 'utf-8'), cwd);
     }
     const quickArchiveResult = archiveQuickTaskDirectories(cwd, version);
     const warnings = [];

@@ -27,6 +27,8 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.sha256File = sha256File;
 exports.findPristineByHash = findPristineByHash;
+exports.isCleanRelativePosixPath = isCleanRelativePosixPath;
+exports.gitExec = gitExec;
 exports.findPristineInGit = findPristineInGit;
 const node_fs_1 = __importDefault(require("node:fs"));
 const node_path_1 = __importDefault(require("node:path"));
@@ -125,6 +127,14 @@ const GIT_MAX_COMMITS_PER_FILE = 100;
 const GIT_SUBPROCESS_TIMEOUT_MS = 10_000;
 /** git log --format=%H output cap; 100 full shas are ~4 KB, this is headroom. */
 const GIT_MAX_BUFFER_BYTES = 16 * 1024 * 1024;
+/**
+ * #5105 review finding 1/4: shared containment guard AND the shared
+ * non-trimming `git` subprocess runner, exported so `uat.cts`'s
+ * `readBaselineAtHead` (byte-exact `git show HEAD:<path>` read) can route
+ * through the same bounded, `windowsHide`d, stderr-discarding call this
+ * module already uses, rather than maintaining a second private
+ * `execFileSync` wrapper that can drift from this one's timeout/maxBuffer.
+ */
 function isCleanRelativePosixPath(relPath) {
     if (!relPath || relPath.startsWith('/') || relPath.includes('\\') || relPath.includes('\0')) {
         return false;

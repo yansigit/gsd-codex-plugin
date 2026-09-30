@@ -35,7 +35,11 @@ const commandRoutingHub = require("./command-routing-hub.cjs");
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const cjsCommandRouterAdapter = require("./cjs-command-router-adapter.cjs");
 const security_cjs_1 = require("./security.cjs");
+// #5118: the writer set is owned by src/verification.cts.
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const verificationMod = require("./verification.cjs");
 const { output, ERROR_REASON } = io;
+const { VERIFIER_STATUSES } = verificationMod;
 const { makeInvalidArgs } = commandRoutingHub;
 const { routeHubCommandFamily } = cjsCommandRouterAdapter;
 // ─── Small arg-parsing helpers (local — no new shared convention needed) ────
@@ -211,7 +215,7 @@ function routeQuickBatchCommand({ args, cwd, raw, error, _quickBatch, _quickBatc
             // `quick-batch verification-routing --status <passed|gaps_found|human_needed>`
             'verification-routing': () => {
                 const status = argValue(args, '--status');
-                if (status !== 'passed' && status !== 'gaps_found' && status !== 'human_needed') {
+                if (typeof status !== 'string' || !VERIFIER_STATUSES.has(status)) {
                     return makeInvalidArgs('--status', 'Usage: gsd-tools quick-batch verification-routing --status <passed|gaps_found|human_needed>', ERROR_REASON.USAGE);
                 }
                 output(dispatch.routeVerificationOutcome(status), raw);

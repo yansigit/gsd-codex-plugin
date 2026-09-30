@@ -96,9 +96,9 @@ const { getRoadmapPhaseInternal, getMilestoneInfo, stripShippedMilestones, extra
 const { pathExistsInternal, generateSlugInternal, toPosixPath } = coreUtils;
 const { comparePhaseNum, normalizePhaseName, stripProjectCodePrefix, PHASE_NUMBER_TOKEN_SOURCE, PHASE_DEP_REF_SOURCE, isForeignPrefixedPhaseQuery, isSentinelPhaseId, extractPhaseToken, scopeToPhase, renderPhaseBranchName, parsePhaseId, renderPhaseId, phaseHeadingPrefixSrcFor, PHASE_HEADING_BASELINE, buildPhaseHeadingScanRegex, } = phaseId;
 const { pruneOrphanedWorktrees } = worktreeSafety;
-const { planningPaths, planningDir, planningRoot, todosDir, listAvailableWorkstreams, peekActiveWorkstream, resolveEnvWorkstream, diagnoseUnresolvedActiveWorkstream, describeUnresolvedWorkstreamReason, findContextMdIn, resolvePhaseIdConvention, } = planningWorkspace;
-const { extractFrontmatter } = frontmatterMod;
-const { isPhaseComplete, resolveVerificationFile, resolveUatFile } = verificationMod;
+const { planningPaths, planningDir, planningRoot, todosDir, listAvailableWorkstreams, peekActiveWorkstream, resolveEnvWorkstream, diagnoseUnresolvedActiveWorkstream, describeUnresolvedWorkstreamReason, findContextMdIn, resolvePhaseIdConvention, worktreesOptedOut, } = planningWorkspace;
+const { extractFrontmatter, frontmatterBlock } = frontmatterMod;
+const { isPhaseComplete, resolveVerificationFile, resolveUatFile, VERIFICATION_STATUS, VerificationStatusError } = verificationMod;
 const { evaluateUatPassed } = uatPredicateMod;
 const { resolveLoopHooks } = loopResolverMod;
 const { loadRegistry } = capabilityLoaderMod;
@@ -214,10 +214,17 @@ function buildPhaseCompletionProjection(cwd, phaseNumber, phaseDir, planCount, s
     // projection; init passes the phase number it already knows (its phaseDir
     // is unresolved in some branches, where the router could not derive one).
     const completionResult = isPhaseComplete(phaseFullDir, { runtime: slashRuntime, phaseNumber, convention });
+    // #5118: the owner carried an out-of-set report status in its result
+    // (`statusError`, `verification.status: null`); an init bundle is never
+    // assembled over a report the owner refused — the carried error is raised
+    // here and every `init *` surface built on this projection fails with the
+    // error's own reason (the CLI entry seam), printing nothing.
+    if (completionResult.value.statusError)
+        throw completionResult.value.statusError;
     const verificationStatus = completionResult.value.verification;
     const projectedVerificationStatus = verificationStatus.status;
     const projectedVerificationAction = verificationStatus.next_action;
-    const verificationPassed = projectedVerificationStatus === 'passed';
+    const verificationPassed = projectedVerificationStatus === VERIFICATION_STATUS.PASSED;
     const phaseComplete = completionResult.value.complete;
     return {
         implementation_complete: implementationComplete,
@@ -234,6 +241,7 @@ function buildPhaseCompletionProjection(cwd, phaseNumber, phaseDir, planCount, s
         })),
         verification_next_action: projectedVerificationAction,
         verification_next_command: verificationStatus.next_command,
+        verification_route: verificationStatus.route,
         // #3057 B3: readVerificationStatus's result carries this flag when its
         // internal staleness check could not run to completion.
         verification_stale_check_indeterminate: 'staleCheckIndeterminate' in verificationStatus
@@ -480,7 +488,8 @@ function detectHasPriorPhases(cwd, phaseInfo) {
  * `false` — strict `=== true`, never coerced, mirrors `detectHasPriorPhases`'s
  * degrade-to-false discipline. `keyPath` is always a fixed literal supplied
  * by this module, never attacker/user input, so a plain bracket traversal
- * carries no prototype hazard here.
+ * carries no prototype hazard here. Only for keys whose default is OFF — a
+ * default-ON key read here silently inverts its unset value (#4977).
  */
 function readConfigJsonBoolean(cwd, keyPath) {
     try {
@@ -728,7 +737,13 @@ function buildSectionManifestField(cwd, phaseInfo, options, workflow, overrides 
         flags,
         phaseNumber,
         hasPriorPhases: detectHasPriorPhases(cwd, phaseInfo),
-        worktreesEnabled: readConfigJsonBoolean(cwd, ['workflow', 'use_worktrees']),
+        // #4977: `workflow.use_worktrees` defaults ON, so this fact must come from
+        // the #3972 owner `query dispatch-isolation` and the isolation guard
+        // already share — not `readConfigJsonBoolean`, whose absent ⇒ false
+        // polarity (right for the opt-in keys around it) excluded the quick
+        // pre-dispatch plan commit while the executor was still dispatched
+        // isolated. The ladder also brings root→workstream inheritance along.
+        worktreesEnabled: !worktreesOptedOut(cwd),
         phaseMvpMode: detectPhaseMvpMode(cwd, phaseNumber),
         needsCodebaseMap: overrides.needsCodebaseMap,
         chunkedMode,
@@ -3319,8 +3334,12 @@ function cmdInitProgress(cwd, raw, options = {}) {
             }
         }
     }
-    catch {
-        /* intentionally empty */
+    catch (err) {
+        // #5118: the owner's out-of-set report error is not a scan failure to
+        // degrade over — the bundle is never assembled over a refused report.
+        if (err instanceof VerificationStatusError)
+            throw err;
+        /* otherwise intentionally empty */
     }
     for (const [num, name] of roadmapPhaseNames) {
         const stripped = num.replace(/^0+/, '') || '0';
@@ -3998,10 +4017,11 @@ function buildSkillManifest(cwd, skillsDir = null) {
             seenNamesInRoot.add(name);
             const description = frontmatter['description'] || '';
             const triggers = [];
-            const bodyMatch = content.match(/^---[\s\S]*?---\s*\r?\n([\s\S]*)$/);
-            if (bodyMatch) {
-                const body = bodyMatch[1];
-                const triggerLines = body.match(/^TRIGGER\s+when:\s*(.+)$/gmi);
+            // TRIGGER lines are read from the body after the block `extractFrontmatter` read (the
+            // one fence owner), so a `---` inside a frontmatter value cannot start the body early.
+            const block = frontmatterBlock(content);
+            if (block) {
+                const triggerLines = block.rest.match(/^TRIGGER\s+when:\s*(.+)$/gmi);
                 if (triggerLines) {
                     for (const line of triggerLines) {
                         const m = line.match(/^TRIGGER\s+when:\s*(.+)$/i);

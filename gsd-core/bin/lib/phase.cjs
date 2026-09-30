@@ -22,6 +22,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 const node_fs_1 = __importDefault(require("node:fs"));
 const node_path_1 = __importDefault(require("node:path"));
 const node_child_process_1 = require("node:child_process");
+const frontmatter_fence_cjs_1 = require("./frontmatter-fence.cjs");
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- io.cjs is an export= CommonJS module
 const ioMod = require("./io.cjs");
 const { output, error, ERROR_REASON, formatDiagnosticToken } = ioMod;
@@ -38,7 +39,7 @@ const coreUtilsMod = require("./core-utils.cjs");
 // generative-fix divergence CLAUDE.md warns about. Collapsed onto core-utils'
 // copy, which was already the leaf owner, so there is no second surface left to
 // drift and no parity test needed to police one.
-const { toPosixPath, generateSlugInternal, readSubdirectories, extractCanonicalPlanId, findUnsummarizedPlans, normalizeLineEndings, } = coreUtilsMod;
+const { toPosixPath, generateSlugInternal, readSubdirectories, extractCanonicalPlanId, findUnsummarizedPlans, } = coreUtilsMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- phase-id.cjs is an export= CommonJS module
 const phaseIdMod = require("./phase-id.cjs");
 const { normalizePhaseName, phaseMarkdownRegexSource, comparePhaseNum, matchPhaseDirs, isSentinelPhaseId, scopeToPhase, OPTIONAL_PROJECT_CODE_PREFIX_SOURCE, OPTIONAL_PHASE_TAG_SOURCE, PHASE_NUMBER_TOKEN_SOURCE, phaseHeadingPrefixSrcFor, PHASE_HEADING_BASELINE, buildPhaseHeadingScanRegex, } = phaseIdMod;
@@ -86,7 +87,7 @@ const verificationMod = require("./verification.cjs");
 // cycle (the reverse edge, `state.cts → verify.cjs`, would).
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- verify.cjs is an export= CommonJS module
 const verifyMod = require("./verify.cjs");
-const { readVerificationStatus } = verificationMod;
+const { readVerificationStatus, VERIFICATION_STATUS, findVerificationStatusError } = verificationMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- plan-dependency-graph.cjs is an export= CommonJS module
 const planDependencyGraphMod = require("./plan-dependency-graph.cjs");
 const { computeHaltPropagation, buildSummaryFileIndex, isSummaryFileHalted, isSummaryFileBlocked } = planDependencyGraphMod;
@@ -98,8 +99,7 @@ const milestoneLockMod = require("./milestone-lock.cjs");
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const planDocumentMod = require("./plan-document.cjs");
 const { parsePlanDocument, planIdFromFile } = planDocumentMod;
-const { extractFrontmatter } = frontmatterMod;
-const { readModifyWriteStateMd, stateExtractField, stateReplaceField, syncAndPreserveStateMd, withStateLock, updatePerformanceMetricsSection, } = stateMod;
+const { readModifyWriteStateMd, stateExtractField, stateReplaceField, syncAndPreserveStateMd, assertVerificationReportsReadable, withStateLock, updatePerformanceMetricsSection, } = stateMod;
 // Any .md file with PLAN anywhere in the basename — diagnostic net
 const PLAN_OUTLINE_RE = /-PLAN-OUTLINE\.md$/i;
 const PLAN_PRE_BOUNCE_RE = /-PLAN.*\.pre-bounce\.md$/i;
@@ -2165,21 +2165,22 @@ function updateRoadmapAfterPhaseRemoval(roadmapPath, targetPhase, isDecimal, rem
  * phase, a stray 'Total Phases: 0' between fences). A file with no leading
  * frontmatter is all body: the field goes to content start, preserving the
  * former behavior for that shape.
+ *
+ * The block is the one `locateFrontmatterFence` finds (the one fence owner), so this writer
+ * and every STATE.md reader agree on where the body starts. The blank line and the field go
+ * right after the closing fence line, ended by that line's own line ending — so a CRLF file
+ * gains CRLF lines only (#3572 review: a blanket re-join on '\r\n' doubled every carriage
+ * return; joining the new lines on a bare '\n' mixed line endings).
  */
 function insertStateBodyFieldAtTop(content, fieldLine) {
-    // Split AND join on bare '\n' so CRLF line endings stay attached to their
-    // own lines — each '\r' remains the tail of the line it terminated, where
-    // the trimmed fence compare still matches it. (#3572 review: splitting on
-    // '\n' but re-joining on a detected '\r\n' doubled every carriage return.)
-    const lines = content.split('\n');
-    if ((lines[0] ?? '').trim() === '---') {
-        const closeIdx = lines.findIndex((l, i) => i > 0 && l.trim() === '---');
-        if (closeIdx !== -1) {
-            lines.splice(closeIdx + 1, 0, '', fieldLine);
-            return lines.join('\n');
-        }
+    const fence = (0, frontmatter_fence_cjs_1.locateFrontmatterFence)(content);
+    if (fence?.closed) {
+        const nl = content[fence.closingFenceEnd] === '\r' ? '\r\n' : '\n';
+        return `${content.slice(0, fence.closingFenceEnd)}${nl}${nl}${fieldLine}${content.slice(fence.closingFenceEnd)}`;
     }
-    return fieldLine + '\n' + content;
+    // All body: the field is the new first line, ended like the document's first line.
+    const firstNewline = content.indexOf('\n');
+    return fieldLine + (firstNewline > 0 && content[firstNewline - 1] === '\r' ? '\r\n' : '\n') + content;
 }
 function cmdPhaseRemove(cwd, targetPhase, options, raw) {
     if (!targetPhase)
@@ -2223,6 +2224,21 @@ function cmdPhaseRemove(cwd, targetPhase, options, raw) {
         if (summaryCount > 0) {
             error(`Phase ${targetPhase} has ${summaryCount} executed plan(s). Use --force to remove anyway.`);
         }
+    }
+    // #5118 (no write before the error): the STATE.md rewrite below rebuilds the
+    // frontmatter from EVERY surviving phase's report (buildStateFrontmatter →
+    // isPhaseComplete), and it runs AFTER the directory removal, the sibling
+    // renames and the ROADMAP rewrite. Validate every surviving phase's report
+    // here, BEFORE the first write, so a report whose `status` is outside the
+    // closed set fails this command having written nothing (the removed phase's
+    // own report is not read afterwards — it is excluded). The set is the one the
+    // rebuild scans (`statePhaseDirsToScan`: milestone-scoped, deduped), so a
+    // survivor OUTSIDE that set — another milestone's phase directory — does not
+    // block the remove.
+    if (node_fs_1.default.existsSync(node_path_1.default.join(planningDir(cwd), 'STATE.md'))) {
+        const survivorStatusError = findVerificationStatusError(stateMod.statePhaseDirsToScan(cwd).filter((d) => d !== targetDir).map((d) => node_path_1.default.join(phasesDir, d)), { convention: resolvePhaseIdConvention(cwd) });
+        if (survivorStatusError)
+            throw survivorStatusError;
     }
     if (targetDir)
         node_fs_1.default.rmSync(node_path_1.default.join(phasesDir, targetDir), { recursive: true, force: true });
@@ -3205,27 +3221,12 @@ function cmdPhaseComplete(cwd, phaseNum, raw) {
             if (/status: diagnosed/.test(content))
                 warnings.push(`${file}: has diagnosed gaps`);
         }
-        for (const file of scopeToPhase(phaseFiles.filter((f) => f.includes('-VERIFICATION') && f.endsWith('.md')), phaseFullDirBaseName)) {
-            const verificationFilePath = node_path_1.default.join(phaseFullDir, file);
-            // #3707-CR follow-up MINOR: normalize line endings at this read boundary
-            // (same fix as src/verification.cts's readVerificationStatus) so a
-            // lone-CR VERIFICATION.md's `---\r...\r---` frontmatter fence still
-            // matches extractFrontmatter's byte-0 check instead of silently
-            // dropping the human_needed/gaps_found advisory warning below.
-            const content = normalizeLineEndings(node_fs_1.default.readFileSync(verificationFilePath, 'utf-8'));
-            // #1159 (Defect A): read ONLY the frontmatter `status` key to avoid false positives
-            // from historical metadata in the file body (e.g. `previous_status: gaps_found`).
-            // A full-text regex like /status: gaps_found/ matches the substring inside
-            // `previous_status: gaps_found`, producing spurious warnings even when the
-            // current frontmatter status is `passed`.
-            const verFm = extractFrontmatter(content, verificationFilePath);
-            // Normalise to lower-case so `status: Passed` (title-case) is not missed.
-            const verStatus = typeof verFm['status'] === 'string' ? verFm['status'].trim().toLowerCase() : '';
-            if (verStatus === 'human_needed')
-                warnings.push(`${file}: needs human verification`);
-            if (verStatus === 'gaps_found')
-                warnings.push(`${file}: has unresolved gaps`);
-        }
+        // #5118 (ADR-5057 Phase 4): the VERIFICATION report's `status` is no
+        // longer read here. This pre-scan used to read each report's frontmatter
+        // itself (case-folded, bypassing the owner) to warn on human_needed /
+        // gaps_found — but the completion GATE below (readVerificationStatus)
+        // already refuses those statuses and names the route, so the advisory
+        // could only ever duplicate the gate's own answer. One reader: the gate.
     }
     catch {
         /* best-effort (#2245 audit): this is an ADVISORY pre-scan of UAT/
@@ -3304,6 +3305,9 @@ function cmdPhaseComplete(cwd, phaseNum, raw) {
         // #2617: pass the project's runtime so the blocked-completion error below
         // suggests the command surface this runtime actually installs
         // ($gsd-… on Codex) rather than a hard-coded Claude-style string.
+        // #5118: an out-of-set report status THROWS VerificationStatusError out
+        // of here; withPlanningLock releases the lock on the way out and the CLI
+        // seam reports `verification_status_invalid`.
         const verificationStatus = readVerificationStatus(phaseFullDir, {
             runtime: (0, runtime_slash_cjs_1.resolveRuntime)(cwd),
             convention: resolvePhaseIdConvention(cwd),
@@ -3321,8 +3325,21 @@ function cmdPhaseComplete(cwd, phaseNum, raw) {
             staleCheckIndeterminate = true;
             warnings.push(`verification staleness check could not complete for phase ${phaseNum} — routed as not-stale, but this was not actually verified (#3057)`);
         }
-        if (verificationStatus.status !== 'passed') {
+        if (verificationStatus.status !== VERIFICATION_STATUS.PASSED) {
             return verificationStatus;
+        }
+        // #5118 (no write before the error): the transaction below writes ROADMAP,
+        // REQUIREMENTS and STATE, and the STATE frontmatter rebuild reads EVERY
+        // phase's report (buildStateFrontmatter → isPhaseComplete). Validate it
+        // here, BEFORE the first write, over EXACTLY the set that rebuild scans
+        // (the milestone-scoped, deduped phase set — the owner runs
+        // buildStateFrontmatter itself, so `state sync` and this command refuse
+        // for the same phases), so a report whose `status` is outside the closed
+        // set fails this command having written nothing (withPlanningLock
+        // releases the lock).
+        const preflightStatePath = node_path_1.default.join(planningDir(cwd), 'STATE.md');
+        if (node_fs_1.default.existsSync(preflightStatePath)) {
+            assertVerificationReportsReadable(node_fs_1.default.readFileSync(preflightStatePath, 'utf-8'), cwd);
         }
         const runPhaseCompleteTransaction = () => {
             const writes = [];

@@ -7,10 +7,10 @@
  * When `workflow.windows_enforce` is true, `/gsd-ship` blocks while any entry is
  * `open`; an entry can be `waived` only with a recorded reason or `fixed`.
  *
- * LEAF MODULE — imports node:fs + node:path, plus two compiled sibling lib
- * modules require()d at runtime: workstream-inventory.cjs (the #4487
- * milestone stamp) and capability-lock.cjs (the #3780 cross-process ledger
- * lock). No other src/ imports.
+ * LEAF MODULE — imports node:fs + node:path, the leaf frontmatter-fence.cjs (the one
+ * frontmatter fence owner), plus two compiled sibling lib modules require()d at runtime:
+ * workstream-inventory.cjs (the #4487 milestone stamp) and capability-lock.cjs (the #3780
+ * cross-process ledger lock). No other src/ imports.
  *
  * Storage format (`.planning/WINDOWS.md`):
  *   ---
@@ -68,6 +68,7 @@ exports.cmdWindowsWaive = cmdWindowsWaive;
 exports.cmdWindowsMarkFixed = cmdWindowsMarkFixed;
 const node_fs_1 = __importDefault(require("node:fs"));
 const node_path_1 = __importDefault(require("node:path"));
+const frontmatter_fence_cjs_1 = require("./frontmatter-fence.cjs");
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const workstreamInventory = require("./workstream-inventory.cjs");
 // ─── Constants ─────────────────────────────────────────────────────────────
@@ -385,21 +386,20 @@ function locateJsonBlock(raw, expectedTotal) {
  * structural deviation — fail-closed on drift.
  */
 function parseFrontmatterStrict(raw) {
-    if (!raw.startsWith('---\n') && !raw.startsWith('---\r\n')) {
+    // The block is the one the one fence owner finds (`locateFrontmatterFence`).
+    const fence = (0, frontmatter_fence_cjs_1.locateFrontmatterFence)(raw);
+    if (!fence) {
         throw new WindowsError(exports.REASON.WINDOWS_LEDGER_MALFORMED, 'Ledger missing frontmatter opening ---');
     }
-    const headerEnd = raw.startsWith('---\r\n') ? 5 : 4;
-    const closeIdx = raw.indexOf('\n---', headerEnd);
-    if (closeIdx === -1) {
+    if (!fence.closed) {
         throw new WindowsError(exports.REASON.WINDOWS_LEDGER_MALFORMED, 'Ledger missing frontmatter closing ---');
     }
-    const yamlBody = raw.slice(headerEnd, closeIdx);
+    const yamlBody = raw.slice(fence.openEnd, fence.bodyEnd);
     const out = {};
     for (const rawLine of yamlBody.split(/\r?\n/)) {
-        // #3116: the `\n---` scan leaves the final line's CR attached on a CRLF
-        // ledger, and `.` never matches CR, so the key: value regex below fails on
-        // it. Strip the trailing CR per line so the rest of `raw` (which
-        // parseJsonBlock also slices by byte offset) is unaffected.
+        // #3116: strip a trailing CR per line (`.` never matches CR, so the key: value regex
+        // below would fail on it) without touching the rest of `raw`, which parseJsonBlock also
+        // slices by byte offset.
         const line = rawLine.replace(/\r$/, '');
         if (line.trim() === '')
             continue;

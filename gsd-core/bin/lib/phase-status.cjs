@@ -135,7 +135,10 @@ function assertCount(value, name) {
  *   no summaries                 → PLANNED
  *   fewer summaries than plans   → IN_PROGRESS
  *   verification `human_needed`  → NEEDS_REVIEW
- *   otherwise                    → EXECUTED     (gaps_found, stale, missing, unknown, unparseable)
+ *   otherwise                    → EXECUTED     (gaps_found, stale, missing, unparseable, phase_dir_not_found)
+ *
+ * `verificationStatus`, when non-null, must be a VerificationStatus member
+ * (#5118) — the same fail-where-produced rule as `assertPhaseStatus`.
  *
  * Completion comes ONLY from `complete`. The ladder never restates a
  * summary-versus-plan completion comparison (scripts/lint-completion-predicate-drift.cjs shape (c)).
@@ -150,6 +153,13 @@ function phaseStatusFromFacts(facts) {
     if (typeof complete !== 'boolean') {
         throw new TypeError(`phaseStatusFromFacts: complete must be a boolean, got ${JSON.stringify(complete)}`);
     }
+    const { verification } = owners();
+    if (verificationStatus !== null && verificationStatus !== undefined) {
+        // Called through a plain function type: a lazily-required owner's
+        // assertion signature cannot narrow here (TS2775), and needs not to.
+        const assertMember = verification.assertVerificationStatus;
+        assertMember(verificationStatus, 'phaseStatusFromFacts: verificationStatus');
+    }
     if (complete)
         return exports.PHASE_STATUS.COMPLETE;
     if (planCount === 0)
@@ -158,7 +168,7 @@ function phaseStatusFromFacts(facts) {
         return exports.PHASE_STATUS.PLANNED;
     if (summaryCount < planCount)
         return exports.PHASE_STATUS.IN_PROGRESS;
-    if (verificationStatus === 'human_needed')
+    if (verificationStatus === verification.VERIFICATION_STATUS.HUMAN_NEEDED)
         return exports.PHASE_STATUS.NEEDS_REVIEW;
     return exports.PHASE_STATUS.EXECUTED;
 }
@@ -207,6 +217,7 @@ function phaseStatus(phaseDir, deps = {}) {
             planCount: scan.planCount,
             summaryCount: scan.summaryCount,
             verification: completion.value.verification,
+            ...(completion.value.statusError ? { statusError: completion.value.statusError } : {}),
         },
         scope,
     };

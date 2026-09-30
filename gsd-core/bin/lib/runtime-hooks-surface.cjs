@@ -576,6 +576,14 @@ function buildBakedNodeToken(opts) {
  * guarantee), ahead of `command -v node` and the well-known fallback list.
  */
 const NODE_RUNNER_RESOLVER_HOOK = 'gsd-node-runner.sh';
+/**
+ * The one Git Bash policy: `bash` off win32; on win32 GSD_BASH_PATH, then the
+ * well-known Git for Windows install locations, never a PATH lookup (which
+ * can reach WSL's System32 launcher). null when win32 has no Git Bash.
+ * #5082: the test process seam (tests/helpers/process-seam.cjs) resolves
+ * `bash` through this too, so hooks and bash-driven tests run under the same
+ * bash.
+ */
 function resolveBashExecutable(opts) {
     const platform = (opts && opts.platform) || process.platform;
     if (platform !== 'win32')
@@ -3083,6 +3091,7 @@ module.exports = {
     normalizeNodePath,
     resolveNodeRunner,
     buildNodeRunnerChainToken,
+    resolveBashExecutable,
     resolveBashRunner,
     NODE_RUNNER_RESOLVER_HOOK,
     // Atomic write seam (shared with bin/install.js so all writes participate

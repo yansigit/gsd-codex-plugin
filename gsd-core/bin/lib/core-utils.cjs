@@ -15,6 +15,7 @@
  *   - node:fs / node:path (stdlib)
  *   - ./phase-id.cjs       (comparePhaseNum, used by readSubdirectories)
  *   - ./planning-workspace.cjs (findContextMdIn, used by getPhaseFileStats)
+ *   - ./frontmatter-fence.cjs (locateFrontmatterFence, used by extractOneLinerFromBody)
  *
  * #3883 (ADR-3473 §8.3): two of this module's cyclic partners require
  * generateSlugInternal, the canonical slug formula:
@@ -37,6 +38,8 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 };
 const node_fs_1 = __importDefault(require("node:fs"));
 const node_path_1 = __importDefault(require("node:path"));
+// frontmatter-fence.cjs is a leaf module (no imports), so this adds no cycle.
+const frontmatter_fence_cjs_1 = require("./frontmatter-fence.cjs");
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const phaseIdModule = require("./phase-id.cjs");
 // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -139,7 +142,9 @@ function extractOneLinerFromBody(content) {
     if (!content)
         return null;
     const normalized = content.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
-    const body = normalized.replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n*/, '');
+    // The body starts after the block the one fence owner finds, and the blank lines after it.
+    const fence = (0, frontmatter_fence_cjs_1.locateFrontmatterFence)(normalized);
+    const body = fence?.closed ? normalized.slice(fence.closingFenceEnd).replace(/^\n+/, '') : normalized;
     // #3170: anchor to a summary-shaped heading (Summary / Overview /
     // Accomplishments) so an incidental first heading (a rule list, task
     // breakdown, deviation note) does not contribute its first bold run as the

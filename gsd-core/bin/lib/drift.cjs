@@ -38,6 +38,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 const node_fs_1 = __importDefault(require("node:fs"));
 const shell_command_projection_cjs_1 = require("./shell-command-projection.cjs");
 const runtime_slash_cjs_1 = require("./runtime-slash.cjs");
+const frontmatter_fence_cjs_1 = require("./frontmatter-fence.cjs");
 // ─── Constants ───────────────────────────────────────────────────────────────
 const DRIFT_CATEGORIES = Object.freeze(['new_dir', 'barrel', 'migration', 'route']);
 // Category priority when a single file matches multiple rules.
@@ -285,22 +286,24 @@ function sanitizePaths(paths) {
     }
     return out;
 }
-// ─── Frontmatter helpers ─────────────────────────────────────────────────────
-const FRONTMATTER_RE = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/;
+/**
+ * The block is the one the one fence owner finds (`locateFrontmatterFence`); `body` is
+ * everything after the closing fence line and its line ending.
+ */
 function parseFrontmatter(content) {
     if (typeof content !== 'string')
         return { data: {}, body: '' };
-    const m = content.match(FRONTMATTER_RE);
-    if (!m)
+    const fence = (0, frontmatter_fence_cjs_1.locateFrontmatterFence)(content);
+    if (!fence?.closed)
         return { data: {}, body: content };
     const data = {};
-    for (const line of m[1].split(/\r?\n/)) {
+    for (const line of content.slice(fence.openEnd, fence.bodyEnd).split(/\r?\n/)) {
         const kv = line.match(/^([A-Za-z0-9_][A-Za-z0-9_-]*):\s*(.*)$/);
         if (!kv)
             continue;
         data[kv[1]] = kv[2];
     }
-    return { data, body: content.slice(m[0].length) };
+    return { data, body: content.slice(fence.closingFenceEnd).replace(/^\r?\n/, '') };
 }
 function serializeFrontmatter(data, body) {
     const keys = Object.keys(data);

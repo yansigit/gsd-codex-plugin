@@ -4,7 +4,7 @@
  * ADR-3180 §8.2/§8.3/§8.5).
  *
  * Group: "Phase directory structure" (design doc, "Rule table organization"
- * table) — W005, W023, I001, W009.
+ * table) — W005, W023, I001, W009, and W030 (#5118).
  *
  * Ported behavior-preserving from `cmdValidateHealth`
  * (`src/verify.cts:1893-1990`, the exact call sites for W005/W023/I001/W009),
@@ -104,7 +104,7 @@ function checkW023(snapshot) {
             const plans = phase ? phase.planCount : 0;
             const summaries = phase ? phase.summaryCount : 0;
             const complete = phase ? phase.complete : false;
-            const verificationStatus = phase ? phase.verificationStatus : 'missing';
+            const verificationStatus = phase ? phase.verificationStatus : null;
             const status = (0, phase_status_cjs_1.toDisplayLabel)((0, phase_status_cjs_1.phaseStatusFromFacts)({ planCount: plans, summaryCount: summaries, complete, verificationStatus }), { pendingWord: 'Not Started' });
             return `${d} (${status})`;
         })
@@ -160,6 +160,29 @@ function checkW009(snapshot) {
     }
     return diagnostics;
 }
+// ─── W030 — verification report status outside the closed set (#5118) ─────
+//
+// `isPhaseComplete` absorbs an out-of-set report `status` (its no-throw
+// contract) and the snapshot carries the typed error's file and message. A
+// diagnostics surface must survive the defect it diagnoses, so health reports
+// the file instead of failing with `verification_status_invalid` like the
+// query surfaces do: `validate health` (exit 0) lists each such report as one
+// W030 finding, built from the error the snapshot carries.
+function checkW030(snapshot) {
+    const diagnostics = [];
+    for (const phase of snapshot.phases.value) {
+        const invalid = phase.verificationStatusError;
+        if (!invalid)
+            continue;
+        diagnostics.push({
+            code: 'W030',
+            severity: SEVERITY.WARNING,
+            message: `Phase ${phase.dir}: ${invalid.message}`,
+            remedy: adviseRemedy('Set the report frontmatter `status` to one of passed | gaps_found | human_needed, or delete the report and re-run the phase verification'),
+        });
+    }
+    return diagnostics;
+}
 // ─── Exports ────────────────────────────────────────────────────────────────
 const RULES = [
     {
@@ -189,6 +212,13 @@ const RULES = [
         description: 'Phase has Validation Architecture in RESEARCH.md but no VALIDATION.md',
         repairable: false,
         check: checkW009,
+    },
+    {
+        code: 'W030',
+        severity: SEVERITY.WARNING,
+        description: 'Phase verification report status is outside the closed set',
+        repairable: false,
+        check: checkW030,
     },
 ];
 module.exports = { RULES };

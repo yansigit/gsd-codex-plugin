@@ -1799,6 +1799,9 @@ function cmdValidateHealth(cwd, options, raw) {
     // Diagnostic -> IssueEntry mapping contract this reproduces.
     const snapshot = buildPlanningSnapshot(cwd);
     const diagnostics = evaluateRules(snapshot);
+    // #5118: an out-of-set verification report status is carried by the
+    // snapshot (`verificationStatusError`) and reported as the W030 finding — a
+    // diagnostics surface survives the defect it diagnoses, so this run exits 0.
     const errors = [];
     const warnings = [];
     const info = [];

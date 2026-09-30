@@ -26,7 +26,7 @@ const phase_status_cjs_1 = require("./phase-status.cjs");
 function toPosixPath(p) {
     return p.split('\\').join('/');
 }
-// #2562/#2645's FAILING_VERIFICATION_STATUSES set (the verdicts that used to
+// #2562/#2645's former failing-verdict set (the verdicts that used to
 // disqualify a phase from `complete` when combined with a local
 // summary-count-meets-plan-count check) was removed by ADR-3180 §7.4
 // (#3186): `complete` is now the single canonical owner's verdict

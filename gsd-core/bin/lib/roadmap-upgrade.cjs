@@ -41,7 +41,22 @@ const { SCOPE } = planningScopeMod;
 // (src/frontmatter.cts) rather than a bespoke YAML touch — `spliceFrontmatter`
 // already solves "change exactly one key, preserve every other key's raw text
 // byte-for-byte", which is exactly the contract a `depends_on` rewrite needs.
-const { extractFrontmatter, spliceFrontmatter } = frontmatterMod;
+const { extractFrontmatter, spliceFrontmatter, isFrontmatterWriteRefusal } = frontmatterMod;
+/**
+ * The migration's fail-closed error for a phase artifact whose frontmatter the shared
+ * writer refuses to rewrite: it names the artifact's full path and, for a write refusal,
+ * the refusal code (also set as `code` on the error) — so the user can find the file and
+ * see why (found while implementing #5105).
+ */
+function frontmatterRewriteError(what, filePath, sourceToken, targetToken, err) {
+    const code = isFrontmatterWriteRefusal(err) ? err.code : undefined;
+    const rewriteErr = new Error(`Cannot rewrite ${what} in ${JSON.stringify(filePath)} for phase token change `
+        + `${JSON.stringify(sourceToken)} -> ${JSON.stringify(targetToken)}`
+        + `${code ? ` [${code}]` : ''}: ${err.message}`);
+    if (code)
+        rewriteErr.code = code;
+    return rewriteErr;
+}
 const { milestoneSections, isPhaseHeadingText } = roadmapParserMod;
 const { normalizeDependencyToken } = phaseMod;
 // #4144 round 5 Blocker 3: the single owner of the canonical short-alias
@@ -698,8 +713,7 @@ function computeDependsOnRewrites(oldDirPath, sourceToken, targetToken, fileRena
             // must never be silently dropped — refuse before any write, the same
             // contract every other unrepresentable case in this file already
             // follows (e.g. computeArtifactRenames' collision refusal above).
-            throw new Error(`Cannot rewrite depends_on in ${JSON.stringify(entry.name)} for phase token change `
-                + `${JSON.stringify(sourceToken)} -> ${JSON.stringify(targetToken)}: ${err.message}`);
+            throw frontmatterRewriteError('depends_on', filePath, sourceToken, targetToken, err);
         }
         rewrites.push({
             oldName: entry.name,
@@ -800,8 +814,7 @@ function computePhaseFrontmatterRewrites(oldDirPath, dirName, sourceToken, targe
         catch (err) {
             // Same refuse-before-any-write contract every other unrepresentable
             // frontmatter rewrite in this file already follows.
-            throw new Error(`Cannot rewrite phase frontmatter in ${JSON.stringify(entry.name)} for phase token change `
-                + `${JSON.stringify(sourceToken)} -> ${JSON.stringify(targetToken)}: ${err.message}`);
+            throw frontmatterRewriteError('phase frontmatter', filePath, sourceToken, targetToken, err);
         }
         const finalName = renameByOldName.get(entry.name) ?? entry.name;
         if (existing) {

@@ -30,7 +30,8 @@ const { findPhaseInternal } = phaseLocatorMod;
 const decisions_cjs_1 = require("./decisions.cjs");
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const frontmatterMod = require("./frontmatter.cjs");
-const { extractFrontmatter } = frontmatterMod;
+const { extractFrontmatter, frontmatterRegion } = frontmatterMod;
+const frontmatter_fence_cjs_1 = require("./frontmatter-fence.cjs");
 const markdown_sectionizer_cjs_1 = require("./markdown-sectionizer.cjs");
 const security_cjs_1 = require("./security.cjs");
 const ui_safety_gate_cjs_1 = require("./ui-safety-gate.cjs");
@@ -219,9 +220,11 @@ function extractPlanDesignatedSections(planContent) {
     if (!planContent)
         return '';
     const cleaned = stripCommentsAndFences(planContent);
-    const fmMatch = cleaned.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/);
-    const frontmatter = fmMatch ? fmMatch[1] : '';
-    const body = fmMatch ? fmMatch[2] : cleaned;
+    // The block is the one the one fence owner finds; the body starts after the closing fence
+    // line's line ending.
+    const fence = (0, frontmatter_fence_cjs_1.locateFrontmatterFence)(cleaned);
+    const frontmatter = fence?.closed ? cleaned.slice(fence.openEnd, fence.bodyEnd) : '';
+    const body = fence?.closed ? cleaned.slice(fence.closingFenceEnd).replace(/^\r?\n/, '') : cleaned;
     const parts = [];
     for (const key of ['must_haves', 'truths', 'objective']) {
         const block = extractYamlBlock(frontmatter, key);
@@ -793,17 +796,12 @@ function cmdTddReviewCheckpoint(projectDir, args, raw) {
             for (const file of files) {
                 const planPath = node_path_1.default.join(phaseDir, file);
                 const content = readIfExists(planPath);
-                // Check frontmatter for type: tdd
-                // CRLF-tolerant: a PLAN.md written with Windows line endings (---\r\n...---)
-                // must still match. The same CRLF-tolerant form is already used at line 205
-                // (extractPlanDesignatedSections); this is the same canonical pattern, applied
-                // here for the tdd-classification path. Fixes #2449.
-                const frontmatterMatch = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
-                if (frontmatterMatch) {
-                    const fm = frontmatterMatch[1];
-                    if (/^type:\s*tdd\s*$/m.test(fm)) {
-                        tddPlanFiles.push(planPath);
-                    }
+                // Check frontmatter for type: tdd. The block is the one the one fence owner
+                // finds (`frontmatterRegion`), CRLF included (#2449: a PLAN.md written with
+                // Windows line endings must still match).
+                const found = frontmatterRegion(content);
+                if (found?.terminated && /^type:\s*tdd\s*$/m.test(found.region)) {
+                    tddPlanFiles.push(planPath);
                 }
             }
         }
