@@ -68,6 +68,7 @@ const { buildPlanningSnapshot } = planningSnapshotMod;
 const onboardProjectionMod = require("./onboard-projection.cjs");
 const { REQUIRED_CODEBASE_MAP_FILES } = onboardProjectionMod;
 const clock_cjs_1 = require("./clock.cjs");
+const gate_config_cjs_1 = require("./gate-config.cjs");
 const { planningDir, planningRoot, withPlanningLock } = planningWorkspace;
 const { defaultPhaseCleanCommitTimesMs } = verificationMod;
 const { extractFrontmatter, parseMustHavesBlock } = frontmatterMod;
@@ -1975,6 +1976,22 @@ function cmdVerifyContextDrift(cwd, phaseArg, raw) {
         error('Usage: verify context-drift <phase>');
         return;
     }
+    // Non-blocking contract: a throw anywhere (an invalid GSD_WORKSTREAM, an unreadable file)
+    // yields the skip payload, exactly as cmdVerifyCodebaseDrift does.
+    try {
+        runVerifyContextDrift(cwd, phaseArg, raw);
+    }
+    catch (err) {
+        output({
+            block: false,
+            skipped: true,
+            reason: 'exception: ' + (err instanceof Error ? err.message : String(err)),
+            stale_artifacts: [],
+            message: '',
+        }, raw);
+    }
+}
+function runVerifyContextDrift(cwd, phaseArg, raw) {
     const pDir = planningDir(cwd);
     const phasesDir = node_path_1.default.join(pDir, 'phases');
     const emitSkip = (reason, message = '') => {
@@ -2021,15 +2038,9 @@ function cmdVerifyContextDrift(cwd, phaseArg, raw) {
     const contextMs = effectiveTimeMs(contextFile);
     const driftEntries = upstreamFiles.map((f) => ({ file: f, effectiveMs: effectiveTimeMs(f) }));
     const staleArtifacts = computeContextDrift(contextMs, driftEntries);
-    let wf;
-    try {
-        const rawCfg = JSON.parse(node_fs_1.default.readFileSync(node_path_1.default.join(pDir, 'config.json'), 'utf-8'));
-        wf = rawCfg['workflow'];
-    }
-    catch {
-        wf = undefined;
-    }
-    const action = wf?.context_drift_action === 'block' ? 'block' : 'warn';
+    // Through the quiet gate-config reader (workstream config first, then the project root's; a
+    // missing or malformed config is "key absent", nothing is printed).
+    const action = (0, gate_config_cjs_1.readWorkflowConfigValue)(cwd, 'workflow.context_drift_action').value === 'block' ? 'block' : 'warn';
     const block = staleArtifacts.length > 0 && action === 'block';
     const message = staleArtifacts.length > 0 ? buildContextDriftMessage(staleArtifacts, phaseArg) : '';
     output({
@@ -2045,6 +2056,20 @@ function cmdVerifySchemaDrift(cwd, phaseArg, skipFlag, raw) {
         error('Usage: verify schema-drift <phase> [--skip]');
         return;
     }
+    // Non-blocking contract: a throw anywhere yields a non-blocking payload, never a crash.
+    try {
+        runVerifySchemaDrift(cwd, phaseArg, skipFlag, raw);
+    }
+    catch (err) {
+        output({
+            block: false,
+            drift_detected: false,
+            blocking: false,
+            message: 'exception: ' + (err instanceof Error ? err.message : String(err)),
+        }, raw);
+    }
+}
+function runVerifySchemaDrift(cwd, phaseArg, skipFlag, raw) {
     const pDir = planningDir(cwd);
     const phasesDir = node_path_1.default.join(pDir, 'phases');
     if (!node_fs_1.default.existsSync(phasesDir)) {
@@ -2216,23 +2241,35 @@ function cmdVerifyCodebaseDrift(cwd, raw) {
     try {
         const codebaseDir = node_path_1.default.join(planningDir(cwd), 'codebase');
         const structurePath = node_path_1.default.join(codebaseDir, 'STRUCTURE.md');
-        if (!node_fs_1.default.existsSync(structurePath)) {
-            emit({
-                // Uniform gate contract: block = action_required (false when skipped).
-                block: false,
-                skipped: true,
-                reason: 'no-structure-md',
-                action_required: false,
-                directive: 'none',
-                elements: [],
-            });
-            return;
-        }
+        // A generated document is read only when it is a regular file (symlinks
+        // followed) no larger than this: a FIFO would block the gate forever and a
+        // huge file would exhaust memory.
+        const MAX_DOCUMENT_BYTES = 1048576;
+        const readDocument = (file) => {
+            const st = node_fs_1.default.statSync(file);
+            if (!st.isFile())
+                throw new Error('not a regular file');
+            if (st.size > MAX_DOCUMENT_BYTES)
+                throw new Error(`larger than ${MAX_DOCUMENT_BYTES} bytes`);
+            return node_fs_1.default.readFileSync(file, 'utf-8');
+        };
         let structureMd;
         try {
-            structureMd = node_fs_1.default.readFileSync(structurePath, 'utf-8');
+            structureMd = readDocument(structurePath);
         }
         catch (err) {
+            if (err?.code === 'ENOENT') {
+                emit({
+                    // Uniform gate contract: block = action_required (false when skipped).
+                    block: false,
+                    skipped: true,
+                    reason: 'no-structure-md',
+                    action_required: false,
+                    directive: 'none',
+                    elements: [],
+                });
+                return;
+            }
             emit({
                 block: false,
                 skipped: true,
@@ -2347,41 +2384,76 @@ function cmdVerifyCodebaseDrift(cwd, raw) {
             // git C-quote seam (worktree-safety.cjs); a non-quoted value — the plain
             // ASCII common case — passes through untouched. Both capture groups are
             // decoded: R/C lines carry old AND new paths, either may be quoted.
-            const file = decodeGitQuotedPath(m[3] || m[2]);
-            if (isPlanningArtifact(file))
-                continue;
-            if (status === 'A' || status === 'R' || status === 'C')
-                added.push(file);
-            else if (status === 'M')
-                modified.push(file);
+            // A rename is a deletion of the old path plus an addition of the new
+            // one; a copy leaves its source in place and adds only the new path.
+            const oldPath = decodeGitQuotedPath(m[2]);
+            const newPath = m[3] ? decodeGitQuotedPath(m[3]) : oldPath;
+            const put = (file, into) => {
+                if (!isPlanningArtifact(file))
+                    into.push(file);
+            };
+            if (status === 'R') {
+                put(oldPath, deleted);
+                put(newPath, added);
+            }
+            else if (status === 'C')
+                put(newPath, added);
+            else if (status === 'A')
+                put(newPath, added);
+            else if (status === 'M' || status === 'T')
+                put(newPath, modified);
             else if (status === 'D')
-                deleted.push(file);
+                put(newPath, deleted);
+        }
+        // Every generated document is territory the map describes, so all seven are
+        // read (the one owner of the names is REQUIRED_CODEBASE_MAP_FILES).
+        // STRUCTURE.md was read above; an unreadable other document is omitted and
+        // named rather than sinking the whole check, and an absent one is simply
+        // not part of this map (a `--fast` map writes four of the seven).
+        const documents = {};
+        const documentsRead = [];
+        const documentsUnreadable = [];
+        for (const name of REQUIRED_CODEBASE_MAP_FILES) {
+            if (name === 'STRUCTURE.md') {
+                documents[name] = structureMd;
+                documentsRead.push(name);
+                continue;
+            }
+            try {
+                documents[name] = readDocument(node_path_1.default.join(codebaseDir, name));
+                documentsRead.push(name);
+            }
+            catch (err) {
+                if (err?.code !== 'ENOENT')
+                    documentsUnreadable.push(name);
+            }
         }
         // loadConfig() returns a flattened object — there is no nested `workflow`
-        // key. Read the raw config.json directly to access workflow-scoped keys,
-        // matching the pattern used in check-command-router.cts:readWorkflowConfig.
-        let wf;
-        try {
-            const rawCfg = JSON.parse(node_fs_1.default.readFileSync(node_path_1.default.join(planningDir(cwd), 'config.json'), 'utf-8'));
-            wf = rawCfg['workflow'];
-        }
-        catch {
-            wf = undefined;
-        }
-        const threshold = Number.isInteger(wf?.drift_threshold) && wf?.drift_threshold >= 1
-            ? wf?.drift_threshold
+        // key. Read the workflow-scoped keys through the quiet gate-config reader (the dot-path
+        // resolver `config-get workflow.*` shares: workstream config first, then the project
+        // root's; a missing or malformed config is "key absent", nothing is printed).
+        const configuredThreshold = (0, gate_config_cjs_1.readWorkflowConfigValue)(cwd, 'workflow.drift_threshold').value;
+        const threshold = Number.isInteger(configuredThreshold) && configuredThreshold >= 1
+            ? configuredThreshold
             : 3;
-        const action = wf?.drift_action === 'auto-remap' ? 'auto-remap' : 'warn';
+        const action = (0, gate_config_cjs_1.readWorkflowConfigValue)(cwd, 'workflow.drift_action').value === 'auto-remap' ? 'auto-remap' : 'warn';
         const driftResult = drift['detectDrift']({
             addedFiles: added,
             modifiedFiles: modified,
             deletedFiles: deleted,
-            structureMd,
+            documents,
             threshold,
             action,
             runtime: (0, runtime_slash_cjs_1.resolveRuntime)(cwd),
         });
         const actionRequired = !!driftResult['actionRequired'];
+        // Paths are attacker-controlled (they come from git); the raw values stay
+        // in the library result, the CLI JSON carries display-safe renderings and
+        // a bounded withheld list with its true size alongside.
+        const display = drift['displaySafePath'];
+        const WITHHELD_LIST_CAP = 50;
+        const withheldAll = driftResult['withheldPaths'] || [];
+        const elementsRaw = driftResult['elements'] || [];
         emit({
             // Uniform gate contract: block = action_required.
             block: actionRequired,
@@ -2391,7 +2463,11 @@ function cmdVerifyCodebaseDrift(cwd, raw) {
             directive: driftResult['directive'],
             spawn_mapper: !!driftResult['spawnMapper'],
             affected_paths: driftResult['affectedPaths'] || [],
-            elements: driftResult['elements'] || [],
+            withheld_paths: withheldAll.slice(0, WITHHELD_LIST_CAP).map((p) => display(p)),
+            withheld_count: withheldAll.length,
+            documents_read: documentsRead,
+            documents_unreadable: documentsUnreadable,
+            elements: elementsRaw.map((e) => ({ category: e.category, path: display(e.path) })),
             threshold,
             action,
             last_mapped_commit: lastMapped,
