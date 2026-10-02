@@ -70,7 +70,7 @@ function evaluateDecisionCoverageVerify(input) {
         planContents.join('\n\n'),
         summaryParts.join('\n\n'),
         (0, decision_coverage_support_cjs_1.readModifiedFilesContent)(projectDir, summaryParts),
-        (0, decision_coverage_support_cjs_1.recentCommitMessages)(projectDir),
+        (0, decision_coverage_support_cjs_1.phaseCommitMessages)(projectDir, phaseDir),
     ].join('\n\n');
     const notHonored = [];
     let honored = 0;

@@ -69,6 +69,7 @@ const onboardProjectionMod = require("./onboard-projection.cjs");
 const { REQUIRED_CODEBASE_MAP_FILES } = onboardProjectionMod;
 const clock_cjs_1 = require("./clock.cjs");
 const gate_config_cjs_1 = require("./gate-config.cjs");
+const gate_evaluation_scope_cjs_1 = require("./gate-evaluation-scope.cjs");
 const { planningDir, planningRoot, withPlanningLock } = planningWorkspace;
 const { defaultPhaseCleanCommitTimesMs } = verificationMod;
 const { extractFrontmatter, parseMustHavesBlock } = frontmatterMod;
@@ -2108,9 +2109,12 @@ function runVerifySchemaDrift(cwd, phaseArg, skipFlag, raw) {
     for (const sf of summaryFiles) {
         executionLog += node_fs_1.default.readFileSync(node_path_1.default.join(phaseDir, sf), 'utf-8') + '\n';
     }
-    const gitLog = (0, shell_command_projection_cjs_1.execGit)(['log', '--oneline', '--all', '-50'], { cwd });
-    if (gitLog.exitCode === 0) {
-        executionLog += '\n' + gitLog.stdout;
+    // #5164: the phase's own commits from the evaluation-scope resolver (ADR-5057 §4) — the former
+    // `git log --all -50` let a commit on ANY branch, from ANY phase, put a schema push in the log.
+    const phaseScope = (0, gate_evaluation_scope_cjs_1.resolveEvaluationScope)(cwd, { kind: 'phase', phase: phaseArg, phaseDir }, { includeFiles: false });
+    if (phaseScope.commits.length > 0) {
+        // Subjects only, as the `git log --oneline` it replaces: a quoted push command in a commit BODY must not change the verdict.
+        executionLog += '\n' + phaseScope.commits.map((c) => `${c.sha.slice(0, 7)} ${c.subject}`).join('\n');
     }
     const result = (0, schema_detect_cjs_1.checkSchemaDrift)(allFiles, executionLog, { skipCheck: !!skipFlag });
     const isSkipped = !!result['skipped'];

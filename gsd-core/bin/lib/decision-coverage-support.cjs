@@ -27,16 +27,16 @@ exports.loadDecisionExtraction = loadDecisionExtraction;
 exports.extractPlanDesignatedSections = extractPlanDesignatedSections;
 exports.buildPlanMessage = buildPlanMessage;
 exports.buildVerifyMessage = buildVerifyMessage;
-exports.recentCommitMessages = recentCommitMessages;
+exports.phaseCommitMessages = phaseCommitMessages;
 exports.readModifiedFilesContent = readModifiedFilesContent;
 const node_fs_1 = __importDefault(require("node:fs"));
 const node_path_1 = __importDefault(require("node:path"));
-const node_child_process_1 = require("node:child_process");
 const decisions_cjs_1 = require("./decisions.cjs");
 const frontmatter_fence_cjs_1 = require("./frontmatter-fence.cjs");
 const markdown_sectionizer_cjs_1 = require("./markdown-sectionizer.cjs");
 const security_cjs_1 = require("./security.cjs");
 const gate_phase_context_cjs_1 = require("./gate-phase-context.cjs");
+const gate_evaluation_scope_cjs_1 = require("./gate-evaluation-scope.cjs");
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const frontmatterMod = require("./frontmatter.cjs");
 const { rawFrontmatterField, frontmatterKeyBlockText } = frontmatterMod;
@@ -171,22 +171,16 @@ function buildVerifyMessage(notHonored) {
     ].join('\n');
 }
 // ─── Shipped-artifact haystack (verify gate) ──────────────────────────────────
-function recentCommitMessages(projectDir) {
-    try {
-        return (0, node_child_process_1.execFileSync)('git', ['log', '-n', '200', '--pretty=%s%n%b'], {
-            cwd: projectDir,
-            encoding: 'utf-8',
-            // stderr piped (and dropped), never inherited: a gate module writes nothing to stderr
-            // (`fatal: not a git repository` on a non-git project dir must not reach the terminal).
-            stdio: ['ignore', 'pipe', 'pipe'],
-            maxBuffer: 4 * 1024 * 1024,
-            windowsHide: true,
-            timeout: 15_000,
-        });
-    }
-    catch {
-        return '';
-    }
+/**
+ * The subjects and bodies of the PHASE'S OWN commits (#5164, ADR-5057 §4) — the evaluation-scope
+ * resolver's commit set for `phaseDir`, not the last 200 commits of whatever branch is checked
+ * out. A phase with no recorded task commits widens to the commits in its directory range (the
+ * resolver says so); an unreadable phase or repository yields '' ("could not look"), and a git
+ * failure on a non-git project dir writes nothing to the terminal.
+ */
+function phaseCommitMessages(projectDir, phaseDir) {
+    const scope = (0, gate_evaluation_scope_cjs_1.resolveEvaluationScope)(projectDir, { kind: 'phase', phase: '', phaseDir }, { includeBody: true, includeFiles: false });
+    return scope.commits.map((c) => `${c.subject}\n${c.body ?? ''}`).join('\n');
 }
 /** Cap on files read across all SUMMARYs, and on bytes read per file. */
 const MODIFIED_FILES_MAX_COUNT = 50;

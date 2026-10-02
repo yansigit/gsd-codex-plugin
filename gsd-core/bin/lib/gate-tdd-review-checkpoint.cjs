@@ -12,8 +12,10 @@
  * `type: tdd` is detected by the Frontmatter Module's `frontmatterKeyHasValue` (the old
  * `^type:\s*tdd\s*$` multiline test over the fence owner's block, key and value escaped).
  *
- * The plan id (a plan FILE NAME) reaches git as an extended-regex `--grep` pattern with every
- * metacharacter escaped, so a plan named `.*-PLAN.md` matches only commits that name it literally.
+ * A plan's commits come from the evaluation-scope resolver (#5164, ADR-5057 §4): the commits
+ * reachable from HEAD whose SUBJECT is `<type>(<phase>-<plan>):`, anchored and zero-padding
+ * tolerant. A plan id that is not `<phase>-<plan>` (a plan named `.*-PLAN.md`) matches nothing,
+ * and a git failure is "no commits" exactly as before.
  *
  * Argv after the verb: `<phase>` (a number; an unresolvable phase reports zero plans).
  */
@@ -23,10 +25,9 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.evaluateTddReviewCheckpoint = evaluateTddReviewCheckpoint;
 const node_path_1 = __importDefault(require("node:path"));
-const node_child_process_1 = require("node:child_process");
 const gate_verdict_cjs_1 = require("./gate-verdict.cjs");
 const gate_phase_context_cjs_1 = require("./gate-phase-context.cjs");
-const pattern_cjs_1 = require("./pattern.cjs");
+const gate_evaluation_scope_cjs_1 = require("./gate-evaluation-scope.cjs");
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const frontmatterMod = require("./frontmatter.cjs");
 const { frontmatterKeyHasValue } = frontmatterMod;
@@ -44,19 +45,19 @@ function isTddPlan(content) {
     return frontmatterKeyHasValue(content, 'type', 'tdd');
 }
 /**
- * True when `git log` finds at least one commit whose message has a line `<kind>(<planId>):` (a
- * git failure is "none"). `planId` is matched LITERALLY: its extended-regex metacharacters are
- * escaped, so it can never widen the pattern.
+ * The commit types (`test`, `feat`, `refactor`, …) among the plan's own commits — those that
+ * touched at least one path (`pathspecs: ['.']`, as the old `git log -- .` lookup did). An
+ * unresolvable scope (git unavailable, an id that is not `<phase>-<plan>`) is "no commits".
  */
-function hasCommitMatching(projectDir, kind, planId) {
-    try {
-        const out = (0, node_child_process_1.execFileSync)('git', ['log', '--oneline', '--extended-regexp', `--grep=^${kind}\\(${(0, pattern_cjs_1.escapeEre)(planId)}\\):`, '--', '.'], 
-        // stderr piped (and dropped), never inherited: a gate module writes nothing to stderr.
-        { cwd: projectDir, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 1024 * 1024, windowsHide: true, timeout: 10_000 });
-        return out.trim().length > 0;
+function planCommitKinds(projectDir, planId) {
+    const scope = (0, gate_evaluation_scope_cjs_1.resolveEvaluationScope)(projectDir, { kind: 'plan', planId }, { pathspecs: ['.'], commitsOnly: true });
+    const kinds = new Set();
+    for (const commit of scope.commits) {
+        const kind = /^([a-z]+)\(/.exec(commit.subject)?.[1];
+        if (kind)
+            kinds.add(kind);
     }
-    catch { /* git unavailable or no match */ }
-    return false;
+    return kinds;
 }
 function evaluateTddReviewCheckpoint(input) {
     const { projectDir } = input;
@@ -95,9 +96,10 @@ function evaluateTddReviewCheckpoint(input) {
     const rows = [];
     for (const planPath of tddPlanFiles) {
         const planId = node_path_1.default.basename(planPath, '-PLAN.md');
-        const red = hasCommitMatching(projectDir, 'test', planId);
-        const green = hasCommitMatching(projectDir, 'feat', planId);
-        const refactor = hasCommitMatching(projectDir, 'refactor', planId);
+        const kinds = planCommitKinds(projectDir, planId);
+        const red = kinds.has('test');
+        const green = kinds.has('feat');
+        const refactor = kinds.has('refactor');
         const missing = [];
         if (!red)
             missing.push('RED');
