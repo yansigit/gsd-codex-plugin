@@ -895,6 +895,13 @@ function cmdConfigSet(cwd, keyPath, value, raw, options = {}) {
             error(`Invalid planner.stall_detection_enabled '${val}'. Must be a boolean (true or false).`);
         }
     }
+    // Dispatch audit-trail opt-in (#4975) — boolean only. The live seams honour
+    // only a real `true`, so any other stored value would be silently ignored.
+    if (kp === 'audit.enabled') {
+        if (typeof parsedValue !== 'boolean') {
+            error(`Invalid audit.enabled '${val}'. Must be a boolean (true or false).`);
+        }
+    }
     // #3086 — git.create_tag: boolean only
     if (kp === 'git.create_tag') {
         if (typeof parsedValue !== 'boolean') {

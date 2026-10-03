@@ -2153,23 +2153,9 @@ function applySettingsJsonHooks(settings, opts) {
         if (!settings.hooks.SessionStart) {
             settings.hooks.SessionStart = [];
         }
-        // #3981: Claude Code treats a timed-out hook as NON-blocking — the tool
-        // call continues through the normal permission flow. The blocking
-        // PreToolUse guards therefore need a budget a host stall cannot exceed,
-        // not one sized to the hook's own ~0.1 s runtime. Observed stalls reached
-        // 84.3 s; 120 s is the top of the issue's prescribed 60–120 range and
-        // returns every observed verdict. Registration below uses this constant,
-        // and the migration pass right here raises existing managed entries.
-        const BLOCKING_GUARD_TIMEOUT_S = 120;
-        const blockingGuardNames = [
-            'gsd-prompt-guard',
-            'gsd-workflow-guard',
-            'gsd-worktree-path-guard',
-            'gsd-agent-isolation-guard',
-            'gsd-write-guard',
-            'gsd-secret-read-guard',
-            'gsd-validate-commit',
-        ];
+        // #3981: raise existing managed blocking-guard entries still on the old
+        // 5 s budget to BLOCKING_GUARD_TIMEOUT_S (module-level; rationale there).
+        // Registration below uses the same constant.
         for (const entries of Object.values(settings.hooks)) {
             if (!Array.isArray(entries))
                 continue;
@@ -2177,7 +2163,7 @@ function applySettingsJsonHooks(settings, opts) {
                 if (!entry || !Array.isArray(entry.hooks))
                     continue;
                 for (const h of entry.hooks) {
-                    if (blockingGuardNames.some((name) => referencesHook(h, name)) &&
+                    if (BLOCKING_GUARD_NAMES.some((name) => referencesHook(h, name)) &&
                         h.timeout === 5) {
                         h.timeout = BLOCKING_GUARD_TIMEOUT_S;
                     }
@@ -2800,13 +2786,13 @@ function buildKimiHooksTomlBlock(targetDir, opts) {
         { event: 'SessionStart', command: cmd('gsd-check-update.js') },
         { event: 'SessionStart', command: cmd('gsd-session-state.sh') },
         // PreToolUse
-        { event: 'PreToolUse', command: cmd('gsd-prompt-guard.js'), matcher: 'WriteFile|StrReplaceFile', timeout: 5 },
+        { event: 'PreToolUse', command: cmd('gsd-prompt-guard.js'), matcher: 'WriteFile|StrReplaceFile', timeout: kimiBlockingGuardTimeout('gsd-prompt-guard.js') },
         { event: 'PreToolUse', command: cmd('gsd-read-guard.js'), matcher: 'WriteFile|StrReplaceFile', timeout: 5 },
-        { event: 'PreToolUse', command: cmd('gsd-worktree-path-guard.js'), matcher: 'WriteFile|StrReplaceFile', timeout: 5 },
-        { event: 'PreToolUse', command: cmd('gsd-write-guard.js'), matcher: 'WriteFile', timeout: 5 },
-        { event: 'PreToolUse', command: cmd('gsd-secret-read-guard.js'), matcher: 'ReadFile|Grep|Shell', timeout: 5 },
-        { event: 'PreToolUse', command: cmd('gsd-workflow-guard.js'), matcher: 'Shell|WriteFile|StrReplaceFile', timeout: 5 },
-        { event: 'PreToolUse', command: cmd('gsd-validate-commit.sh'), matcher: 'Shell', timeout: 5 },
+        { event: 'PreToolUse', command: cmd('gsd-worktree-path-guard.js'), matcher: 'WriteFile|StrReplaceFile', timeout: kimiBlockingGuardTimeout('gsd-worktree-path-guard.js') },
+        { event: 'PreToolUse', command: cmd('gsd-write-guard.js'), matcher: 'WriteFile', timeout: kimiBlockingGuardTimeout('gsd-write-guard.js') },
+        { event: 'PreToolUse', command: cmd('gsd-secret-read-guard.js'), matcher: 'ReadFile|Grep|Shell', timeout: kimiBlockingGuardTimeout('gsd-secret-read-guard.js') },
+        { event: 'PreToolUse', command: cmd('gsd-workflow-guard.js'), matcher: 'Shell|WriteFile|StrReplaceFile', timeout: kimiBlockingGuardTimeout('gsd-workflow-guard.js') },
+        { event: 'PreToolUse', command: cmd('gsd-validate-commit.sh'), matcher: 'Shell', timeout: kimiBlockingGuardTimeout('gsd-validate-commit.sh') },
         // PostToolUse
         { event: 'PostToolUse', command: cmd('gsd-context-monitor.js'), timeout: 10 },
         { event: 'PostToolUse', command: cmd('gsd-phase-boundary.sh'), matcher: 'WriteFile|StrReplaceFile', timeout: 5 },
@@ -2930,6 +2916,45 @@ function removeKimiHooksToml(configPath) {
         atomicWriteFileSync(configPath, stripped, 'utf8');
     }
     return { changed: true };
+}
+// ---------------------------------------------------------------------------
+// Blocking-guard host budget (#3981, #5180)
+//
+// Claude Code treats a timed-out hook as NON-blocking — the tool call
+// continues through the normal permission flow. The blocking PreToolUse
+// guards therefore need a budget a host stall cannot exceed, not one sized to
+// the hook's own ~0.1 s runtime. Observed stalls reached 84.3 s; 120 s is the
+// top of the issue's prescribed 60–120 range and returns every observed
+// verdict. ONE constant and ONE name list, shared by every registration
+// surface that carries a host timeout (settings.json install + migration,
+// Kimi config.toml) so a future change cannot diverge between them.
+// ---------------------------------------------------------------------------
+const BLOCKING_GUARD_TIMEOUT_S = 120;
+const BLOCKING_GUARD_NAMES = [
+    'gsd-prompt-guard',
+    'gsd-workflow-guard',
+    'gsd-worktree-path-guard',
+    'gsd-agent-isolation-guard',
+    'gsd-write-guard',
+    'gsd-secret-read-guard',
+    'gsd-validate-commit',
+];
+// Kimi registers every blocking guard EXCEPT the ones named here: Claude's
+// Agent|Task (subagent-dispatch) matcher segment has no confirmed Kimi tool
+// name, so gsd-agent-isolation-guard has nothing to attach to there (see the
+// buildKimiHooksTomlBlock doc). The divergence from the installer's set is
+// intentional and explicit, not an accident of two hand-kept lists.
+const KIMI_UNREGISTERED_BLOCKING_GUARDS = ['gsd-agent-isolation-guard'];
+const KIMI_BLOCKING_GUARD_NAMES = BLOCKING_GUARD_NAMES.filter((name) => !KIMI_UNREGISTERED_BLOCKING_GUARDS.includes(name));
+// Host budget for a Kimi blocking-guard entry, by script file name. Throws for
+// a script outside KIMI_BLOCKING_GUARD_NAMES so a spec cannot claim the
+// blocking budget for a hook the shared list does not name.
+function kimiBlockingGuardTimeout(scriptFile) {
+    const name = scriptFile.replace(/\.(?:js|sh)$/, '');
+    if (!KIMI_BLOCKING_GUARD_NAMES.includes(name)) {
+        throw new Error(`runtime-hooks-surface: ${scriptFile} is not a Kimi blocking guard (KIMI_BLOCKING_GUARD_NAMES)`);
+    }
+    return BLOCKING_GUARD_TIMEOUT_S;
 }
 // ---------------------------------------------------------------------------
 // referencesHook
@@ -3079,6 +3104,11 @@ module.exports = {
     removeKimiHooksToml,
     KIMI_HOOKS_TOML_MARKER_BEGIN,
     KIMI_HOOKS_TOML_MARKER_END,
+    // Blocking-guard host budget (#3981, #5180)
+    BLOCKING_GUARD_TIMEOUT_S,
+    BLOCKING_GUARD_NAMES,
+    KIMI_UNREGISTERED_BLOCKING_GUARDS,
+    KIMI_BLOCKING_GUARD_NAMES,
     // Shared
     stageTransitiveHookLibs,
     buildHookCommand,

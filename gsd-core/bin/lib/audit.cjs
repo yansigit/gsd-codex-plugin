@@ -50,6 +50,7 @@ const command_arg_projection_cjs_1 = require("./command-arg-projection.cjs");
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const verificationMod = require("./verification.cjs");
 const { reportStatusOf, VERIFICATION_STATUS, VerificationStatusError } = verificationMod;
+const clock_cjs_1 = require("./clock.cjs");
 // The SCOPE BOUNDARY convention's filename (`agents/gsd-executor.md`), shared
 // verbatim with the #2287 phase-boundary reader in `uat.cts`.
 const DEFERRED_ITEMS_FILENAME = 'deferred-items.md';
@@ -261,9 +262,18 @@ function deriveOpenQuestionsDigest(questions) {
 }
 // ─── scanDebugSessions ────────────────────────────────────────────────────────
 /**
+ * #4869: gsd-debugger's archive_session step appends every resolved session to
+ * this file in the debug directory. It is a document, not a session: it has no
+ * frontmatter, so its status would derive `unknown` and read as open forever.
+ * Excluded by this fixed name only. Any other file with missing or unparseable
+ * frontmatter is still an open session. Every shipped debug-directory reader
+ * excludes the same name from active sessions (#5011).
+ */
+const DEBUG_KNOWLEDGE_BASE_FILENAME = 'knowledge-base.md';
+/**
  * Scan .planning/debug/ for open sessions.
  * Open = status NOT in ['resolved', 'complete'].
- * Ignores the resolved/ subdirectory.
+ * Ignores the resolved/ subdirectory and the debugger's knowledge base.
  */
 function scanDebugSessions(planDir) {
     const debugDir = node_path_1.default.join(planDir, 'debug');
@@ -283,6 +293,8 @@ function scanDebugSessions(planDir) {
             continue;
         if (!entry.name.endsWith('.md'))
             continue;
+        if (entry.name === DEBUG_KNOWLEDGE_BASE_FILENAME)
+            continue;
         const filePath = node_path_1.default.join(debugDir, entry.name);
         let safeFilePath;
         try {
@@ -295,9 +307,9 @@ function scanDebugSessions(planDir) {
         // document at this read boundary, same seam as `src/uat.cts`'s
         // `readNormalizedDocument` — `platformReadSync` performs no line-ending
         // normalization itself, and extractFrontmatter/status-derivation below
-        // degrade a lone-CR file's frontmatter to `unknown`, which every scan
-        // in this module treats as "not open" (fail-open, the permissive
-        // direction) rather than a real parse gap.
+        // degrade a lone-CR file's frontmatter to `unknown`, which this scan
+        // reports as an open session (#4869) — so an un-normalized resolved
+        // session would resurface as open.
         const rawContent = (0, shell_command_projection_cjs_1.platformReadSync)(safeFilePath);
         if (rawContent === null)
             continue;
@@ -822,9 +834,9 @@ function scanUatGaps(planDir, cwd) {
             // document at this read boundary, same seam as `src/uat.cts`'s
             // `readNormalizedDocument` — `platformReadSync` performs no line-ending
             // normalization itself, and extractFrontmatter/status-derivation below
-            // degrade a lone-CR file's frontmatter to `unknown`, which every scan
-            // in this module treats as "not open" (fail-open, the permissive
-            // direction) rather than a real parse gap.
+            // degrade a lone-CR file's frontmatter to `unknown`, which this scan
+            // reports as an open gap unless `result: all_pass` (#4869 triage) — so
+            // an un-normalized terminal UAT would resurface as open.
             const rawContent = (0, shell_command_projection_cjs_1.platformReadSync)(safeFilePath);
             if (rawContent === null)
                 continue;
@@ -1450,7 +1462,9 @@ function cmdAuditAcknowledge(cwd, args, raw) {
     // All declared flags above are value flags, so each resolves to `string |
     // null` at runtime; the cast narrows away the `boolean` arm of
     // ParsedNamedArgs's value type that this call site never produces.
-    const at = atFlag || new Date().toISOString().slice(0, 10);
+    // #4905: without --at, the operator-facing local calendar day (#2136)
+    // through the clock seam, which honors the GSD_NOW_MS pin (#474).
+    const at = atFlag || clock_cjs_1.realClock.localToday();
     const planDir = planningDir(cwd);
     const markerBase = { milestone: milestone, at };
     // #3078-CR MEDIUM 2: every `fs.readFileSync` in this function (below, and
