@@ -83,6 +83,30 @@ const verificationMod = require("./verification.cjs");
 const { failOnVerificationStatusError, firstStatusError } = verificationMod;
 /** The effort-sync line editors' fence reading: a block behind a preamble is still edited (#3706). */
 const EFFORT_SYNC_FENCE = Object.freeze({ allowPreamble: true });
+/** Prefer the Claude agents beside the running local install over the global home. */
+function claudeEffortAgentsDir(explicitDir) {
+    if (explicitDir)
+        return node_path_1.default.join(explicitDir, 'agents');
+    // Compiled commands.cjs lives at <configDir>/gsd-core/bin/lib. In a source
+    // checkout the same path leads to the repository root, where no install
+    // manifest exists; keep the existing global fallback in that case.
+    const configDir = node_path_1.default.resolve(__dirname, '..', '..', '..');
+    try {
+        const manifestPath = node_path_1.default.join(configDir, 'gsd-file-manifest.json');
+        if (node_fs_1.default.lstatSync(manifestPath).isFile()) {
+            // eslint-disable-next-line @typescript-eslint/no-require-imports
+            const migrations = require('./installer-migrations.cjs');
+            const manifest = migrations.readInstallManifest(configDir);
+            if (manifest.runtime === 'claude' && manifest.scope === 'local') {
+                return node_path_1.default.join(configDir, 'agents');
+            }
+        }
+    }
+    catch { /* an absent or unreadable manifest retains the global fallback */ }
+    // eslint-disable-next-line @typescript-eslint/no-require-imports, @typescript-eslint/unbound-method
+    const { getGlobalConfigDir } = require('./runtime-homes.cjs');
+    return node_path_1.default.join(getGlobalConfigDir('claude'), 'agents');
+}
 /**
  * Project one canonical bracket directory onto its display identity and slug.
  *
@@ -522,9 +546,7 @@ function cmdResolveExecution(cwd, agentType, raw, opts) {
     let effortEffective = effort;
     if (runtime === 'claude') {
         try {
-            // eslint-disable-next-line @typescript-eslint/no-require-imports, @typescript-eslint/unbound-method
-            const { getGlobalConfigDir } = require('./runtime-homes.cjs');
-            const agentsDirEff = node_path_1.default.join(getGlobalConfigDir(runtime), 'agents');
+            const agentsDirEff = claudeEffortAgentsDir();
             // agentType is an unvalidated CLI positional: keep the read inside the
             // agents dir so `../../x` cannot point it elsewhere (defense in depth —
             // the reflected surface is only a frontmatter effort line). Untrusted
@@ -764,8 +786,6 @@ function cmdEffortSync(cwd, raw, opts) {
         output({ synced: 0, skipped: 0, changes: [], dry_run: dryRun, reason: `runtime '${runtime}' does not use effort: frontmatter` }, raw, '');
         return;
     }
-    // eslint-disable-next-line @typescript-eslint/no-require-imports, @typescript-eslint/unbound-method
-    const { getGlobalConfigDir } = require('./runtime-homes.cjs');
     // Use install-time resolvers: they merge ~/.gsd/defaults.json with project config,
     // matching the exact logic used when agents were originally installed. #2071: these
     // live in the shipped sibling install-effort-resolver.cjs (extracted from the
@@ -773,7 +793,7 @@ function cmdEffortSync(cwd, raw, opts) {
     // eslint-disable-next-line @typescript-eslint/no-require-imports, @typescript-eslint/unbound-method
     const { readGsdEffectiveEffortConfig, resolveInstallTimeEffort } = require('./install-effort-resolver.cjs');
     const effortCfg = readGsdEffectiveEffortConfig(cwd);
-    const agentsDir = node_path_1.default.join(opts.configDir || getGlobalConfigDir(runtime), 'agents');
+    const agentsDir = claudeEffortAgentsDir(opts.configDir);
     if (!node_fs_1.default.existsSync(agentsDir)) {
         output({ synced: 0, skipped: 0, changes: [], dry_run: dryRun, agents_dir: agentsDir, reason: 'agents directory not found' }, raw, '');
         return;
@@ -791,6 +811,10 @@ function cmdEffortSync(cwd, raw, opts) {
     }).sort(); // #3706: sorted like the codex and
     // opencode branches — readdir order is platform-dependent, so leaving it unsorted makes the
     // reported `changes` ordering differ across machines for identical inputs.
+    if (files.length === 0) {
+        output({ synced: 0, skipped: 0, changes: [], dry_run: dryRun, agents_dir: agentsDir, reason: 'no GSD agent files found' }, raw, '');
+        return;
+    }
     const changes = [];
     let synced = 0;
     let skipped = 0;

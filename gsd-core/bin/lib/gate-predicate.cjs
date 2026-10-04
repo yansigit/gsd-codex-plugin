@@ -25,9 +25,9 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.buildPredicateDeps = buildPredicateDeps;
 exports.evaluateCheckPredicate = evaluateCheckPredicate;
-const node_fs_1 = __importDefault(require("node:fs"));
 const node_path_1 = __importDefault(require("node:path"));
 const gate_verdict_cjs_1 = require("./gate-verdict.cjs");
+const gate_evidence_cjs_1 = require("./gate-evidence.cjs");
 const gate_phase_context_cjs_1 = require("./gate-phase-context.cjs");
 const gate_args_cjs_1 = require("./gate-args.cjs");
 // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -63,7 +63,23 @@ function buildPredicateDeps() {
             };
         },
         findPhaseArtifact(phaseDir, artifactSuffix) {
-            if (!node_fs_1.default.existsSync(phaseDir))
+            // #5170 (ADR-5057 §4): an ABSENT directory or artifact is `none` (the artifact is not there);
+            // one that exists but cannot be examined is `unreadable` and THROWS — `evaluateCheckPredicate`
+            // maps a throw to the usage failure the dispatch contract routes by `onError`. It is never
+            // folded into "artifact not found", which a predicate may read as a clean answer.
+            const unreadable = (target, reason) => {
+                throw new Error(`predicate artifact could not be examined: ${target} (${reason})`);
+            };
+            const regularFileOrNull = (candidate) => {
+                const st = (0, gate_evidence_cjs_1.statEvidence)(candidate);
+                if (st.kind === 'unreadable')
+                    return unreadable(candidate, st.reason);
+                return st.kind === 'found' && st.value.isFile() ? candidate : null;
+            };
+            const phaseDirStat = (0, gate_evidence_cjs_1.statEvidence)(phaseDir);
+            if (phaseDirStat.kind === 'unreadable')
+                return unreadable(phaseDir, phaseDirStat.reason);
+            if (phaseDirStat.kind === 'none')
                 return null;
             if (artifactSuffix === '.' ||
                 artifactSuffix === '..' ||
@@ -73,24 +89,32 @@ function buildPredicateDeps() {
                 return null;
             }
             const directContained = (0, security_cjs_1.tryWithinRoot)(artifactSuffix, phaseDir);
-            if (directContained !== null && node_fs_1.default.existsSync(directContained) && node_fs_1.default.statSync(directContained).isFile()) {
-                return directContained;
+            if (directContained !== null) {
+                const direct = regularFileOrNull(directContained);
+                if (direct !== null)
+                    return direct;
             }
             const planningContained = (0, security_cjs_1.tryWithinRoot)(node_path_1.default.join('.planning', artifactSuffix), phaseDir);
-            if (planningContained !== null && node_fs_1.default.existsSync(planningContained) && node_fs_1.default.statSync(planningContained).isFile()) {
-                return planningContained;
+            if (planningContained !== null) {
+                const planning = regularFileOrNull(planningContained);
+                if (planning !== null)
+                    return planning;
             }
-            try {
-                const files = node_fs_1.default.readdirSync(phaseDir);
-                for (const f of files) {
-                    if (f.endsWith('-' + artifactSuffix) || f === artifactSuffix) {
-                        const candidateContained = (0, security_cjs_1.tryWithinRoot)(f, phaseDir);
-                        if (candidateContained !== null && node_fs_1.default.statSync(candidateContained).isFile())
-                            return candidateContained;
-                    }
+            const listing = (0, gate_evidence_cjs_1.readDirEvidence)(phaseDir);
+            if (listing.kind === 'unreadable')
+                return unreadable(phaseDir, listing.reason);
+            if (listing.kind === 'none')
+                return null;
+            for (const f of listing.value) {
+                if (f.endsWith('-' + artifactSuffix) || f === artifactSuffix) {
+                    const candidateContained = (0, security_cjs_1.tryWithinRoot)(f, phaseDir);
+                    if (candidateContained === null)
+                        continue;
+                    const candidate = regularFileOrNull(candidateContained);
+                    if (candidate !== null)
+                        return candidate;
                 }
             }
-            catch { /* ignore */ }
             return null;
         },
         readFrontmatter(filePath) {

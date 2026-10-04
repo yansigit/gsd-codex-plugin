@@ -32,7 +32,7 @@ bracketMilestoneIntroSrcFor, } = phaseIdMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const roadmapParserMod = require("./roadmap-parser.cjs");
 // #3642: hasMilestoneSectioning no longer consumed here — its >=2 semantics answered sibling conflation, but this branch asks asserted-vs-section (>=1). It stays exported from roadmap-parser.cjs for its unit pins.
-const { getMilestoneInfo, extractCurrentMilestone, isMilestoneBoundedInRoadmap, hasAnyMilestoneSection } = roadmapParserMod;
+const { getMilestoneInfo, extractCurrentMilestone, isMilestoneBoundedInRoadmap, hasAnyMilestoneSection, classifyMilestoneScalar } = roadmapParserMod;
 const shell_command_projection_cjs_1 = require("./shell-command-projection.cjs");
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const planningWorkspace = require("./planning-workspace.cjs");
@@ -1080,7 +1080,7 @@ function computeUpdateProgressPreview(statePath, cwd) {
     const existingFm = extractFrontmatter(preContent, statePath);
     const preBody = stripFrontmatter(preContent);
     const storedMilestone = typeof existingFm['milestone'] === 'string' ? existingFm['milestone'] : null;
-    const builtFm = buildStateFrontmatter(preBody, cwd, storedMilestone, readStoredTotalPhases(existingFm), readStoredCompletedPhases(existingFm), readStoredTotalPlans(existingFm), readStoredCompletedPlans(existingFm));
+    const builtFm = buildStateFrontmatter(preBody, cwd, storedMilestone, readStoredTotalPhases(existingFm), readStoredCompletedPhases(existingFm), readStoredTotalPlans(existingFm), readStoredCompletedPlans(existingFm), isMilestoneExplicitlyNull(existingFm));
     const progress = builtFm['progress'];
     const percent = progress && typeof progress['percent'] === 'number' ? progress['percent'] : null;
     const completedPlans = progress && typeof progress['completed_plans'] === 'number' ? progress['completed_plans'] : null;
@@ -2489,6 +2489,16 @@ options = {}) {
     };
 }
 /**
+ * #5038: does existing frontmatter assert an explicit null milestone, as
+ * opposed to omitting the `milestone:` key? `extractFrontmatter` parses under
+ * FAILSAFE_SCHEMA, so YAML null arrives as a string; classification is
+ * delegated to classifyMilestoneScalar.
+ */
+function isMilestoneExplicitlyNull(existingFm) {
+    const raw = existingFm['milestone'];
+    return typeof raw === 'string' && classifyMilestoneScalar(raw).explicitNull;
+}
+/**
  * Extract machine-readable fields from STATE.md markdown body and build
  * a YAML frontmatter object. Allows hooks and scripts to read state
  * reliably via `state json` instead of fragile regex parsing.
@@ -2499,7 +2509,10 @@ function buildStateFrontmatter(bodyContent, cwd, storedMilestone, storedTotalPha
 // #3354/#3573 withhold condition the disk scan returns null for all four
 // counters, and these stored values are what the progress block falls back
 // to (else the keys are omitted).
-storedCompletedPhases, storedTotalPlans, storedCompletedPlans) {
+storedCompletedPhases, storedTotalPlans, storedCompletedPlans, 
+// #5038: explicit `milestone: null` (vs an absent key); withholds progress
+// counters on a sectioned ROADMAP without the unbound warning.
+milestoneExplicitlyNull) {
     // #2956: scope `Phase` extraction to ## Current Position (mirrors the read
     // path in cmdStateSnapshot and the Stopped At / Paused At ## Session scoping
     // below). Phase canonically lives in ## Current Position (templates/state.md);
@@ -2604,7 +2617,9 @@ storedCompletedPhases, storedTotalPlans, storedCompletedPlans) {
                     // The ROADMAP scope + the deduped, milestone-scoped disk phase set:
                     // one owner (scanStatePhaseDirs, above buildStateFrontmatter) so the
                     // #5118 pre-write validation in `phase remove` reads exactly this set.
-                    const { phaseDirs, phaseDirScope, roadmapScope, roadmapRaw, retiredPhaseNums, } = scanStatePhaseDirs(cwd, phasesDir, phaseConvention, storedMilestone);
+                    // #5038: an explicit-null `storedMilestone` is text, not a version;
+                    // pass a real null so it never reaches the phase-dir version filter.
+                    const { phaseDirs, phaseDirScope, roadmapScope, roadmapRaw, retiredPhaseNums, } = scanStatePhaseDirs(cwd, phasesDir, phaseConvention, milestoneExplicitlyNull ? null : storedMilestone);
                     let diskTotalPlans = 0;
                     let diskTotalSummaries = 0;
                     let diskCompletedPhases = 0;
@@ -2653,6 +2668,21 @@ storedCompletedPhases, storedTotalPlans, storedCompletedPlans) {
                         // phase-dir count only, and mark unbounded so percent is skipped
                         // downstream (mirrors the sync write-path guard).
                         let milestoneBounded = true;
+                        // #2828/#3642: distinguish a FLAT unmilestoned roadmap (no milestone
+                        // sectioning at all — only Phase headings) from a MILESTONED one
+                        // (milestone/version headings exist). Computed before the
+                        // boundedness gate so the explicit-null branch can use it (#5038).
+                        // #3642: the flat test uses the >=1 sibling (hasAnyMilestoneSection),
+                        // not the >=2 predicate. >=2 under-answers the question this branch
+                        // asks: with EXACTLY ONE milestone section and an asserted milestone
+                        // absent from the ROADMAP, >=2 read "flat" and the whole-document
+                        // count — which IS that single section's phases — was written as the
+                        // asserted milestone's total, silently clobbering the stored value.
+                        // The >=2 threshold governs SIBLING conflation; asserted-vs-section
+                        // needs only one section to go wrong. Zero sections (genuinely flat)
+                        // keeps the whole-document count, per #2828.
+                        const roadmapHasAnyMilestoneSection = roadmapRaw !== null
+                            && hasAnyMilestoneSection(roadmapRaw);
                         // #3216 fix (#1761 regression): use `assertedMilestoneVersion` —
                         // the version STATE.md actually asserts — not the scope-gated
                         // `milestone`. `milestone` is null on any non-COMPLETE identity
@@ -2670,27 +2700,19 @@ storedCompletedPhases, storedTotalPlans, storedCompletedPlans) {
                             // defect, design row 17).
                             milestoneBounded = isMilestoneBounded(roadmapRaw, String(assertedMilestoneVersion).trim(), phaseConvention);
                         }
-                        // #2828: distinguish a FLAT unmilestoned roadmap (no milestone sectioning
-                        // at all — only Phase headings) from a MILESTONED-but-unbounded one
-                        // (milestone/version headings exist but the asserted one isn't among them).
-                        // On a flat roadmap the whole-doc count is correct (no sibling milestones to
-                        // conflate); on a sectioned-but-unbounded one it conflates siblings (#1761),
-                        // so fall back to phaseDirs.length.
+                        else if (milestoneExplicitlyNull && roadmapRaw !== null && roadmapHasAnyMilestoneSection) {
+                            // #5038: explicit null on a sectioned ROADMAP: no section owns
+                            // the counts, so treat as unbound for the withhold gate (the
+                            // warning below is skipped, null is deliberate).
+                            milestoneBounded = false;
+                        }
+                        // #2828: on a flat roadmap the whole-doc count is correct (no
+                        // sibling milestones to conflate); on a sectioned-but-unbounded one
+                        // it conflates siblings (#1761), so fall back to phaseDirs.length.
                         // #3184: routed through the single owner (roadmap-parser.cjs) —
                         // deliberately weaker than isMilestoneBoundedInRoadmap above (no
                         // version-token requirement); see hasMilestoneSectioning's own
                         // doc comment for why that distinction is load-bearing.
-                        // #3642: the flat test uses the >=1 sibling (hasAnyMilestoneSection),
-                        // not the >=2 predicate. >=2 under-answers the question this branch
-                        // asks: with EXACTLY ONE milestone section and an asserted milestone
-                        // absent from the ROADMAP, >=2 read "flat" and the whole-document
-                        // count — which IS that single section's phases — was written as the
-                        // asserted milestone's total, silently clobbering the stored value.
-                        // The >=2 threshold governs SIBLING conflation; asserted-vs-section
-                        // needs only one section to go wrong. Zero sections (genuinely flat)
-                        // keeps the whole-document count, per #2828.
-                        const roadmapHasAnyMilestoneSection = roadmapRaw !== null
-                            && hasAnyMilestoneSection(roadmapRaw);
                         const safeToUseRoadmapCount = milestoneBounded
                             || (roadmapPhaseCount > 0 && !roadmapHasAnyMilestoneSection);
                         // #3354: the milestoned-but-unbounded sibling of the #2828/#3204
@@ -2708,7 +2730,8 @@ storedCompletedPhases, storedTotalPlans, storedCompletedPlans) {
                         // The degenerate un-sectioned zero-heading case keeps the
                         // phaseDirs.length fallback — with nothing declared anywhere else,
                         // the disk count is the only source and remains correct.
-                        const milestonedButUnbounded = !milestoneBounded && roadmapHasAnyMilestoneSection;
+                        // #5038: explicit null is withheld silently (explicitNullWithheld).
+                        const milestonedButUnbounded = !milestoneBounded && roadmapHasAnyMilestoneSection && !milestoneExplicitlyNull;
                         if (milestonedButUnbounded) {
                             process.stderr.write(`gsd: warning — milestone '${String(assertedMilestoneVersion ?? '').trim()}' is asserted in STATE.md but matches no ROADMAP heading, and the ROADMAP carries milestone section(s) — one (#3642) or several (#3354) — none matching it; the whole-document count would attribute a foreign section's phases to this milestone and the on-disk phase-directory count would understate the declared total, so the progress counters (total_phases, completed_phases, total_plans, completed_plans) are left at their stored values. (#3354/#3642/#4094)\n`);
                         }
@@ -2723,9 +2746,11 @@ storedCompletedPhases, storedTotalPlans, storedCompletedPlans) {
                         // value instead. Without an asserted milestone (fresh project,
                         // pre-roadmap) the disk count is still the only source and stays
                         // authoritative (the #3354 doctrine's degenerate case).
+                        // #5038: an explicit null is not an asserted milestone.
                         const roadmapAbsentWithAssertedMilestone = roadmapRaw === null &&
                             typeof storedMilestone === 'string' &&
-                            storedMilestone.trim() !== '';
+                            storedMilestone.trim() !== '' &&
+                            !milestoneExplicitlyNull;
                         if (roadmapAbsentWithAssertedMilestone) {
                             process.stderr.write(`gsd: warning — milestone '${storedMilestone.trim()}' is asserted in STATE.md but ROADMAP.md is absent or unreadable, so the phase-heading total cannot be derived; the on-disk phase-directory count would understate the declared total, so the progress counters (total_phases, completed_phases, total_plans, completed_plans) are left at their stored values. (#3573) (#4094)\n`);
                         }
@@ -2738,7 +2763,9 @@ storedCompletedPhases, storedTotalPlans, storedCompletedPlans) {
                         // Pre-#4094 only totalPhases was nulled here, so every resyncing
                         // write silently clobbered the three stored siblings with the
                         // under-scoped disk numbers.
-                        const diskCountsWithheld = milestonedButUnbounded || roadmapAbsentWithAssertedMilestone;
+                        // #5038: silent sibling of milestonedButUnbounded.
+                        const explicitNullWithheld = milestoneExplicitlyNull && !milestoneBounded && roadmapHasAnyMilestoneSection;
+                        const diskCountsWithheld = milestonedButUnbounded || roadmapAbsentWithAssertedMilestone || explicitNullWithheld;
                         // #4129: floor the completed-phases numerator at the ROADMAP's own
                         // milestone Complete-row count. The disk numerator counts ONLY
                         // phase dirs whose *-VERIFICATION.md routes `passed` (isPhaseComplete,
@@ -3254,7 +3281,7 @@ function syncStateFrontmatter(content, cwd, authoritativeFm, sanctionedPermanent
     // milestoned-but-unbounded withhold can preserve it across the write
     // (the derived progress sub-block replaces the stored one wholesale below,
     // so an omitted key would otherwise DELETE the stored value).
-    const derivedFm = buildStateFrontmatter(body, cwd, storedMilestone, readStoredTotalPhases(existingFm), readStoredCompletedPhases(existingFm), readStoredTotalPlans(existingFm), readStoredCompletedPlans(existingFm));
+    const derivedFm = buildStateFrontmatter(body, cwd, storedMilestone, readStoredTotalPhases(existingFm), readStoredCompletedPhases(existingFm), readStoredTotalPlans(existingFm), readStoredCompletedPlans(existingFm), isMilestoneExplicitlyNull(existingFm));
     // Preserve existing frontmatter status when body-derived status is 'unknown'.
     // This prevents a missing Status: field in the body from overwriting a
     // previously valid status (e.g., 'executing' → 'unknown').
@@ -4606,7 +4633,7 @@ function cmdStateJson(cwd, raw) {
     // reports the phase-directory count while the persisted file preserves the
     // stored total, exactly the write/read divergence #3354 closed for its shape.
     const storedMilestoneJson = typeof existingFm['milestone'] === 'string' ? existingFm['milestone'] : null;
-    const built = buildStateFrontmatter(body, cwd, storedMilestoneJson, readStoredTotalPhases(existingFm), readStoredCompletedPhases(existingFm), readStoredTotalPlans(existingFm), readStoredCompletedPlans(existingFm));
+    const built = buildStateFrontmatter(body, cwd, storedMilestoneJson, readStoredTotalPhases(existingFm), readStoredCompletedPhases(existingFm), readStoredTotalPlans(existingFm), readStoredCompletedPlans(existingFm), isMilestoneExplicitlyNull(existingFm));
     // ADR-3408 §8.5 / D3: route stopped_at / paused_at / status / current_phase /
     // current_phase_name / current_plan through the SAME `preserve-when-unchanged`
     // executor the write path uses (`applyPreserveWhenUnchanged`), instead of a
@@ -5655,8 +5682,10 @@ function cmdStateSync(cwd, options, raw) {
     // set — leave Progress untouched (percent=null) rather than silently writing
     // fallback-derived wrong values. Projects without a milestone version (the common
     // sync-test shape) are unaffected: the gate only fires when a version is asserted.
-    const fmVersion = extractFrontmatter(content, statePath).milestone;
-    const versionStr = typeof fmVersion === 'string' && fmVersion.trim() ? fmVersion.trim() : null;
+    const syncFm = extractFrontmatter(content, statePath);
+    const fmVersion = syncFm.milestone;
+    const milestoneExplicitlyNull = isMilestoneExplicitlyNull(syncFm);
+    const versionStr = typeof fmVersion === 'string' && fmVersion.trim() && !milestoneExplicitlyNull ? fmVersion.trim() : null;
     let milestoneBounded = true;
     if (versionStr !== null && syncRoadmapRaw !== null) {
         // #3184: routed through the single owner (roadmap-parser.cjs) instead of
@@ -5664,6 +5693,10 @@ function cmdStateSync(cwd, options, raw) {
         // fix in buildStateFrontmatter above. #612 composes its gated bracket
         // extension on top inside isMilestoneBounded.
         milestoneBounded = isMilestoneBounded(syncRoadmapRaw, versionStr, syncConvention);
+    }
+    else if (milestoneExplicitlyNull && syncRoadmapRaw !== null && hasAnyMilestoneSection(syncRoadmapRaw)) {
+        // #5038: mirror buildStateFrontmatter's silent explicit-null withhold.
+        milestoneBounded = false;
     }
     let percent = null;
     if (!milestoneBounded) {

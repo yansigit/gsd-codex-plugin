@@ -35,7 +35,7 @@ const UI_PATH_PATTERNS_RE = /\/(components|pages|views|screens|layouts|ui|fronte
  */
 function computeUiSafetyGate(projectDir, phase) {
     // (a) phase section text (same two-pass lookup as computeUiPlanGate)
-    const { phaseSection, phaseLookupFailed } = (0, gate_phase_context_cjs_1.lookupRoadmapPhase)(projectDir, phase);
+    const { phaseSection, phaseLookupFailed, readError: roadmapReadError } = (0, gate_phase_context_cjs_1.lookupRoadmapPhase)(projectDir, phase);
     // (b) frontend detection — reuse the existing helper; no reimplementation
     const presenceResult = (0, ui_safety_gate_cjs_1.checkUiPresence)(phaseSection);
     const frontend = presenceResult.hasUI;
@@ -43,8 +43,10 @@ function computeUiSafetyGate(projectDir, phase) {
     const scope = (0, gate_evaluation_scope_cjs_1.resolveEvaluationScope)(projectDir, { kind: 'phase', phase });
     const hasUiFiles = scope.changedFiles.some((f) => f.trim() && (UI_FILE_EXTENSIONS_RE.test(f) || UI_PATH_PATTERNS_RE.test(f)));
     // (d) phase directory and *-UI-SPEC.md
-    const uiSpecPath = (0, gate_phase_context_cjs_1.findUiSpecInDir)((0, gate_phase_context_cjs_1.resolvePhaseDirOrEmpty)(projectDir, phase));
-    const hasUiSpec = uiSpecPath !== '';
+    // `none` is "no spec"; `unreadable` is "could not look" (#5170) and is carried to the verdict.
+    const uiSpec = (0, gate_phase_context_cjs_1.locateUiSpec)(projectDir, phase);
+    const hasUiSpec = uiSpec.kind === 'found';
+    const readError = roadmapReadError ?? (uiSpec.kind === 'unreadable' ? uiSpec.reason : undefined);
     // block only when: this is a frontend phase AND UI files were changed AND no UI-SPEC exists
     const block = frontend && hasUiFiles && !hasUiSpec;
     const result = { frontend, hasUiFiles, hasUiSpec, block };
@@ -58,6 +60,8 @@ function computeUiSafetyGate(projectDir, phase) {
         result.scopeStatus = scope.status;
         result.scopeReason = scope.reason ?? '';
     }
+    if (readError !== undefined)
+        result.readError = readError;
     return result;
 }
 function evaluateUiSafetyGate(input) {
@@ -66,8 +70,11 @@ function evaluateUiSafetyGate(input) {
         return (0, gate_verdict_cjs_1.gateUsageFailure)(gate_verdict_cjs_1.GATE_FAILURE_CODE.SDK_MISSING_ARG, 'ui-safety-gate requires a phase argument: check ui-safety-gate <phase>');
     }
     const result = computeUiSafetyGate(input.projectDir, phase);
-    // A scope the resolver could not read is "could not look", never a pass (ADR-5057 §4: `unreadable`
-    // never produces a passing verdict); Phase 8 derives the exit code from this outcome.
-    const outcome = result.block ? 'block' : result.scopeStatus === 'unresolvable' ? 'skip' : 'pass';
-    return (0, gate_verdict_cjs_1.gateVerdict)(outcome, result.block, { ...result });
+    // A scope the resolver could not read, or a ROADMAP / phase directory that could not be read, is
+    // "could not look", never a pass (ADR-5057 §4): the outcome is `unreadable` and the exit status
+    // follows it. `block` is the gate's own policy and is unchanged.
+    if (result.scopeStatus === 'unresolvable' || result.readError !== undefined) {
+        return (0, gate_verdict_cjs_1.gateUnreadable)(result.block, { ...result });
+    }
+    return (0, gate_verdict_cjs_1.gateVerdict)(result.block ? 'block' : 'pass', result.block, { ...result });
 }

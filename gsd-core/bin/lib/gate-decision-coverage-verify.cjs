@@ -7,16 +7,33 @@
  *
  * Argv after the verb: `<phase-dir> <context-path>` (positional; no `--context` flag here).
  */
-var __importDefault = (this && this.__importDefault) || function (mod) {
-    return (mod && mod.__esModule) ? mod : { "default": mod };
-};
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.evaluateDecisionCoverageVerify = evaluateDecisionCoverageVerify;
-const node_fs_1 = __importDefault(require("node:fs"));
 const gate_verdict_cjs_1 = require("./gate-verdict.cjs");
 const gate_phase_context_cjs_1 = require("./gate-phase-context.cjs");
 const gate_config_cjs_1 = require("./gate-config.cjs");
 const decision_coverage_support_cjs_1 = require("./decision-coverage-support.cjs");
+/**
+ * The verdict when CONTEXT.md or a shipped artifact could not be read. The gate stays advisory
+ * (`block: false`, `blocking: false`); the outcome is `unreadable`, so the exit status is
+ * UNAVAILABLE and no decision is reported honored or not honored from content never seen (#5170).
+ */
+function unreadableVerify(readError) {
+    return (0, gate_verdict_cjs_1.gateUnreadable)(false, {
+        skipped: false,
+        blocking: false,
+        reason: 'unreadable evidence',
+        total: null,
+        honored: null,
+        not_honored: [],
+        readError,
+        message: `Decision coverage verify (warning): could not read its evidence (${readError}); no decision was checked.`,
+    });
+}
+/** The verdict when there is no CONTEXT.md: the legitimate green skip (authoritatively `none`, never `unreadable`). */
+function contextMissingSkip() {
+    return (0, gate_verdict_cjs_1.gateVerdict)('skip', false, { skipped: true, blocking: false, reason: 'CONTEXT.md missing', total: 0, honored: 0, not_honored: [], message: 'No CONTEXT.md - nothing to check.' });
+}
 function evaluateDecisionCoverageVerify(input) {
     const { projectDir, args } = input;
     let phaseDir = '';
@@ -36,10 +53,19 @@ function evaluateDecisionCoverageVerify(input) {
     if (!(0, gate_config_cjs_1.isDecisionCoverageGateEnabled)(projectDir)) {
         return (0, gate_verdict_cjs_1.gateVerdict)('skip', false, { skipped: true, blocking: false, reason: 'workflow.context_coverage_gate is false', total: 0, honored: 0, not_honored: [], message: 'Decision coverage gate disabled by config.' });
     }
-    if (!contextPath || !node_fs_1.default.existsSync(contextPath)) {
-        return (0, gate_verdict_cjs_1.gateVerdict)('skip', false, { skipped: true, blocking: false, reason: 'CONTEXT.md missing', total: 0, honored: 0, not_honored: [], message: 'No CONTEXT.md - nothing to check.' });
+    // No context argument is the only up-front skip: an absent file is `none` and an unreadable one is
+    // `unreadable` below, from the one read that loads the decisions (`fs.existsSync` answered `false`
+    // for an EACCES on a parent, skipping a CONTEXT.md the gate never saw — #5170).
+    if (!contextPath) {
+        return contextMissingSkip();
     }
-    const { trackable: decisions, outcome: decisionOutcome } = (0, decision_coverage_support_cjs_1.loadDecisionExtraction)(contextPath);
+    const extracted = (0, decision_coverage_support_cjs_1.loadDecisionExtraction)(contextPath);
+    if (extracted.kind === 'unreadable')
+        return unreadableVerify(`${extracted.span ?? contextPath}: ${extracted.reason}`);
+    if (extracted.kind === 'none') {
+        return contextMissingSkip();
+    }
+    const { trackable: decisions, outcome: decisionOutcome } = extracted.value;
     // Mirror could-not-parse surface for verify (non-blocking advisory WARN).
     // Fire independent of decisions.length — a parse-miss on any bullet must surface,
     // even when some decisions were partially extracted (#1365 fix-parity with plan gate).
@@ -64,12 +90,21 @@ function evaluateDecisionCoverageVerify(input) {
     if (decisions.length === 0) {
         return (0, gate_verdict_cjs_1.gateVerdict)('skip', false, { skipped: true, blocking: false, reason: 'no trackable decisions', total: 0, honored: 0, not_honored: [], message: 'No trackable decisions in CONTEXT.md.' });
     }
+    // Every file the haystack is built from is typed evidence (#5170): one that exists but cannot be
+    // read is `unreadable`, never an empty slice of the haystack that makes a decision look unhonored.
     const planContents = (0, decision_coverage_support_cjs_1.loadPlanContents)(phaseDir);
+    if (planContents.kind === 'unreadable')
+        return unreadableVerify(`${planContents.span ?? phaseDir}: ${planContents.reason}`);
     const summaryParts = (0, decision_coverage_support_cjs_1.loadSummaryContents)(phaseDir);
+    if (summaryParts.kind === 'unreadable')
+        return unreadableVerify(`${summaryParts.span ?? phaseDir}: ${summaryParts.reason}`);
+    const modifiedFiles = (0, decision_coverage_support_cjs_1.readModifiedFilesContent)(projectDir, summaryParts.value);
+    if (modifiedFiles.kind === 'unreadable')
+        return unreadableVerify(`${modifiedFiles.span ?? 'files_modified'}: ${modifiedFiles.reason}`);
     const haystack = [
-        planContents.join('\n\n'),
-        summaryParts.join('\n\n'),
-        (0, decision_coverage_support_cjs_1.readModifiedFilesContent)(projectDir, summaryParts),
+        planContents.value.join('\n\n'),
+        summaryParts.value.join('\n\n'),
+        modifiedFiles.value,
         (0, decision_coverage_support_cjs_1.phaseCommitMessages)(projectDir, phaseDir),
     ].join('\n\n');
     const notHonored = [];

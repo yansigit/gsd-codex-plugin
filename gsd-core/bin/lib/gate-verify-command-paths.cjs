@@ -47,7 +47,7 @@ function evaluateVerifyCommandPaths(input) {
     if (!phase && !dirFlag) {
         return (0, gate_phase_context_cjs_1.unresolvableProbeVerdict)('verify-command-paths requires a phase argument or --dir: check verify-command-paths <phase> | --dir <plan-dir>');
     }
-    let phaseDir;
+    let phaseDir = '';
     if (dirFlag) {
         // `--dir` is CALLER-SUPPLIED: contain it before it reaches the reads in the probe. Read the
         // value the predicate RETURNED; never re-derive the path. An escape degrades to the same
@@ -59,13 +59,20 @@ function evaluateVerifyCommandPaths(input) {
         phaseDir = contained;
     }
     else {
-        phaseDir = (0, gate_phase_context_cjs_1.resolvePhaseDirOrEmpty)(projectDir, phase);
+        const located = (0, gate_phase_context_cjs_1.resolvePhaseDir)(projectDir, phase);
+        if (located.kind === 'unreadable') {
+            return (0, gate_phase_context_cjs_1.unresolvableProbeVerdict)(`could not read the phase directory for phase ${phase}: ${located.reason}`);
+        }
+        if (located.kind === 'found')
+            phaseDir = located.value;
     }
     if (!phaseDir) {
         return (0, gate_phase_context_cjs_1.unresolvableProbeVerdict)(`could not resolve phase directory for phase ${phase}`);
     }
     const probed = probePhaseVerifyCommands({ phaseDir, projectRoot: projectDir });
     const blocked = probed.counts.blocker > 0;
-    const outcome = blocked ? 'block' : probed.status === 'unresolvable' ? 'skip' : 'pass';
-    return (0, gate_verdict_cjs_1.gateVerdict)(outcome, blocked, { ...probed });
+    // A probe that could not look (`unresolvable`) is `unreadable`: never a pass, exit UNAVAILABLE (#5170).
+    if (!blocked && probed.status === 'unresolvable')
+        return (0, gate_verdict_cjs_1.gateUnreadable)(false, { ...probed });
+    return (0, gate_verdict_cjs_1.gateVerdict)(blocked ? 'block' : 'pass', blocked, { ...probed });
 }

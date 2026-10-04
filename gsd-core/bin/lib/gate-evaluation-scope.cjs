@@ -46,9 +46,7 @@ const shell_command_projection_cjs_1 = require("./shell-command-projection.cjs")
 const gate_verdict_cjs_1 = require("./gate-verdict.cjs");
 const gate_phase_context_cjs_1 = require("./gate-phase-context.cjs");
 const pattern_cjs_1 = require("./pattern.cjs");
-// eslint-disable-next-line @typescript-eslint/no-require-imports
-const planScanMod = require("./plan-scan.cjs");
-const { scanPhasePlans } = planScanMod;
+const gate_evidence_cjs_1 = require("./gate-evidence.cjs");
 // ─── Constants ────────────────────────────────────────────────────────────────
 /** Paths that are never part of a code-review or UI scope (planning artifacts, lockfiles). */
 exports.SCOPE_EXCLUSION_PATHSPECS = Object.freeze([
@@ -300,19 +298,25 @@ function phaseRangeBase(git, phaseDir, ref) {
     return gitOrNo(git, ['rev-parse', '--verify', '--quiet', `${first}^`]) ?? EMPTY_TREE;
 }
 function resolvePhase(projectDir, unit, scope, git, ref, options, repoRoot) {
-    const phaseDir = unit.phaseDir ?? (0, gate_phase_context_cjs_1.resolvePhaseDirOrEmpty)(projectDir, unit.phase);
+    let phaseDir = unit.phaseDir ?? '';
+    if (unit.phaseDir === undefined) {
+        const located = (0, gate_phase_context_cjs_1.resolvePhaseDir)(projectDir, unit.phase);
+        if (located.kind === 'unreadable')
+            throw new ScopeUnreadable(`phase-dir-lookup-failed:${located.reason}`);
+        if (located.kind === 'found')
+            phaseDir = located.value;
+    }
     if (!phaseDir)
         throw new ScopeUnreadable('phase-dir-not-found');
     const refs = [];
     let summaryCount = 0;
-    let entries;
-    try {
-        // The canonical LIVE summary set (root + nested, superseded excluded) from its single owner.
-        entries = [...scanPhasePlans(phaseDir).summaryFiles].sort();
-    }
-    catch {
+    // The canonical LIVE summary set (root + nested, superseded excluded) from its single owner. A scan
+    // that did not see every summary (an existing nested plans/ that could not be read) is "could not
+    // look": a short summary set would narrow the phase's commits and report success (#5170).
+    const planScan = (0, gate_evidence_cjs_1.readPlanScanEvidence)(phaseDir);
+    if (planScan.kind === 'unreadable')
         throw new ScopeUnreadable('phase-dir-unreadable');
-    }
+    const entries = [...planScan.value.summaryFiles].sort();
     for (const name of entries) {
         try {
             refs.push(...extractTaskCommitRefs(node_fs_1.default.readFileSync(node_path_1.default.join(phaseDir, name), 'utf-8')));
@@ -541,7 +545,11 @@ function evaluateEvaluationScope(input) {
         unit = { kind: 'phase', phase: '', phaseDir: contained };
     }
     const scope = resolveEvaluationScope(input.projectDir, unit, options);
+    // An unresolvable scope is "could not look" (a missing git, a timeout): outcome `unreadable`, exit
+    // UNAVAILABLE, never a pass-shaped exit 0 (#5170). The payload is unchanged.
+    if (scope.status === 'unresolvable')
+        return (0, gate_verdict_cjs_1.gateUnreadable)(false, { ...scope });
     // `pass` only for a scope with nothing to explain; an empty-but-resolved scope (it carries a reason) is advisory.
-    const outcome = scope.status === 'unresolvable' ? 'skip' : scope.status === 'degraded' || scope.reason !== null ? 'advisory' : 'pass';
+    const outcome = scope.status === 'degraded' || scope.reason !== null ? 'advisory' : 'pass';
     return (0, gate_verdict_cjs_1.gateVerdict)(outcome, false, { ...scope });
 }

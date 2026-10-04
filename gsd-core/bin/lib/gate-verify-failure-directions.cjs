@@ -25,12 +25,17 @@ function evaluateVerifyFailureDirections(input) {
     if (!phase) {
         return (0, gate_phase_context_cjs_1.unresolvableProbeVerdict)('verify-failure-directions requires a phase argument: check verify-failure-directions <phase>');
     }
-    const phaseDir = (0, gate_phase_context_cjs_1.resolvePhaseDirOrEmpty)(input.projectDir, phase);
-    if (!phaseDir) {
+    const located = (0, gate_phase_context_cjs_1.resolvePhaseDir)(input.projectDir, phase);
+    if (located.kind === 'unreadable') {
+        return (0, gate_phase_context_cjs_1.unresolvableProbeVerdict)(`could not read the phase directory for phase ${phase}: ${located.reason}`);
+    }
+    if (located.kind === 'none') {
         return (0, gate_phase_context_cjs_1.unresolvableProbeVerdict)(`could not resolve phase directory for phase ${phase}`);
     }
-    const probed = probePhaseFailingDirections({ phaseDir });
+    const probed = probePhaseFailingDirections({ phaseDir: located.value });
     const blocked = probed.counts.blocker > 0;
-    const outcome = blocked ? 'block' : probed.status === 'unresolvable' ? 'skip' : 'pass';
-    return (0, gate_verdict_cjs_1.gateVerdict)(outcome, blocked, { ...probed });
+    // A probe that could not look (`unresolvable`) is `unreadable`: never a pass, exit UNAVAILABLE (#5170).
+    if (!blocked && probed.status === 'unresolvable')
+        return (0, gate_verdict_cjs_1.gateUnreadable)(false, { ...probed });
+    return (0, gate_verdict_cjs_1.gateVerdict)(blocked ? 'block' : 'pass', blocked, { ...probed });
 }

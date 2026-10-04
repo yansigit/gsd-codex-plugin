@@ -29,13 +29,12 @@ exports.buildPlanMessage = buildPlanMessage;
 exports.buildVerifyMessage = buildVerifyMessage;
 exports.phaseCommitMessages = phaseCommitMessages;
 exports.readModifiedFilesContent = readModifiedFilesContent;
-const node_fs_1 = __importDefault(require("node:fs"));
 const node_path_1 = __importDefault(require("node:path"));
 const decisions_cjs_1 = require("./decisions.cjs");
 const frontmatter_fence_cjs_1 = require("./frontmatter-fence.cjs");
 const markdown_sectionizer_cjs_1 = require("./markdown-sectionizer.cjs");
 const security_cjs_1 = require("./security.cjs");
-const gate_phase_context_cjs_1 = require("./gate-phase-context.cjs");
+const gate_evidence_cjs_1 = require("./gate-evidence.cjs");
 const gate_evaluation_scope_cjs_1 = require("./gate-evaluation-scope.cjs");
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const frontmatterMod = require("./frontmatter.cjs");
@@ -43,6 +42,9 @@ const { rawFrontmatterField, frontmatterKeyBlockText } = frontmatterMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const planScanMod = require("./plan-scan.cjs");
 const { scanPhasePlans } = planScanMod;
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const planningScopeMod = require("./planning-scope.cjs");
+const { SCOPE } = planningScopeMod;
 // ─── Decision matching ────────────────────────────────────────────────────────
 function normalizePhrase(text) {
     // eslint-disable-next-line @typescript-eslint/no-base-to-string
@@ -68,33 +70,61 @@ function decisionMentioned(haystack, decision) {
     return phrase ? normalizePhrase(haystack).includes(phrase) : false;
 }
 // ─── File reading ─────────────────────────────────────────────────────────────
+/**
+ * The contents of the phase files `pick` selects (#5170, ADR-5057 §4). An ABSENT phase directory
+ * is "no files" (`found []`); a directory or file that exists but cannot be read is `unreadable` —
+ * a gate must not take "could not read the plan" for "the plan does not cite the decision".
+ */
+function readPhaseFiles(phaseDir, pick) {
+    const entries = (0, gate_evidence_cjs_1.readDirEvidence)(phaseDir);
+    if (entries.kind === 'none')
+        return (0, gate_evidence_cjs_1.evidenceFound)([]);
+    if (entries.kind === 'unreadable')
+        return entries;
+    const contents = [];
+    // #3183 (lint-plan-count-drift): source live plan/summary files from the single
+    // owner (scanPhasePlans) instead of a local readdirSync filter — picks up bare PLAN.md and
+    // nested plans/, and excludes plans marked `status: superseded`.
+    // Only SCOPE.COMPLETE is a real answer: an existing nested plans/ that could not be read (TRUNCATED)
+    // would otherwise hand the gate a short plan set and let it conclude "no plan cites the decision".
+    const scan = scanPhasePlans(phaseDir);
+    if (scan.scope !== SCOPE.COMPLETE) {
+        return { kind: 'unreadable', reason: `plan scan ${scan.scope}`, span: phaseDir };
+    }
+    for (const entry of pick(scan)) {
+        const read = (0, gate_evidence_cjs_1.readTextEvidence)(node_path_1.default.join(phaseDir, entry));
+        if (read.kind === 'unreadable')
+            return read;
+        if (read.kind === 'found')
+            contents.push(read.value);
+    }
+    return (0, gate_evidence_cjs_1.evidenceFound)(contents);
+}
 function loadPlanContents(phaseDir) {
-    if (!node_fs_1.default.existsSync(phaseDir))
-        return [];
-    // #3183 (lint-plan-count-drift): source live plan files from the single
-    // owner (scanPhasePlans) instead of a local `-PLAN.md` readdirSync filter
-    // — picks up bare PLAN.md and nested plans/, and excludes plans marked
-    // `status: superseded`, which the prior root-only exact-suffix filter did
-    // neither for.
-    return scanPhasePlans(phaseDir).planFiles
-        .map((entry) => (0, gate_phase_context_cjs_1.readIfExists)(node_path_1.default.join(phaseDir, entry)));
+    return readPhaseFiles(phaseDir, (scan) => scan.planFiles);
 }
 /**
  * #3183 (lint-plan-count-drift): same single-owner sourcing as `loadPlanContents` —
  * scanPhasePlans's summaryFiles instead of a local `-SUMMARY.md` readdirSync filter.
  */
 function loadSummaryContents(phaseDir) {
-    return node_fs_1.default.existsSync(phaseDir)
-        ? scanPhasePlans(phaseDir).summaryFiles.map((entry) => (0, gate_phase_context_cjs_1.readIfExists)(node_path_1.default.join(phaseDir, entry)))
-        : [];
+    return readPhaseFiles(phaseDir, (scan) => scan.summaryFiles);
 }
+/**
+ * The decisions of `CONTEXT.md`. `none` is an absent file (the caller's legitimate "nothing to
+ * check"); `unreadable` is a file that exists but could not be read — it must never be extracted as
+ * empty text, which would certify "no trackable decisions".
+ */
 function loadDecisionExtraction(contextPath) {
-    const extraction = (0, decisions_cjs_1.extractDecisions)((0, gate_phase_context_cjs_1.readIfExists)(contextPath));
-    return {
+    const read = (0, gate_evidence_cjs_1.readTextEvidence)(contextPath);
+    if (read.kind !== 'found')
+        return read;
+    const extraction = (0, decisions_cjs_1.extractDecisions)(read.value);
+    return (0, gate_evidence_cjs_1.evidenceFound)({
         trackable: extraction.decisions.filter((d) => d.trackable),
         outcome: extraction.outcome,
         unreadableIds: extraction.unreadableIds ?? [],
-    };
+    });
 }
 // ─── Plan surfaces scanned for a decision citation ────────────────────────────
 const DESIGNATED_HEADINGS_RE = /^#{1,6}\s+(?:must[_ ]haves?|truths?|tasks?|objective)\b/i;
@@ -215,10 +245,15 @@ function readModifiedFilesContent(projectDir, summaries) {
             const contained = (0, security_cjs_1.tryWithinRoot)(candidate, projectDir, security_cjs_1.PathAcceptance.AbsoluteInsideRoot);
             if (contained === null)
                 continue;
-            const content = (0, gate_phase_context_cjs_1.readIfExists)(contained);
+            // An absent listed file contributes nothing readable (`''`); one that exists but cannot be
+            // read is `unreadable` — the decision it may cite was never seen (#5170).
+            const read = (0, gate_evidence_cjs_1.readTextEvidence)(contained);
+            if (read.kind === 'unreadable')
+                return read;
+            const content = read.kind === 'found' ? read.value : '';
             out.push(content.length > MODIFIED_FILES_MAX_BYTES ? content.slice(0, MODIFIED_FILES_MAX_BYTES) : content);
             total++;
         }
     }
-    return out.join('\n\n');
+    return (0, gate_evidence_cjs_1.evidenceFound)(out.join('\n\n'));
 }

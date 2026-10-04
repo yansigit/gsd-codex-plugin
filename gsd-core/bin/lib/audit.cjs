@@ -25,7 +25,7 @@ const coreUtils = require("./core-utils.cjs");
 const { normalizeLineEndings } = coreUtils;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const planningWorkspace = require("./planning-workspace.cjs");
-const { planningDir, quickDirFrom, todosDir } = planningWorkspace;
+const { planningDir, quickDirFrom, debugDir, todosDir } = planningWorkspace;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const frontmatter = require("./frontmatter.cjs");
 // #4378 (roll-in): scanSeeds publishes the SAME canonical seed identity the
@@ -271,19 +271,18 @@ function deriveOpenQuestionsDigest(questions) {
  */
 const DEBUG_KNOWLEDGE_BASE_FILENAME = 'knowledge-base.md';
 /**
- * Scan .planning/debug/ for open sessions.
+ * Scan the root-scoped .planning/debug/ directory supplied by the caller for open sessions.
  * Open = status NOT in ['resolved', 'complete'].
  * Ignores the resolved/ subdirectory and the debugger's knowledge base.
  */
-function scanDebugSessions(planDir) {
-    const debugDir = node_path_1.default.join(planDir, 'debug');
-    if (!node_fs_1.default.existsSync(debugDir))
+function scanDebugSessions(debugPath) {
+    if (!node_fs_1.default.existsSync(debugPath))
         return { items: [], acknowledged: 0 };
     const results = [];
     let acknowledged = 0;
     let files;
     try {
-        files = node_fs_1.default.readdirSync(debugDir, { withFileTypes: true });
+        files = node_fs_1.default.readdirSync(debugPath, { withFileTypes: true });
     }
     catch {
         return { items: [{ scan_error: true, slug: '', status: '', updated: '', hypothesis: '' }], acknowledged: 0 };
@@ -295,10 +294,10 @@ function scanDebugSessions(planDir) {
             continue;
         if (entry.name === DEBUG_KNOWLEDGE_BASE_FILENAME)
             continue;
-        const filePath = node_path_1.default.join(debugDir, entry.name);
+        const filePath = node_path_1.default.join(debugPath, entry.name);
         let safeFilePath;
         try {
-            safeFilePath = (0, security_cjs_1.requireSafePath)(filePath, planDir, 'debug session file', security_cjs_1.PathAcceptance.AbsoluteInsideRoot);
+            safeFilePath = (0, security_cjs_1.requireSafePath)(filePath, node_path_1.default.dirname(debugPath), 'debug session file', security_cjs_1.PathAcceptance.AbsoluteInsideRoot);
         }
         catch {
             continue;
@@ -1094,8 +1093,10 @@ function scanDeferredItems(planDir, cwd) {
 function auditOpenArtifacts(cwd) {
     const planDir = planningDir(cwd);
     const debugSessions = (() => {
+        // #5042: debug sessions are shared project state; workflow writers use
+        // the root .planning/debug directory even when a workstream is active.
         try {
-            return scanDebugSessions(planDir);
+            return scanDebugSessions(debugDir(cwd));
         }
         catch {
             return { items: [{ scan_error: true, slug: '', status: '', updated: '', hypothesis: '' }], acknowledged: 0 };
@@ -1118,7 +1119,7 @@ function auditOpenArtifacts(cwd) {
         }
     })();
     const todos = (() => {
-        // #4256: the ONE root-scoped category — todos are shared project state,
+        // #4256: todos are shared project state, like debug sessions (#5042),
         // so the close gate reads todosDir(cwd) (the root), not the workstream-
         // scoped planDir every other scan below receives. Reading planDir here
         // made audit-open print "All artifact types clear. Safe to proceed."

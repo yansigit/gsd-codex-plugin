@@ -33,7 +33,7 @@ const { installFs, mkInstallTempDir } = installFsAdapter;
 const commandRoster = require("./command-roster.cjs");
 const { readGsdCommandNames, transformContentToHyphen } = commandRoster;
 const runtimeNamePolicy = require("./runtime-name-policy.cjs");
-const { getDirName } = runtimeNamePolicy;
+const { getDirName, hostBehaviorsFor } = runtimeNamePolicy;
 const capabilityRegistry = require("./capability-registry.cjs");
 const hostIntegration = require("./host-integration.cjs");
 const shell_command_projection_cjs_1 = require("./shell-command-projection.cjs");
@@ -95,24 +95,6 @@ function gsdVersion() {
     return cachedVersion;
 }
 /**
- * Host-specific install behaviors declared on the runtime descriptor
- * (capabilities/<runtime>/capability.json -> runtime.hostBehaviors). Mirrors
- * bin/install.js's / install-engine.cts's `_hostBehaviors` (ADR-1239 / #2086
- * / #2092). Returns {} for runtimes that declare none, so every behavior
- * branch degrades to the generic path by default. Unlike the bin/install.js
- * and install-engine.cts variants, this module already imports
- * `capabilityRegistry` statically (see NON_CLAUDE_RUNTIMES below), so this
- * reads it directly rather than re-require()-ing inside a try/catch.
- */
-function _hostBehaviors(runtime) {
-    return ((capabilityRegistry &&
-        capabilityRegistry.runtimes &&
-        capabilityRegistry.runtimes[runtime] &&
-        capabilityRegistry.runtimes[runtime].runtime &&
-        capabilityRegistry.runtimes[runtime].runtime.hostBehaviors) ||
-        {});
-}
-/**
  * Public accessor for the `hostBehaviors.agentFileExtension` descriptor field
  * (ADR-1239 / #2099 / #2103). Returns the runtime's declared agent-file
  * destination-suffix rename target (e.g. copilot's `.agent.md`), or
@@ -123,7 +105,7 @@ function _hostBehaviors(runtime) {
  * duplicating a hardcoded `runtime === 'copilot'` check (#2103 fold).
  */
 function agentFileExtensionFor(runtime) {
-    const ext = _hostBehaviors(runtime).agentFileExtension;
+    const ext = hostBehaviorsFor(runtime).agentFileExtension;
     return typeof ext === 'string' ? ext : undefined;
 }
 const colorNameToHex = {
@@ -486,7 +468,7 @@ function convertClaudeCommandToClaudeSkill(content, skillName, runtime = null, c
     // Hermes' SKILL.md spec lists `version` as a required frontmatter field.
     // Track GSD's package version so Hermes' skill_view() reports a stable
     // identifier per install.
-    if (runtime === 'hermes') {
+    if (hostBehaviorsFor(runtime).skillFrontmatterVersion) {
         const version = gsdVersion();
         if (version)
             fm += `version: ${yamlQuote(version)}\n`;
@@ -496,7 +478,7 @@ function convertClaudeCommandToClaudeSkill(content, skillName, runtime = null, c
     // runtimes that declare the flag so Claude/Hermes skill frontmatter is
     // unchanged (they ignore the field, but we keep their output byte-stable).
     // skillName is the `gsd-<stem>` dir name. (ADR-1239 / #2092)
-    if (_hostBehaviors(runtime).skillPriorityFrontmatter) {
+    if (hostBehaviorsFor(runtime).skillPriorityFrontmatter) {
         const stem = typeof skillName === 'string' && skillName.startsWith('gsd-')
             ? skillName.slice(4)
             : skillName;
@@ -1545,7 +1527,7 @@ function convertClaudeCommandToTraeSkill(content, skillName) {
     // is not formally documented (thin SPA docs) — descriptor-driven, single
     // fixed GSD-side value (runtime.hostBehaviors.soloStageMetadata), inferred/
     // best-effort.
-    const soloStage = _hostBehaviors('trae').soloStageMetadata;
+    const soloStage = hostBehaviorsFor('trae').soloStageMetadata;
     if (soloStage)
         fm += `stage: ${soloStage}\n`;
     fm += '---';
@@ -2520,7 +2502,7 @@ function convertClaudeAgentToTraeAgent(content) {
  * forms to avoid double-rewriting the same substring.
  */
 function convertClaudeAgentToQwenAgent(content) {
-    const _b = _hostBehaviors('qwen').brandingRewrites || {};
+    const _b = hostBehaviorsFor('qwen').brandingRewrites || {};
     let converted = content;
     if (_b['CLAUDE.md'])
         converted = converted.replace(/CLAUDE\.md/g, _b['CLAUDE.md']);
@@ -2689,12 +2671,12 @@ function convertClaudeAgentToClineAgent(content) {
  * rewrites applied automatically. A runtime with no `brandingRewrites`
  * declared returns `content` unchanged (no rewrite table to apply).
  *
- * Byte-identical to the inline loop's `else if (_hostBehaviors(runtime).brandingRewrites)`
+ * Byte-identical to the inline loop's `else if (hostBehaviorsFor(runtime).brandingRewrites)`
  * branch, including plain (non-word-boundary) `.replace(/\bClaude Code\b/g, ...)`
  * semantics — J9.
  */
 function applyAgentBrandingRewrites(content, runtime) {
-    const _b = _hostBehaviors(runtime).brandingRewrites;
+    const _b = hostBehaviorsFor(runtime).brandingRewrites;
     if (!_b)
         return content;
     let converted = content;
@@ -2880,7 +2862,7 @@ function projectRelativePrefixFromProjectRoot(projectRoot, resolvedTarget) {
  * directory in a project-relative include: that directory was never created.
  */
 function localIncludeDirName(runtime) {
-    return _hostBehaviors(runtime).localTargetIsProjectRoot === true ? undefined : getDirName(runtime);
+    return hostBehaviorsFor(runtime).localTargetIsProjectRoot === true ? undefined : getDirName(runtime);
 }
 /**
  * #4377: the project-relative prefix for a local install, or `''` when the
@@ -3184,11 +3166,16 @@ function _applyRuntimeRewritesInner(content, runtime, pathPrefix, isGlobal = fal
     // #1521: stamp runtime identity + use_worktrees=false for every non-Claude runtime
     // before brand-specific path rewrites, so the replace operates on the pristine
     // source line and is idempotent regardless of subsequent path substitutions.
-    if (runtime !== 'claude') {
+    // #5169: the descriptor declares which hosts skip the stamp
+    // (`hostBehaviors.skipRuntimeDefaultsStamp`) and which rewrite profile applies
+    // (`hostBehaviors.contentRewriteProfile`). The switch below is keyed by PROFILE
+    // name, not runtime id, so two hosts that share a body share one case.
+    const rewriteBehaviors = hostBehaviorsFor(runtime);
+    if (!rewriteBehaviors.skipRuntimeDefaultsStamp) {
         content = _stampNonClaudeRuntimeDefaults(content, runtime);
     }
-    switch (runtime) {
-        case 'codex':
+    switch (rewriteBehaviors.contentRewriteProfile) {
+        case 'slash-own-tilde':
             content = content.replace(/~\/\.claude\//g, pathPrefix);
             content = content.replace(/\$HOME\/\.claude\//g, pathPrefix);
             content = content.replace(/\.\/\.claude\//g, `./${dirName}/`);
@@ -3196,7 +3183,7 @@ function _applyRuntimeRewritesInner(content, runtime, pathPrefix, isGlobal = fal
             // #1515 stamp moved to _stampNonClaudeRuntimeDefaults (#1521 generalisation).
             content = processAttribution(content, attribution);
             break;
-        case 'cline':
+        case 'slash-bare-own-tilde':
             content = content.replace(/~\/\.claude\//g, pathPrefix);
             content = content.replace(/\$HOME\/\.claude\//g, pathPrefix);
             content = content.replace(/\.\/\.claude\//g, `./${dirName}/`);
@@ -3208,7 +3195,7 @@ function _applyRuntimeRewritesInner(content, runtime, pathPrefix, isGlobal = fal
             content = content.replace(/\$HOME\/\.cline\b/g, normalizedPathPrefix);
             content = processAttribution(content, attribution);
             break;
-        case 'cursor':
+        case 'slash-lookahead-own-tilde':
             content = content.replace(/~\/\.claude\//g, pathPrefix);
             content = content.replace(/\$HOME\/\.claude\//g, pathPrefix);
             content = content.replace(/\.\/\.claude\//g, `./${dirName}/`);
@@ -3218,7 +3205,7 @@ function _applyRuntimeRewritesInner(content, runtime, pathPrefix, isGlobal = fal
             content = content.replace(/~\/\.cursor\//g, pathPrefix);
             content = processAttribution(content, attribution);
             break;
-        case 'windsurf': {
+        case 'slash-lookahead-nested-own-devin': {
             content = content.replace(/~\/\.claude\//g, pathPrefix);
             content = content.replace(/\$HOME\/\.claude\//g, pathPrefix);
             content = content.replace(/\.\/\.claude\//g, `./${dirName}/`);
@@ -3234,7 +3221,7 @@ function _applyRuntimeRewritesInner(content, runtime, pathPrefix, isGlobal = fal
             content = processAttribution(content, attribution);
             break;
         }
-        case 'augment': {
+        case 'slash-lookahead-own-derived': {
             content = content.replace(/~\/\.claude\//g, pathPrefix);
             content = content.replace(/\$HOME\/\.claude\//g, pathPrefix);
             content = content.replace(/\.\/\.claude\//g, `./${dirName}/`);
@@ -3252,7 +3239,7 @@ function _applyRuntimeRewritesInner(content, runtime, pathPrefix, isGlobal = fal
             content = processAttribution(content, attribution);
             break;
         }
-        case 'trae':
+        case 'slash-bare-own-derived':
             content = content.replace(/~\/\.claude\//g, pathPrefix);
             content = content.replace(/\$HOME\/\.claude\//g, pathPrefix);
             content = content.replace(/\.\/\.claude\//g, `./${dirName}/`);
@@ -3265,7 +3252,7 @@ function _applyRuntimeRewritesInner(content, runtime, pathPrefix, isGlobal = fal
             content = content.replace(new RegExp('~/' + (0, pattern_cjs_1.escapeRegex)(dirName) + '/', 'g'), pathPrefix);
             content = processAttribution(content, attribution);
             break;
-        case 'codebuddy':
+        case 'slash-bare-own-tilde-bare':
             content = content.replace(/~\/\.claude\//g, pathPrefix);
             content = content.replace(/\$HOME\/\.claude\//g, pathPrefix);
             content = content.replace(/\.\/\.claude\//g, `./${dirName}/`);
@@ -3278,13 +3265,14 @@ function _applyRuntimeRewritesInner(content, runtime, pathPrefix, isGlobal = fal
             content = content.replace(/\$HOME\/\.codebuddy\b/g, normalizedPathPrefix);
             content = processAttribution(content, attribution);
             break;
-        case 'copilot':
+        case 'attribution-only':
             content = processAttribution(content, attribution);
             break;
-        case 'antigravity':
-            content = processAttribution(content, attribution);
-            break;
-        case 'claude':
+        // claude and zcode share this profile. #4002: ZCode is a Claude-Code-shaped
+        // host (dot-home `.zcode`, `@~`-ref expansion, `~/.zcode/...` documented
+        // paths) whose commands install with `converter: null` — this pass is their
+        // only chance to receive runtime-correct paths, including the tilde restore.
+        case 'slash-tilde-restore':
             content = content.replace(/~\/\.claude\//g, pathPrefix);
             content = content.replace(/\$HOME\/\.claude\//g, pathPrefix);
             content = content.replace(/\.\/\.claude\//g, `./${dirName}/`);
@@ -3298,12 +3286,15 @@ function _applyRuntimeRewritesInner(content, runtime, pathPrefix, isGlobal = fal
         // brand VALUES (CLAUDE.md/Claude Code/.claude/ replacements) now read from
         // runtime.hostBehaviors.brandingRewrites instead of hardcoded literals.
         // EXACT regexes/order preserved — only the replacement values changed.
-        case 'qwen': {
+        // qwen and hermes share this profile; their own dot-dir is derived from the
+        // descriptor's `localConfigDir` (`getDirName`) rather than spelled per host.
+        case 'branded-lookahead-own-derived': {
             // Guarded (post-review #2092): brandingRewrites is undefined if the
             // capability registry fails to load — degrade closed (skip the
             // brand-literal replacements, still apply the non-branding path
             // rewrites below) instead of throwing on `_b['CLAUDE.md']`.
-            const _b = _hostBehaviors(runtime).brandingRewrites;
+            const _b = rewriteBehaviors.brandingRewrites;
+            const _own = (0, pattern_cjs_1.escapeRegex)(dirName);
             if (_b) {
                 content = content.replace(/CLAUDE\.md/g, _b['CLAUDE.md']);
                 // #2284(b): skips <runtime_compatibility> comparison-table content (protected region).
@@ -3311,46 +3302,21 @@ function _applyRuntimeRewritesInner(content, runtime, pathPrefix, isGlobal = fal
             }
             content = content.replace(/~\/\.claude\//g, pathPrefix);
             content = content.replace(/\$HOME\/\.claude\//g, pathPrefix);
-            content = content.replace(/~\/\.qwen\//g, pathPrefix);
-            content = content.replace(/\$HOME\/\.qwen\//g, pathPrefix);
+            content = content.replace(new RegExp('~/' + _own + '/', 'g'), pathPrefix);
+            content = content.replace(new RegExp('\\$HOME/' + _own + '/', 'g'), pathPrefix);
             content = content.replace(/~\/\.claude(?![\w-])/g, normalizedPathPrefix);
             content = content.replace(/\$HOME\/\.claude(?![\w-])/g, normalizedPathPrefix);
-            content = content.replace(/~\/\.qwen(?![\w-])/g, normalizedPathPrefix);
-            content = content.replace(/\$HOME\/\.qwen(?![\w-])/g, normalizedPathPrefix);
+            content = content.replace(new RegExp('~/' + _own + '(?![\\w-])', 'g'), normalizedPathPrefix);
+            content = content.replace(new RegExp('\\$HOME/' + _own + '(?![\\w-])', 'g'), normalizedPathPrefix);
             if (_b) {
                 content = content.replace(/\.claude\//g, _b['.claude/']);
             }
             content = content.replace(/\.\/\.claude\//g, `./${dirName}/`);
-            content = content.replace(/\.\/\.qwen\//g, `./${dirName}/`);
+            content = content.replace(new RegExp('\\./' + _own + '/', 'g'), `./${dirName}/`);
             content = processAttribution(content, attribution);
             break;
         }
-        case 'hermes': {
-            // Guarded (post-review #2092): see qwen case above — same degrade-closed
-            // rationale.
-            const _b = _hostBehaviors(runtime).brandingRewrites;
-            if (_b) {
-                content = content.replace(/CLAUDE\.md/g, _b['CLAUDE.md']);
-                // #2284(b): skips <runtime_compatibility> comparison-table content (protected region).
-                content = applyClaudeCodeBrandSwap(content, _b['Claude Code']);
-            }
-            content = content.replace(/~\/\.claude\//g, pathPrefix);
-            content = content.replace(/\$HOME\/\.claude\//g, pathPrefix);
-            content = content.replace(/~\/\.hermes\//g, pathPrefix);
-            content = content.replace(/\$HOME\/\.hermes\//g, pathPrefix);
-            content = content.replace(/~\/\.claude(?![\w-])/g, normalizedPathPrefix);
-            content = content.replace(/\$HOME\/\.claude(?![\w-])/g, normalizedPathPrefix);
-            content = content.replace(/~\/\.hermes(?![\w-])/g, normalizedPathPrefix);
-            content = content.replace(/\$HOME\/\.hermes(?![\w-])/g, normalizedPathPrefix);
-            if (_b) {
-                content = content.replace(/\.claude\//g, _b['.claude/']);
-            }
-            content = content.replace(/\.\/\.claude\//g, `./${dirName}/`);
-            content = content.replace(/\.\/\.hermes\//g, `./${dirName}/`);
-            content = processAttribution(content, attribution);
-            break;
-        }
-        case 'kimi':
+        case 'slash-bare':
             content = content.replace(/~\/\.claude\//g, pathPrefix);
             content = content.replace(/\$HOME\/\.claude\//g, pathPrefix);
             content = content.replace(/\.\/\.claude\//g, `./${dirName}/`);
@@ -3359,22 +3325,8 @@ function _applyRuntimeRewritesInner(content, runtime, pathPrefix, isGlobal = fal
             content = content.replace(/\.\/\.claude\b/g, `./${dirName}`);
             content = processAttribution(content, attribution);
             break;
-        case 'zcode':
-            // #4002: ZCode is a Claude-Code-shaped host (dot-home `.zcode`, `@~`-ref
-            // expansion, `~/.zcode/...` documented paths) whose commands install with
-            // `converter: null` — this pass is their only chance to receive
-            // runtime-correct paths. Same shape as `claude`, including the tilde
-            // restore: the tilde form is what ZCode expands and what its docs use.
-            // `${_GSD_RUNTIME_ROOT}/.claude/…` matches none of these regexes and
-            // survives as the project-local fallback, exactly as on every sibling.
-            content = content.replace(/~\/\.claude\//g, pathPrefix);
-            content = content.replace(/\$HOME\/\.claude\//g, pathPrefix);
-            content = content.replace(/\.\/\.claude\//g, `./${dirName}/`);
-            content = restoreClaudeGlobalAtRefTilde(content, pathPrefix);
-            content = processAttribution(content, attribution);
-            break;
         default:
-            // Unknown runtime — no rewrites (OpenCode/Kilo handled by their own install path).
+            // No profile declared — no rewrites (OpenCode/Kilo handled by their own install path).
             break;
     }
     return content;
@@ -3440,7 +3392,7 @@ function applyRuntimeContentRewritesForCommandsInPlace(stagedDir, runtime, pathP
             content = _applyRuntimeRewrites(content, runtime, pathPrefix, isGlobal, attribution);
             // #2097 (ADR-1239): descriptor-driven — commandBodyConverter name comes
             // from runtime.hostBehaviors instead of a hardcoded runtime-name branch.
-            const _cmdConv = _hostBehaviors(runtime).commandBodyConverter;
+            const _cmdConv = hostBehaviorsFor(runtime).commandBodyConverter;
             if (_cmdConv && COMMAND_BODY_CONVERTERS[_cmdConv]) {
                 content = COMMAND_BODY_CONVERTERS[_cmdConv](content);
             }
@@ -3529,7 +3481,7 @@ function rewriteStagedSkillBodies(stagedDir, opts) {
     // no skills-kind entry at local scope, so this is already structurally
     // scoped to global (row 23) — the explicit isGlobal check is defense-in-depth
     // against that descriptor wiring ever changing.
-    if (runtime === 'claude' && isGlobal) {
+    if (hostBehaviorsFor(runtime).specRootSkillPass && isGlobal) {
         applySpecRootReferenceToStagedSkills(stagedDir);
     }
 }
@@ -3581,7 +3533,7 @@ function rewriteStagedCommandBodies(stagedDir, opts) {
  * @param cmdNames  gsd command names from readGsdCommandNames()
  */
 function normalizeAgentBodyForRuntime(content, runtime, cmdNames) {
-    if (_hostBehaviors(runtime).hyphenNameAgentBody !== true)
+    if (hostBehaviorsFor(runtime).hyphenNameAgentBody !== true)
         return content;
     return transformContentToHyphen(content, cmdNames);
 }
@@ -3611,7 +3563,7 @@ function normalizeAgentBodyForRuntime(content, runtime, cmdNames) {
  * @returns content with path-prefix rewrites applied (or unchanged for noPathRewrite runtimes, e.g. copilot)
  */
 function applyAgentPathRewrites(content, runtime, pathPrefix) {
-    if (_hostBehaviors(runtime).noPathRewrite === true)
+    if (hostBehaviorsFor(runtime).noPathRewrite === true)
         return content;
     // #4377: the agents pipeline is the third emit path that substitutes this
     // prefix (skills/commands via _applyRuntimeRewrites, the gsd-core spec tree
@@ -3653,7 +3605,7 @@ function applyAgentPathRewritesInner(content, runtime, pathPrefix) {
     // anchored to the exact prefix string it is handed — so `restore(pathPrefix)`
     // fixes `@$HOME/.claude/x` and leaves a bare `@$HOME/.claude` broken. The
     // normalized form is a PREFIX of both, so one call covers both.
-    if (runtime === 'claude') {
+    if (hostBehaviorsFor(runtime).restoreAtRefTildeInAgents) {
         content = restoreClaudeGlobalAtRefTilde(content, normalizedPathPrefix);
     }
     return content;
@@ -3739,7 +3691,7 @@ const READONLY_AGENT_DISALLOWED_TOOLS = {
  * OpenCode/Qwen/Hermes reject unknown frontmatter keys.
  *
  * Byte-identical to the inline agent loop's
- * `if ((_hostBehaviors(runtime).agentFrontmatterExtensions || []).includes('effort'))`
+ * `if ((hostBehaviorsFor(runtime).agentFrontmatterExtensions || []).includes('effort'))`
  * block (bin/install.js): both the effort injection AND the disallowedTools
  * injection are gated behind the SAME `'effort'` extension flag — there is no
  * separate `'disallowedTools'` extension key, mirroring the loop exactly.
@@ -3754,7 +3706,7 @@ const READONLY_AGENT_DISALLOWED_TOOLS = {
  * @param targetDir  install root — resolves .planning/config.json + ~/.gsd/defaults.json
  */
 function applyAgentFrontmatterExtensions(content, { runtime, agentName, targetDir }) {
-    const extensions = _hostBehaviors(runtime).agentFrontmatterExtensions || [];
+    const extensions = hostBehaviorsFor(runtime).agentFrontmatterExtensions || [];
     if (!extensions.includes('effort'))
         return content;
     let result = content;

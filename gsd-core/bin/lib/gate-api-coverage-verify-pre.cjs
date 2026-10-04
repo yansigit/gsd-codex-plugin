@@ -31,9 +31,9 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.readPhaseScope = readPhaseScope;
 exports.evaluateApiCoverageVerifyPre = evaluateApiCoverageVerifyPre;
-const node_fs_1 = __importDefault(require("node:fs"));
 const node_path_1 = __importDefault(require("node:path"));
 const gate_verdict_cjs_1 = require("./gate-verdict.cjs");
+const gate_evidence_cjs_1 = require("./gate-evidence.cjs");
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const planningWorkspaceMod = require("./planning-workspace.cjs");
 const { planningDir } = planningWorkspaceMod;
@@ -54,13 +54,6 @@ const { scanPhasePlans } = planScanMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const planningScopeMod = require("./planning-scope.cjs");
 const { SCOPE } = planningScopeMod;
-/** A filesystem error that is NOT "does not exist" — i.e. a real read failure
- *  (EACCES/EIO/…) the gate must not swallow. `ENOENT` is a legitimate "not
- *  there yet" and is treated as absence, not error. */
-function isRealReadFailure(err) {
-    const code = err?.code;
-    return err != null && code !== 'ENOENT';
-}
 // NOTE: `fs` is used as a namespace object at call time (never destructured at load) so tests can
 // monkeypatch its methods for failure injection.
 function readPhaseScope(projectDir, phaseDir, phaseNumber) {
@@ -73,29 +66,37 @@ function readPhaseScope(projectDir, phaseDir, phaseNumber) {
     // filter — picks up bare PLAN.md and nested plans/, and excludes
     // superseded plans, none of which the prior root-only exact-suffix filter
     // did.
-    if (node_fs_1.default.existsSync(phaseDir)) {
+    // `fs.existsSync` answered `false` for an EACCES on a parent, skipping plans the gate never saw and
+    // letting detection run over a roadmap fallback; the stat keeps that case an unreadable scope (#5170).
+    const phaseDirStat = (0, gate_evidence_cjs_1.statEvidence)(phaseDir);
+    if (phaseDirStat.kind === 'unreadable') {
+        return {
+            text: '',
+            readError: `could not read the phase directory: ${phaseDirStat.reason}`,
+        };
+    }
+    if (phaseDirStat.kind === 'found') {
         const scan = scanPhasePlans(phaseDir);
-        if (scan.scope === SCOPE.UNREADABLE) {
-            // Directory exists but scanPhasePlans's own readdirSync(phaseDir) call
-            // failed (EACCES/EIO race) — a real read failure the gate must not
-            // silently pass (#2365 review), mirroring the prior isRealReadFailure
-            // branch below for the readdirSync-throws case.
+        if (scan.scope !== SCOPE.COMPLETE) {
+            // Directory exists but scanPhasePlans could not see all of it: its own readdirSync(phaseDir)
+            // failed (UNREADABLE) or the nested plans/ directory exists and could not be read
+            // (TRUNCATED). Only COMPLETE is a real answer; a short plan set is never evidence of "no
+            // plans" (#2365 review, #5170), so the gate must not pass over it.
             return {
                 text: '',
-                readError: 'could not read the phase directory: scanPhasePlans reported scope UNREADABLE',
+                readError: `could not read the phase directory: scanPhasePlans reported scope ${scan.scope.toUpperCase()}`,
             };
         }
         const plans = [...scan.planFiles].sort();
         for (const p of plans) {
-            try {
-                chunks.push(node_fs_1.default.readFileSync(node_path_1.default.join(phaseDir, p), 'utf8'));
+            const plan = (0, gate_evidence_cjs_1.readTextEvidence)(node_path_1.default.join(phaseDir, p));
+            if (plan.kind === 'found') {
+                chunks.push(plan.value);
             }
-            catch (err) {
-                // A plan file that exists but cannot be read — record it and keep
+            else if (!readError) {
+                // A plan file the scan listed that cannot be read (or vanished since) — record it and keep
                 // reading the rest so the message names the first failure.
-                if (!readError) {
-                    readError = `could not read ${p}: ${err instanceof Error ? err.message : String(err)}`;
-                }
+                readError = `could not read ${p}: ${plan.kind === 'unreadable' ? plan.reason : 'it disappeared since the scan'}`;
             }
         }
     }
@@ -113,7 +114,8 @@ function readPhaseScope(projectDir, phaseDir, phaseNumber) {
                 return { text: section, readError: null };
         }
         catch (err) {
-            if (isRealReadFailure(err)) {
+            // An absent roadmap/section is "not there yet"; any other failure is a real read failure.
+            if ((0, gate_evidence_cjs_1.evidenceFromError)(err, 'ROADMAP.md').kind === 'unreadable') {
                 return {
                     text: '',
                     readError: `could not read the roadmap fallback: ${err instanceof Error ? err.message : String(err)}`,
@@ -140,8 +142,23 @@ function evaluateApiCoverageVerifyPre(input) {
     // A token like ".." or "." carries no phase identity → unresolvable.
     if (token === '.' || token === '..')
         token = '';
-    // Not a GSD project (no phases tree at all) → fail-open: nothing to gate.
-    if (!node_fs_1.default.existsSync(phasesRoot)) {
+    // Not a GSD project (no phases tree at all) → fail-open: nothing to gate. Only an ABSENT tree
+    // (`none`) is that answer; one that exists but cannot be examined (an EACCES on a parent) is
+    // `unreadable` — `fs.existsSync` said `false` for it and certified "not a GSD project" (#5170).
+    const phasesRootStat = (0, gate_evidence_cjs_1.statEvidence)(phasesRoot);
+    if (phasesRootStat.kind === 'unreadable') {
+        return (0, gate_verdict_cjs_1.gateUnreadable)(true, {
+            block: true,
+            passed: false,
+            coverage_present: false,
+            detected: false,
+            read_error: phasesRootStat.reason,
+            message: `api-coverage: could not examine .planning/phases (${phasesRootStat.reason}) — ` +
+                'refusing to treat an unreadable phases tree as "not a GSD project". ' +
+                'Fix the directory permissions before sealing.',
+        });
+    }
+    if (phasesRootStat.kind === 'none') {
         return (0, gate_verdict_cjs_1.gateVerdict)('pass', false, {
             block: false,
             passed: true,
@@ -197,9 +214,25 @@ function evaluateApiCoverageVerifyPre(input) {
     // (1) locate COVERAGE.md — prefer the exact name, then a single *-COVERAGE.md.
     let coverageFile = '';
     let suffixed = [];
-    try {
-        const entries = node_fs_1.default.readdirSync(resolvedDir, { withFileTypes: true });
-        const files = entries.filter((e) => e.isFile()).map((e) => e.name);
+    // #5170 (ADR-5057 §4): a phase directory that EXISTS but cannot be listed is `unreadable` —
+    // a COVERAGE.md may be in it — and never falls through to the detector, whose pass would be
+    // certified from a directory the gate never saw. An ABSENT directory (`none`) has no matrix and
+    // proceeds to detection, as before. The blocking policy is unchanged (fail-closed).
+    const listing = (0, gate_evidence_cjs_1.readDirEntriesEvidence)(resolvedDir);
+    if (listing.kind === 'unreadable') {
+        return (0, gate_verdict_cjs_1.gateUnreadable)(true, {
+            block: true,
+            passed: false,
+            coverage_present: false,
+            detected: false,
+            read_error: listing.reason,
+            message: `api-coverage: could not read the phase directory (${listing.reason}) — ` +
+                'refusing to certify the coverage matrix from a directory that could not be listed. ' +
+                'Fix the directory permissions before sealing.',
+        });
+    }
+    if (listing.kind === 'found') {
+        const files = listing.value.filter((e) => e.isFile()).map((e) => e.name);
         const exact = files.find((f) => /^COVERAGE\.md$/i.test(f));
         if (exact) {
             coverageFile = exact;
@@ -210,24 +243,19 @@ function evaluateApiCoverageVerifyPre(input) {
                 coverageFile = suffixed[0];
         }
     }
-    catch {
-        // readdir failure → treat as no matrix readable; fall through to detection.
-    }
     if (coverageFile) {
-        let matrixText;
-        try {
-            matrixText = node_fs_1.default.readFileSync(node_path_1.default.join(resolvedDir, coverageFile), 'utf8');
-        }
-        catch {
-            // COVERAGE.md exists but is unreadable (EACCES/EIO/encoding). Fail-closed
-            // with a useful message rather than a raw throw.
-            return (0, gate_verdict_cjs_1.gateVerdict)('block', true, {
+        const matrix = (0, gate_evidence_cjs_1.readTextEvidence)(node_path_1.default.join(resolvedDir, coverageFile));
+        if (matrix.kind !== 'found') {
+            // COVERAGE.md exists but is unreadable (EACCES/EIO/encoding), or vanished between the
+            // listing and the read. Fail-closed (policy unchanged) and `unreadable` (outcome).
+            return (0, gate_verdict_cjs_1.gateUnreadable)(true, {
                 block: true,
                 passed: false,
                 coverage_present: true,
                 message: `api-coverage: COVERAGE.md exists but is unreadable — fix file permissions/encoding before sealing`,
             });
         }
+        const matrixText = matrix.value;
         const v = validateCoverageMatrix(matrixText);
         if (v.valid) {
             if (v.none_declared) {
@@ -295,8 +323,9 @@ function evaluateApiCoverageVerifyPre(input) {
     const scope = readPhaseScope(projectDir, resolvedDir, phaseNumber);
     if (scope.readError) {
         // Fail-closed: an unreadable plan could be the one describing the
-        // integration, so we cannot certify "no integration" — block and surface it.
-        return (0, gate_verdict_cjs_1.gateVerdict)('block', true, {
+        // integration, so we cannot certify "no integration" — block and surface it. The blocking
+        // policy is unchanged; the outcome is `unreadable` (exit UNAVAILABLE, #5170).
+        return (0, gate_verdict_cjs_1.gateUnreadable)(true, {
             block: true,
             passed: false,
             coverage_present: false,

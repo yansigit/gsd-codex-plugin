@@ -33,8 +33,17 @@ exports.evaluateTddRedEvidence = evaluateTddRedEvidence;
 const node_path_1 = __importDefault(require("node:path"));
 const security_cjs_1 = require("./security.cjs");
 const gate_verdict_cjs_1 = require("./gate-verdict.cjs");
-const gate_phase_context_cjs_1 = require("./gate-phase-context.cjs");
+const gate_evidence_cjs_1 = require("./gate-evidence.cjs");
 const tdd_red_evidence_cjs_1 = require("./tdd-red-evidence.cjs");
+/** Parse the persisted record. A parse failure is typed evidence (never a swallowed `null`). */
+function parseRecordEvidence(text, span) {
+    try {
+        return (0, gate_evidence_cjs_1.evidenceFound)((JSON.parse(text) ?? {}));
+    }
+    catch (err) {
+        return (0, gate_evidence_cjs_1.evidenceFromError)(err, span);
+    }
+}
 function evaluateTddRedEvidence(input) {
     const recordPath = typeof input.args[0] === 'string' ? input.args[0] : '';
     if (!recordPath) {
@@ -46,26 +55,23 @@ function evaluateTddRedEvidence(input) {
     if ((0, security_cjs_1.tryWithinRoot)(resolved, input.projectDir, security_cjs_1.PathAcceptance.AbsoluteInsideRoot) === null) {
         return (0, gate_verdict_cjs_1.gateUsageFailure)(gate_verdict_cjs_1.GATE_FAILURE_CODE.USAGE, `path escapes its allowed directory: ${recordPath}`);
     }
-    const text = (0, gate_phase_context_cjs_1.readIfExists)(resolved);
-    const record = (() => {
-        if (!text)
-            return null;
-        try {
-            return (JSON.parse(text) ?? {});
-        }
-        catch {
-            return null;
-        }
-    })();
+    const read = (0, gate_evidence_cjs_1.readTextEvidence)(resolved);
+    const text = read.kind === 'found' ? read.value : '';
+    const parsed = text ? parseRecordEvidence(text, resolved) : null;
+    // Malformed JSON is content that WAS read: it is a failing record (`block`), not a swallowed error.
+    const record = parsed !== null && parsed.kind === 'found' ? parsed.value : null;
     if (!record) {
-        return (0, gate_verdict_cjs_1.gateVerdict)('block', true, {
+        const payload = {
             passed: false,
             block: true,
             verdict: 'INVALID_RED',
             reason: 'unreadable_record',
             record: resolved,
             readError: text ? `record is not valid JSON: ${resolved}` : `record not found or unreadable: ${resolved}`,
-        });
+        };
+        // Fail-closed policy is unchanged (`block: true`); a record that exists but could not be read
+        // is "could not look" (#5170), so its outcome is `unreadable` and the exit status follows it.
+        return read.kind === 'unreadable' ? (0, gate_verdict_cjs_1.gateUnreadable)(true, payload) : (0, gate_verdict_cjs_1.gateVerdict)('block', true, payload);
     }
     const evidenceInput = {
         command: record['command'],

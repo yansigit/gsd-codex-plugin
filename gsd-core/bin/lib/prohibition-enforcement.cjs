@@ -67,6 +67,8 @@ const node_child_process_1 = require("node:child_process");
 const io = require("./io.cjs");
 const { output, error, ERROR_REASON } = io;
 const probe_core_cjs_1 = require("./probe-core.cjs");
+const gate_verdict_cjs_1 = require("./gate-verdict.cjs");
+const gate_exit_cjs_1 = require("./gate-exit.cjs");
 /**
  * READ-BACK ADAPTER (#1278, plan 01-03): reconstruct a `CheckDescriptor` from the flat scalar keys
  * `projectProhibitions` emits onto a prohibition item (`check_kind` / `check_target` / `check_rule`,
@@ -778,5 +780,9 @@ function routeProhibitionEnforcement(args, raw) {
         return;
     }
     const result = runProhibitionEnforcement(req.prohibition, req.check, req.mode ? { mode: req.mode } : {});
-    output(result, raw, undefined);
+    // A producer, not a blocking gate: its disposition is a delivered answer (an advisory verdict) and
+    // the exit status follows it through the seam like every other `check <verb>` (#5170, payload mode).
+    const verdict = (0, gate_verdict_cjs_1.gateVerdict)('advisory', false, { ...result });
+    output(verdict.payload, raw, undefined);
+    (0, gate_exit_cjs_1.declareGateExit)(verdict, 'payload');
 }

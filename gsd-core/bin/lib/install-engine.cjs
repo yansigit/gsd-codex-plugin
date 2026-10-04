@@ -55,7 +55,7 @@ const install_scope_cjs_1 = require("./install-scope.cjs");
 const { processAttribution } = runtimeArtifactConversion;
 // resolveRuntimeArtifactLayout: accessed via module ref (not destructured) so
 // test stubs that monkeypatch the module's exports are seen at call time.
-const { getDirName } = runtimeNamePolicy;
+const { getDirName, hostBehaviorsFor } = runtimeNamePolicy;
 function withInstallerPackageSource(configDir, fn) {
     // Reuse the existing compatibility-marker contract through the existing fs
     // seam. The marker exists only in this synchronous call tree: no disk state,
@@ -181,7 +181,7 @@ function provisionRuntimeSurfaceCorpus(layout, configDir, scope) {
         const destination = node_path_1.default.join(corpusRoot, 'agents');
         syncRuntimeSurfaceCorpus(source, destination, configDir, 'gsd-core/agents/');
     }
-    const markerFile = _hostBehaviors(layout.runtime).sourceMarkerFile;
+    const markerFile = hostBehaviorsFor(layout.runtime).sourceMarkerFile;
     if (typeof markerFile === 'string' && markerFile !== '' && required.has('commands')) {
         try {
             const markerPath = runtimeArtifactInstallPlan.assertDestWithinConfigHome(configDir, markerFile);
@@ -219,25 +219,6 @@ function executingPackageRoot() { return node_path_1.default.dirname(node_path_1
  * Paths are relative to the gsd-core/ directory.
  */
 const USER_OWNED_ARTIFACTS = ['USER-PROFILE.md'];
-// ---------------------------------------------------------------------------
-// Host-behavior helpers
-// ---------------------------------------------------------------------------
-/**
- * Host-specific install behaviors declared on the runtime descriptor
- * (capabilities/<runtime>/capability.json -> runtime.hostBehaviors).
- * Mirrors bin/install.js's `_hostBehaviors` (ADR-1239 / #2086/#2087). Returns
- * {} for runtimes that declare none or if the registry fails to load, so
- * every behavior branch degrades to the generic path by default.
- */
-function _hostBehaviors(runtime) {
-    try {
-        const reg = require('./capability-registry.cjs');
-        return (reg && reg.runtimes && reg.runtimes[runtime] && reg.runtimes[runtime].runtime && reg.runtimes[runtime].runtime.hostBehaviors) || {};
-    }
-    catch {
-        return {};
-    }
-}
 // ---------------------------------------------------------------------------
 // Conversion helpers
 // ---------------------------------------------------------------------------
@@ -737,8 +718,9 @@ function _copyStaged(stagedDir, destDir, kind, configDir, runtime) {
         // files whose `name:` frontmatter is identical to their canonical
         // sibling's, leaving the harness resolution unstated. Claude never
         // selects compact, so claude is the one runtime whose agents kind skips
-        // them; every other runtime's emission is byte-identical.
-        if (kind.kind === 'agents' && runtime === 'claude' && entry.name.endsWith('.compact.md'))
+        // them; every other runtime's emission is byte-identical. #5169: the
+        // descriptor declares this (`hostBehaviors.skipCompactAgents`), not a name test.
+        if (kind.kind === 'agents' && hostBehaviorsFor(runtime).skipCompactAgents && entry.name.endsWith('.compact.md'))
             continue;
         const stem = entry.name.slice(0, -3); // strip .md
         let destName;
@@ -748,7 +730,7 @@ function _copyStaged(stagedDir, destDir, kind, configDir, runtime) {
             // hardcoded `runtime === 'copilot'`). copilot declares '.agent.md';
             // every other runtime's descriptor leaves this unset, so destName falls
             // back to entry.name unchanged (byte-parity, #1575 origin comment).
-            const _agentExt = runtime ? _hostBehaviors(runtime).agentFileExtension : undefined;
+            const _agentExt = runtime ? hostBehaviorsFor(runtime).agentFileExtension : undefined;
             destName = _agentExt
                 ? entry.name.replace(/\.md$/, _agentExt)
                 : entry.name;
@@ -887,7 +869,7 @@ function _runLegacyInstallMigrations(runtime, configDir, scope = 'global') {
     // that for Hermes the flat skills/gsd-*/ removal (below) does not delete the freshly
     // created skills/gsd-dev-preferences/ skill dir.
     let stagedLegacyArtifacts = null;
-    if (_hostBehaviors(runtime).legacyCommandsGsdInstallMigration) {
+    if (hostBehaviorsFor(runtime).legacyCommandsGsdInstallMigration) {
         if (installFs().existsSync(legacyCommandsGsd)) {
             // #2875: staging root resolved lazily, only when there is actually
             // something to stage — reused below by every other call site sharing
@@ -911,8 +893,8 @@ function _runLegacyInstallMigrations(runtime, configDir, scope = 'global') {
         }
     }
     // Hermes: remove pre-#2841 flat skills/gsd-*/ entries that lived alongside
-    // the new skills/gsd/ nested layout.
-    if (runtime === 'hermes') {
+    // the new skills/gsd/ nested layout. (#5169: `hostBehaviors.legacyFlatSkillsCleanup`.)
+    if (hostBehaviorsFor(runtime).legacyFlatSkillsCleanup) {
         const flatSkillsDir = node_path_1.default.join(configDir, 'skills');
         if (installFs().existsSync(flatSkillsDir)) {
             for (const entry of installFs().readdirSync(flatSkillsDir, { withFileTypes: true })) {
@@ -1050,7 +1032,7 @@ function _runLegacyUninstallCleanup(runtime, configDir, scope = 'global') {
     // commands/gsd/ for claude local, preserving dev-preferences.md by restoring it
     // to the same location (#1423). Using migrateLegacyDevPreferencesToSkill here
     // (which would redirect to skills/) conflicts with the test contract for local installs.
-    const _lu = _hostBehaviors(runtime).legacyCommandsGsdUninstall;
+    const _lu = hostBehaviorsFor(runtime).legacyCommandsGsdUninstall;
     // #2870: `scope` keeps its exported `string = 'global'` signature (no
     // signature change), but every real caller — `uninstallRuntimeArtifacts`'s
     // own required `scope` param, always fed a validated 'global' | 'local'
@@ -1075,8 +1057,8 @@ function _runLegacyUninstallCleanup(runtime, configDir, scope = 'global') {
             }
         }
     }
-    // Hermes: pre-#2841 flat skills/gsd-*/ entries
-    if (runtime === 'hermes') {
+    // Hermes: pre-#2841 flat skills/gsd-*/ entries (#5169: `legacyFlatSkillsCleanup`)
+    if (hostBehaviorsFor(runtime).legacyFlatSkillsCleanup) {
         const flatSkillsDir = node_path_1.default.join(configDir, 'skills');
         if (node_fs_1.default.existsSync(flatSkillsDir)) {
             for (const entry of node_fs_1.default.readdirSync(flatSkillsDir, { withFileTypes: true })) {
@@ -1085,6 +1067,8 @@ function _runLegacyUninstallCleanup(runtime, configDir, scope = 'global') {
                 }
             }
         }
+    }
+    if (hostBehaviorsFor(runtime).bareStemSkillsCleanup) {
         // Hermes: pre-#947 bare-stem skills/gsd/<stem>/ entries (dirs that do NOT
         // start with 'gsd-') — the #3664 layout used prefix='' so GSD-owned skills
         // had bare names (e.g. skills/gsd/help/). These are stale on uninstall.
@@ -1142,7 +1126,7 @@ function installRuntimeArtifacts(runtime, configDir, scope, resolvedProfile, res
         // the dedicated combined commands+skills+plugin orchestrator instead of the
         // generic layout-driven loop below, mirroring the bespoke install path that
         // previously lived inline in bin/install.js.
-        const behaviors = _hostBehaviors(runtime);
+        const behaviors = hostBehaviorsFor(runtime);
         const projectDir = scope === 'global' ? process.cwd() : configDir;
         if (behaviors.combinedFamilyInstall) {
             // #2329: combined-family runtimes (OpenCode/Kilo) bypass
@@ -1336,7 +1320,7 @@ function installRuntimeArtifacts(runtime, configDir, scope, resolvedProfile, res
         // with the same prefix). User-owned bare dirs with no gsd-<stem> counterpart
         // are untouched.
         let hermesBareStemCleanup = false;
-        if (runtime === 'hermes') {
+        if (hostBehaviorsFor(runtime).bareStemSkillsCleanup) {
             const nestedGsdDirForCleanup = node_path_1.default.join(configDir, 'skills', 'gsd');
             _removeHermesBareStemDirs(nestedGsdDirForCleanup);
             hermesBareStemCleanup = true;
@@ -1688,7 +1672,7 @@ function installOpencodeFamilyCommands(runtime, destDir, srcDir, pathPrefix, res
             // already satisfies the fold-to-descriptor requirement. Only the SKILLS
             // converter site above (installOpencodeFamilySkills) has a real
             // `converter` string to key on via SKILLS_CONVERTER_REGISTRY.
-            content = _hostBehaviors(runtime).frontmatterDialect === 'kilo'
+            content = hostBehaviorsFor(runtime).frontmatterDialect === 'kilo'
                 ? runtimeArtifactConversion.convertClaudeToKiloFrontmatter(content)
                 : runtimeArtifactConversion.convertClaudeToOpencodeFrontmatter(content);
             installFs().writeFileSync(node_path_1.default.join(destDir, destName), content);
@@ -1971,7 +1955,8 @@ function uninstallRuntimeArtifacts(runtime, configDir, scope, deps = {}) {
     // the GSD-managed DESCRIPTION.md and then the category dir itself if it
     // contains no user content (#947). _removeGsdEntries removed gsd-* dirs
     // but left the category container and DESCRIPTION.md intact.
-    if (runtime === 'hermes') {
+    // (#5169: `hostBehaviors.categoryContainerCleanup`.)
+    if (hostBehaviorsFor(runtime).categoryContainerCleanup) {
         const nestedGsdDir = node_path_1.default.join(configDir, 'skills', 'gsd');
         if (node_fs_1.default.existsSync(nestedGsdDir)) {
             // Remove GSD-owned DESCRIPTION.md (written by writeHermesCategoryDescription)
@@ -2029,7 +2014,6 @@ module.exports = {
     installAgentsKindStandalone,
     installOpencodeFamilyArtifacts,
     _installNativePluginIfDeclared,
-    _hostBehaviors,
     _copyStaged,
     hasExistingSymlinkBetween,
     isSymlinkedDestOptIn,

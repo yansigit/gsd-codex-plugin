@@ -18,6 +18,7 @@ const gate_verdict_cjs_1 = require("./gate-verdict.cjs");
 const gate_phase_context_cjs_1 = require("./gate-phase-context.cjs");
 const ui_safety_gate_cjs_1 = require("./ui-safety-gate.cjs");
 const ui_frontend_evidence_cjs_1 = require("./ui-frontend-evidence.cjs");
+const gate_evidence_cjs_1 = require("./gate-evidence.cjs");
 /**
  * Pure logic for ui-plan-gate — exposed for direct behavioral testing.
  *
@@ -37,15 +38,26 @@ const ui_frontend_evidence_cjs_1 = require("./ui-frontend-evidence.cjs");
  */
 function computeUiPlanGate(projectDir, phase) {
     // (a) phase section text
-    const { phaseSection, phaseLookupFailed } = (0, gate_phase_context_cjs_1.lookupRoadmapPhase)(projectDir, phase);
+    const { phaseSection, phaseLookupFailed, readError: roadmapReadError } = (0, gate_phase_context_cjs_1.lookupRoadmapPhase)(projectDir, phase);
     // (b) frontend detection — reuse the existing helper; no reimplementation
     const presenceResult = (0, ui_safety_gate_cjs_1.checkUiPresence)(phaseSection);
     const frontend = presenceResult.hasUI;
-    // (b') #3312 — static structural corroboration. Only probed when the sniffer matched.
-    const hasFrontendEvidence = frontend ? (0, ui_frontend_evidence_cjs_1.hasStaticFrontendEvidence)(projectDir) : false;
-    // (c) phase directory and *-UI-SPEC.md
-    const uiSpecPath = (0, gate_phase_context_cjs_1.findUiSpecInDir)((0, gate_phase_context_cjs_1.resolvePhaseDirOrEmpty)(projectDir, phase));
+    // (b') #3312 — static structural corroboration. Only probed when the sniffer matched. `unreadable`
+    // (#5170) is a manifest or tree the probe could not look at: absence of evidence is then not
+    // established, and the verdict says so (below) instead of reading it as "no frontend".
+    const frontendEvidence = frontend ? (0, ui_frontend_evidence_cjs_1.readStaticFrontendEvidence)(projectDir) : (0, gate_evidence_cjs_1.evidenceNone)();
+    const hasFrontendEvidence = frontendEvidence.kind === 'found';
+    // (c) phase directory and *-UI-SPEC.md. `none` is "no spec"; `unreadable` is "could not look"
+    // (#5170) and is carried to the verdict, never read as "no spec".
+    const uiSpec = (0, gate_phase_context_cjs_1.locateUiSpec)(projectDir, phase);
+    const uiSpecPath = uiSpec.kind === 'found' ? uiSpec.value : '';
     const hasUiSpec = uiSpecPath !== '';
+    // Unreadable frontend evidence only matters when it could flip the verdict: with a UI-SPEC present the
+    // gate does not block whatever the tree holds.
+    const frontendReadError = frontendEvidence.kind === 'unreadable' && !hasUiSpec
+        ? `static frontend evidence could not be read (${frontendEvidence.reason})`
+        : undefined;
+    const readError = roadmapReadError ?? (uiSpec.kind === 'unreadable' ? uiSpec.reason : undefined) ?? frontendReadError;
     // block = frontend phase with structural frontend evidence and no UI-SPEC (#3312)
     const block = frontend && hasFrontendEvidence && !hasUiSpec;
     const result = {
@@ -56,6 +68,8 @@ function computeUiPlanGate(projectDir, phase) {
     };
     if (phaseLookupFailed)
         result.phaseLookupFailed = true;
+    if (readError !== undefined)
+        result.readError = readError;
     return result;
 }
 function evaluateUiPlanGate(input) {
@@ -64,5 +78,9 @@ function evaluateUiPlanGate(input) {
         return (0, gate_verdict_cjs_1.gateUsageFailure)(gate_verdict_cjs_1.GATE_FAILURE_CODE.SDK_MISSING_ARG, 'ui-plan-gate requires a phase argument: check ui-plan-gate <phase>');
     }
     const result = computeUiPlanGate(input.projectDir, phase);
+    // Evidence the gate could not read is "could not look", never a pass (ADR-5057 §4). `block` is
+    // the gate's own policy and is unchanged; the exit status follows the outcome.
+    if (result.readError !== undefined)
+        return (0, gate_verdict_cjs_1.gateUnreadable)(result.block, { ...result });
     return (0, gate_verdict_cjs_1.gateVerdict)(result.block ? 'block' : 'pass', result.block, { ...result });
 }

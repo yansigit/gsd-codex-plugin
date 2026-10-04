@@ -483,7 +483,10 @@ function agentFileExists(agentsDir, name, runtime) {
     // kimi requires BOTH the persona yaml and the prompt md (same as checkAgentsInstalled).
     const kimiYaml = node_path_1.default.join(agentsDir, 'subagents', `${name}.yaml`);
     const kimiPrompt = node_path_1.default.join(agentsDir, 'subagents', `${name}.md`);
-    return runtime === 'kimi' && node_fs_1.default.existsSync(kimiYaml) && node_fs_1.default.existsSync(kimiPrompt);
+    // #5169: descriptor-declared (`hostBehaviors.requiresSubagentPair`); a label
+    // that is not a registered runtime declares nothing, so it never requires the pair.
+    return (0, runtime_name_policy_cjs_1.hostBehaviorsFor)(runtime).requiresSubagentPair === true
+        && node_fs_1.default.existsSync(kimiYaml) && node_fs_1.default.existsSync(kimiPrompt);
 }
 /**
  * Resolve a per-plan `agent_hint` specialist name to a dispatchable subagent

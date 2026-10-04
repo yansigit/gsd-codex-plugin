@@ -65,6 +65,7 @@ const node_fs_1 = __importDefault(require("node:fs"));
 const node_child_process_1 = __importDefault(require("node:child_process"));
 const pattern_cjs_1 = require("./pattern.cjs");
 const frontmatter_fence_cjs_1 = require("./frontmatter-fence.cjs");
+const runtime_name_policy_cjs_1 = require("./runtime-name-policy.cjs");
 /**
  * Convert a filesystem path to POSIX form (forward slashes) by translating the
  * platform-native separator. Single seam for native→POSIX conversion.
@@ -147,7 +148,10 @@ function formatHookCommandForRuntime(command, opts = {}) {
 // path missed this guard and reintroduced the #166/#377 failure (#580).
 function shellHookOmitsBashRunner({ platform, runtime = 'generic', isShellHook = false } = {}) {
     const p = platform ?? process.platform;
-    return p === 'win32' && runtime === 'claude' && isShellHook;
+    // #5169: descriptor-declared (`hostBehaviors.omitBashRunnerOnWindows`). The
+    // `'generic'` default and any other non-registered label declares nothing, so
+    // it never omits the runner, exactly as before.
+    return p === 'win32' && isShellHook && (0, runtime_name_policy_cjs_1.hostBehaviorsFor)(runtime).omitBashRunnerOnWindows === true;
 }
 // Builds the command string for a local-install managed `.sh` hook. Mirrors the
 // global buildHookCommand path but uses the $CLAUDE_PROJECT_DIR-anchored prefix

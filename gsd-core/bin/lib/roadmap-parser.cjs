@@ -945,6 +945,26 @@ const PHASE_HEADING_BLOCK_STRIP_RE = new RegExp(
 // #1729: `(?:\s*\([^)\n]{0,200}\))?` (OPTIONAL_PHASE_TAG_SOURCE) tolerates a pre-colon ( ) tag.
 `^#{2,4}\\s*${phaseHeadingPrefixSrcFor(PHASE_HEADING_BASELINE.LABEL_ONLY)}${PHASE_NUMBER_TOKEN_SOURCE}${OPTIONAL_PHASE_TAG_SOURCE}\\s*:[^\\n]*(?:\\n(?!#{1,6}\\s)[^\\n]*)*\\n?`, 'gim');
 /**
+ * #5038: single owner for classifying a `milestone:` scalar as STATE.md spells
+ * it. The frontmatter parser (FAILSAFE_SCHEMA) and the raw-regex readers both
+ * see YAML null as text, so every reader classifies it here. Recognizes the
+ * YAML 1.2 core-schema null spellings (`null`, `Null`, `NULL`, `~`) with an
+ * optional trailing ` # comment` and optional surrounding quotes (the
+ * frontmatter parser has already stripped them, so the raw readers must agree);
+ * a blank value is absent, not null.
+ */
+function classifyMilestoneScalar(raw) {
+    if (typeof raw !== 'string')
+        return { explicitNull: false, version: null };
+    const trimmed = raw.trim();
+    if (trimmed === '')
+        return { explicitNull: false, version: null };
+    const bare = trimmed.replace(/\s+#.*$/, '').trim().replace(/^(['"])(.*)\1$/, '$2');
+    if (/^(?:null|Null|NULL|~)$/.test(bare))
+        return { explicitNull: true, version: null };
+    return { explicitNull: false, version: trimmed };
+}
+/**
  * Extract the current milestone section from ROADMAP.md by positive lookup,
  * carrying a `scope` discriminator (ADR-3180 Decision 2) alongside the value.
  *
@@ -978,18 +998,23 @@ function extractCurrentMilestoneScoped(content, cwd, ws, phaseIdConvention) {
         return { value: stripShippedMilestones(content), scope: SCOPE.COMPLETE };
     }
     let version = null;
+    let stateAssertsNoMilestone = false;
     try {
         const statePath = node_path_1.default.join(planningDir(cwd, ws), 'STATE.md');
         const stateRaw = (0, shell_command_projection_cjs_1.platformReadSync)(statePath);
         if (stateRaw !== null) {
             const milestoneMatch = stateRaw.match(/^milestone:\s*(.+)/m);
             if (milestoneMatch) {
-                version = milestoneMatch[1].trim();
+                const classified = classifyMilestoneScalar(milestoneMatch[1]);
+                version = classified.version;
+                stateAssertsNoMilestone = classified.explicitNull;
             }
         }
     }
     catch { /* ignore */ }
-    if (!version) {
+    // #5038: an explicit `milestone: null` is a deliberate "no milestone" — do
+    // not let the in-progress bullet guess one (same stance as getMilestoneInfo).
+    if (!version && !stateAssertsNoMilestone) {
         const inProgressMatch = content.match(/(?:🚧|🔄)\s*\*\*v(\d+\.\d+)\s/);
         if (inProgressMatch) {
             version = 'v' + inProgressMatch[1];
@@ -1731,14 +1756,22 @@ function getMilestoneInfo(cwd) {
         if (roadmap === null)
             throw new Error('missing');
         let stateVersion = null;
+        // #5038: true only when the `milestone:` key is PRESENT and classifies as
+        // an explicit null (any spelling classifyMilestoneScalar accepts), as
+        // opposed to ABSENT. Gates the ROADMAP auto-derivation fallback, which
+        // only bootstraps a milestone for a project that never mentioned one.
+        let explicitlyNoMilestone = false;
         if (cwd) {
             try {
                 const statePath = node_path_1.default.join(planningDir(cwd), 'STATE.md');
                 const stateRaw = (0, shell_command_projection_cjs_1.platformReadSync)(statePath);
                 if (stateRaw !== null) {
                     const m = stateRaw.match(/^milestone:\s*(.+)/m);
-                    if (m)
-                        stateVersion = m[1].trim();
+                    if (m) {
+                        const classified = classifyMilestoneScalar(m[1]);
+                        explicitlyNoMilestone = classified.explicitNull;
+                        stateVersion = classified.version;
+                    }
                 }
             }
             catch {
@@ -1794,6 +1827,11 @@ function getMilestoneInfo(cwd) {
             // no 🚧 bullet, no usable heading (absent, phase-only-excluded, shipped,
             // or heading-but-nameless). §7.2 rule 4 — never fabricate a name.
             return scoped({ version: stateVersion, name: null }, SCOPE.TRUNCATED);
+        }
+        // #5038: an explicit null is a deliberate "no milestone"; do not let the
+        // auto-derivation fallback below replace it with a guessed version.
+        if (explicitlyNoMilestone) {
+            return scoped(null, SCOPE.UNSCOPED);
         }
         // No STATE.md version. The 🚧 in-progress bullet is still consulted first
         // (unchanged from the pre-#3216 fallback).
@@ -2128,17 +2166,21 @@ function currentMilestoneRawRanges(content, cwd) {
     if (!cwd)
         return null;
     let version = null;
+    let stateAssertsNoMilestone = false;
     try {
         const statePath = node_path_1.default.join(planningDir(cwd), 'STATE.md');
         const stateRaw = (0, shell_command_projection_cjs_1.platformReadSync)(statePath);
         if (stateRaw !== null) {
             const milestoneMatch = stateRaw.match(/^milestone:\s*(.+)/m);
-            if (milestoneMatch)
-                version = milestoneMatch[1].trim();
+            if (milestoneMatch) {
+                const classified = classifyMilestoneScalar(milestoneMatch[1]);
+                version = classified.version;
+                stateAssertsNoMilestone = classified.explicitNull;
+            }
         }
     }
     catch { /* ignore */ }
-    if (!version) {
+    if (!version && !stateAssertsNoMilestone) {
         const inProgressMatch = content.match(/(?:🚧|🔄)\s*\*\*v(\d+\.\d+)\s/);
         if (inProgressMatch)
             version = 'v' + inProgressMatch[1];
@@ -2241,6 +2283,7 @@ module.exports = {
     replaceInCurrentMilestone,
     getRoadmapPhaseInternal,
     getMilestoneInfo,
+    classifyMilestoneScalar,
     getMilestonePhaseFilter,
     currentMilestoneRawRanges,
     withPhaseSection,

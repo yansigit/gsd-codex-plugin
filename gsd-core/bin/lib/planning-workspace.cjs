@@ -318,8 +318,8 @@ function listAvailableWorkstreams(cwd) {
 function quickDirFrom(planningBase) {
     return node_path_1.default.join(planningBase, 'quick');
 }
-// #4256: the todos directory — deliberately ROOT-SCOPED, unlike every other
-// planningPaths key. Todos are shared project state by construction: the
+// #4256: the todos directory — deliberately ROOT-SCOPED, like debug (#5042).
+// Todos are shared project state by construction: the
 // migrateToWorkstreams contract keeps them among the shared files that "stay
 // in place" at .planning/todos/ (workstream.cts), and every workflow writer
 // writes that literal cwd-relative root path. The six todos readers
@@ -343,6 +343,14 @@ function todosDirFrom(planningBase) {
 function todosDir(cwd) {
     return todosDirFrom(planningRoot(cwd));
 }
+// Debug sessions are shared project state: the workflow and debugger agent
+// write them under the root .planning/debug directory in every workstream.
+function debugDirFrom(planningBase) {
+    return node_path_1.default.join(planningBase, 'debug');
+}
+function debugDir(cwd) {
+    return debugDirFrom(planningRoot(cwd));
+}
 function planningPaths(cwd, ws) {
     const base = planningDir(cwd, ws);
     return {
@@ -353,14 +361,13 @@ function planningPaths(cwd, ws) {
         config: node_path_1.default.join(base, 'config.json'),
         phases: node_path_1.default.join(base, 'phases'),
         requirements: node_path_1.default.join(base, 'REQUIREMENTS.md'),
-        // #3149: the debug-session directory. Single source for both `state.load`'s
-        // `debug_dir` field and `init.debug`'s — previously each composed its own
-        // `path.join(planning, 'debug')` (DEFECT.GENERATIVE-FIX).
-        debug: node_path_1.default.join(base, 'debug'),
+        // #3149/#5042: the debug-session directory shared by state.load,
+        // init.debug, and the root-scoped writers.
+        debug: debugDir(cwd),
         // #2142: quick-task directory, composed via the shared quickDirFrom helper.
         quick: quickDirFrom(base),
-        // #4256: todos directory — deliberately ROOT-scoped while the rest of
-        // this record follows the active workstream/project (todos are shared
+        // #4256: todos directory — deliberately ROOT-scoped like debug, while
+        // most other keys follow the active workstream/project (todos are shared
         // project state per the migrateToWorkstreams contract), composed via the
         // shared todosDir helper so this key and every direct caller agree.
         todos: todosDir(cwd),
@@ -637,6 +644,8 @@ module.exports = {
     listAvailableWorkstreams,
     planningPaths,
     quickDirFrom,
+    debugDirFrom,
+    debugDir,
     todosDirFrom,
     todosDir,
     withPlanningLock,

@@ -27,13 +27,11 @@ exports.evaluateTddReviewCheckpoint = evaluateTddReviewCheckpoint;
 const node_path_1 = __importDefault(require("node:path"));
 const gate_verdict_cjs_1 = require("./gate-verdict.cjs");
 const gate_phase_context_cjs_1 = require("./gate-phase-context.cjs");
+const gate_evidence_cjs_1 = require("./gate-evidence.cjs");
 const gate_evaluation_scope_cjs_1 = require("./gate-evaluation-scope.cjs");
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const frontmatterMod = require("./frontmatter.cjs");
 const { frontmatterKeyHasValue } = frontmatterMod;
-// eslint-disable-next-line @typescript-eslint/no-require-imports
-const planScanMod = require("./plan-scan.cjs");
-const { scanPhasePlans } = planScanMod;
 /**
  * True when the plan's frontmatter declares `type: tdd` (CRLF included, #2449). The block is the
  * one fence owner's, read as RAW text — not through the YAML parser — so a block the parser refuses
@@ -59,27 +57,67 @@ function planCommitKinds(projectDir, planId) {
     }
     return kinds;
 }
+/**
+ * The verdict when the review could not read a plan or the phase directory. Advisory policy is
+ * unchanged (`block: false`); the outcome is `unreadable` (exit UNAVAILABLE) and `passed` is false
+ * because nothing was certified.
+ */
+function unreadableReview(phase, tddPlans, unreadable) {
+    const names = unreadable.map((u) => `${u.source} (${u.reason})`).join(', ');
+    return (0, gate_verdict_cjs_1.gateUnreadable)(false, {
+        block: false,
+        passed: false,
+        tddPlans,
+        violations: 0,
+        table: '',
+        rows: [],
+        unreadable,
+        message: `TDD review could not read: ${names}. Phase ${phase} was not reviewed.`,
+    });
+}
 function evaluateTddReviewCheckpoint(input) {
     const { projectDir } = input;
     const phase = input.args[0] || '';
     if (!phase) {
         return (0, gate_verdict_cjs_1.gateUsageFailure)(gate_verdict_cjs_1.GATE_FAILURE_CODE.SDK_MISSING_ARG, 'tdd.review-checkpoint requires a phase argument: check tdd.review-checkpoint <phase>');
     }
-    const phaseDir = (0, gate_phase_context_cjs_1.resolvePhaseDirOrEmpty)(projectDir, phase);
+    // #5170 (ADR-5057 §4): an ABSENT phase directory is `none` (no plans, the skip below); anything
+    // that exists but cannot be read is `unreadable` and the verdict says so — an unreadable plan is
+    // never "not a TDD plan".
+    const located = (0, gate_phase_context_cjs_1.resolvePhaseDir)(projectDir, phase);
+    if (located.kind === 'unreadable') {
+        return unreadableReview(phase, 0, [{ source: `phase ${phase}`, reason: located.reason }]);
+    }
+    const phaseDir = located.kind === 'found' ? located.value : '';
     // Find all PLAN.md files with type: tdd in frontmatter
     const tddPlanFiles = [];
+    const unreadable = [];
     if (phaseDir) {
-        try {
-            // #3183: canonical plan set (root+nested, superseded-excluded) from the single owner.
-            const files = scanPhasePlans(phaseDir).planFiles;
-            for (const file of files) {
-                const planPath = node_path_1.default.join(phaseDir, file);
-                if (isTddPlan((0, gate_phase_context_cjs_1.readIfExists)(planPath)))
-                    tddPlanFiles.push(planPath);
+        const entries = (0, gate_evidence_cjs_1.readDirEvidence)(phaseDir);
+        if (entries.kind === 'unreadable') {
+            unreadable.push({ source: phaseDir, reason: entries.reason });
+        }
+        else if (entries.kind === 'found') {
+            // #3183: canonical plan set (root+nested, superseded-excluded) from the single owner. A scan
+            // that did not see every plan (an unreadable nested plans/) is `unreadable`, never a short list.
+            const planSet = (0, gate_evidence_cjs_1.readPlanSetEvidence)(phaseDir);
+            if (planSet.kind === 'unreadable') {
+                unreadable.push({ source: planSet.span ?? phaseDir, reason: planSet.reason });
+            }
+            else {
+                for (const file of planSet.value) {
+                    const planPath = node_path_1.default.join(phaseDir, file);
+                    const plan = (0, gate_evidence_cjs_1.readTextEvidence)(planPath);
+                    if (plan.kind === 'unreadable')
+                        unreadable.push({ source: planPath, reason: plan.reason });
+                    else if (plan.kind === 'found' && isTddPlan(plan.value))
+                        tddPlanFiles.push(planPath);
+                }
             }
         }
-        catch { /* directory read failure */ }
     }
+    if (unreadable.length > 0)
+        return unreadableReview(phase, tddPlanFiles.length, unreadable);
     if (tddPlanFiles.length === 0) {
         return (0, gate_verdict_cjs_1.gateVerdict)('skip', false, {
             // Uniform gate contract: block = violations > 0 (advisory; never truly blocks).

@@ -22,6 +22,7 @@ const { output, ERROR_REASON } = io;
 // need a dead `throw` after it to convince the checker that the value is non-null.
 const error = io.error;
 const gate_verdict_cjs_1 = require("./gate-verdict.cjs");
+const gate_exit_cjs_1 = require("./gate-exit.cjs");
 const gate_args_cjs_1 = require("./gate-args.cjs");
 const gate_decision_coverage_plan_cjs_1 = require("./gate-decision-coverage-plan.cjs");
 const gate_decision_coverage_verify_cjs_1 = require("./gate-decision-coverage-verify.cjs");
@@ -55,6 +56,9 @@ function emitGateResult(result, raw) {
         failGate(result);
     }
     output(result.payload, raw, undefined);
+    // After output(): it rewrites the pending-outcome cell on every call. Payload mode — a delivered
+    // blocking verdict is still exit 0 (the dispatch contract); an unreadable one is UNAVAILABLE (#5170).
+    (0, gate_exit_cjs_1.declareGateExit)(result, 'payload');
 }
 // ─── Thin wrappers: argv[0]='check', argv[1]=verb — a gate takes the argv AFTER the verb ──────────
 function cmdAutoMode(projectDir, raw) {

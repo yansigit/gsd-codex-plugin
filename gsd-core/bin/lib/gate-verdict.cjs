@@ -18,6 +18,7 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.GATE_FAILURE_CODE = void 0;
 exports.gateVerdict = gateVerdict;
+exports.gateUnreadable = gateUnreadable;
 exports.gateUsageFailure = gateUsageFailure;
 exports.isGateUsageFailure = isGateUsageFailure;
 /**
@@ -36,6 +37,13 @@ exports.GATE_FAILURE_CODE = Object.freeze({
  */
 function gateVerdict(outcome, block, payload) {
     return { outcome, block, payload: Object.freeze({ ...payload }) };
+}
+/**
+ * Build the verdict for evidence that could not be read. `block` is the gate's own policy for that
+ * arm (unchanged by this outcome); the exit status is derived from the outcome, never from `block`.
+ */
+function gateUnreadable(block, payload) {
+    return gateVerdict('unreadable', block, payload);
 }
 /** Build a usage failure: exactly `{ failure: { code, message } }`. */
 function gateUsageFailure(code, message) {

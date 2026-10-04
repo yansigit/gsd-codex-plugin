@@ -277,7 +277,8 @@ function validateShipPrBodySections(value) {
  *
  * Merges (increasing priority):
  *   1. Hardcoded defaults — every key that loadConfig() resolves, plus mode/granularity
- *   2. User-level defaults from ~/.gsd/defaults.json (if present)
+ *   2. User-level defaults from $GSD_HOME/.gsd/defaults.json (if present;
+ *      GSD_HOME defaults to the home directory, as in the config loader)
  *   3. userChoices — the settings the user explicitly selected during /gsd:new-project
  *
  * Uses the canonical `git` namespace for branching keys (consistent with VALID_CONFIG_KEYS
@@ -288,24 +289,27 @@ function validateShipPrBodySections(value) {
  */
 function buildNewProjectConfig(userChoices) {
     const choices = userChoices || {};
-    const homedir = node_os_1.default.homedir();
+    // #4976: the GSD-owned store resolves exactly as the config loader resolves
+    // it (`GSD_HOME || homedir()`), so the defaults.json seeding this project is
+    // the one the loader and its #3532 shadow warning read in the same run.
+    const gsdHome = process.env['GSD_HOME'] || node_os_1.default.homedir();
     // Detect API key availability
-    const braveKeyFile = node_path_1.default.join(homedir, '.gsd', 'brave_api_key');
+    const braveKeyFile = node_path_1.default.join(gsdHome, '.gsd', 'brave_api_key');
     const hasBraveSearch = !!(process.env['BRAVE_API_KEY'] || node_fs_1.default.existsSync(braveKeyFile));
-    const firecrawlKeyFile = node_path_1.default.join(homedir, '.gsd', 'firecrawl_api_key');
+    const firecrawlKeyFile = node_path_1.default.join(gsdHome, '.gsd', 'firecrawl_api_key');
     const hasFirecrawl = !!(process.env['FIRECRAWL_API_KEY'] || node_fs_1.default.existsSync(firecrawlKeyFile));
-    const exaKeyFile = node_path_1.default.join(homedir, '.gsd', 'exa_api_key');
+    const exaKeyFile = node_path_1.default.join(gsdHome, '.gsd', 'exa_api_key');
     const hasExaSearch = !!(process.env['EXA_API_KEY'] || node_fs_1.default.existsSync(exaKeyFile));
-    const tavilyKeyFile = node_path_1.default.join(homedir, '.gsd', 'tavily_api_key');
+    const tavilyKeyFile = node_path_1.default.join(gsdHome, '.gsd', 'tavily_api_key');
     const hasTavilySearch = !!(process.env['TAVILY_API_KEY'] || node_fs_1.default.existsSync(tavilyKeyFile));
-    const refKeyFile = node_path_1.default.join(homedir, '.gsd', 'ref_api_key');
+    const refKeyFile = node_path_1.default.join(gsdHome, '.gsd', 'ref_api_key');
     const hasRefSearch = !!(process.env['REF_API_KEY'] || node_fs_1.default.existsSync(refKeyFile));
-    const perplexityKeyFile = node_path_1.default.join(homedir, '.gsd', 'perplexity_api_key');
+    const perplexityKeyFile = node_path_1.default.join(gsdHome, '.gsd', 'perplexity_api_key');
     const hasPerplexity = !!(process.env['PERPLEXITY_API_KEY'] || node_fs_1.default.existsSync(perplexityKeyFile));
-    const jinaKeyFile = node_path_1.default.join(homedir, '.gsd', 'jina_api_key');
+    const jinaKeyFile = node_path_1.default.join(gsdHome, '.gsd', 'jina_api_key');
     const hasJina = !!(process.env['JINA_API_KEY'] || node_fs_1.default.existsSync(jinaKeyFile));
-    // Load user-level defaults from ~/.gsd/defaults.json if available
-    const globalDefaultsPath = node_path_1.default.join(homedir, '.gsd', 'defaults.json');
+    // Load user-level defaults from $GSD_HOME/.gsd/defaults.json if available
+    const globalDefaultsPath = node_path_1.default.join(gsdHome, '.gsd', 'defaults.json');
     let userDefaults = {};
     try {
         if (node_fs_1.default.existsSync(globalDefaultsPath)) {
@@ -447,7 +451,7 @@ function buildNewProjectConfig(userChoices) {
  *
  * Accepts user-chosen settings as a JSON string (the keys the user explicitly
  * configured during /gsd:new-project). All remaining keys are filled from
- * hardcoded defaults and optional ~/.gsd/defaults.json.
+ * hardcoded defaults and optional $GSD_HOME/.gsd/defaults.json.
  *
  * Idempotent: if config.json already exists, returns { created: false }.
  */

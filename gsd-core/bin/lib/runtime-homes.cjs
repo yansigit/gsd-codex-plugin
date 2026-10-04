@@ -118,7 +118,7 @@ function getRegistry() {
  * way `grok`'s is confirmed above. Do not "clean this up" by removing it;
  * that is exactly the regression this constant guards against.
  */
-exports.LEGACY_NON_REGISTRY_RUNTIME_IDS = new Set(['grok']);
+exports.LEGACY_NON_REGISTRY_RUNTIME_IDS = runtime_name_policy_cjs_1.LEGACY_NON_REGISTRY_RUNTIME_IDS;
 /**
  * True when `runtime` is a real runtime id with a genuine, runtime-specific
  * resolution path — either a registered id in the capability registry
@@ -146,9 +146,7 @@ function isRegisteredRuntimeId(runtime) {
     const trimmed = runtime.trim();
     if (!trimmed)
         return false;
-    if (Object.prototype.hasOwnProperty.call(getRegistry().runtimes, trimmed))
-        return true;
-    return exports.LEGACY_NON_REGISTRY_RUNTIME_IDS.has(trimmed);
+    return (0, runtime_name_policy_cjs_1.isKnownRuntimeId)(trimmed);
 }
 /**
  * Resolve a configHome descriptor to an absolute directory path.
@@ -456,15 +454,19 @@ function resolveKimiHooksTomlDir(opts = {}) {
  *   the behaviour of bin/install.js getGlobalDir(runtime, explicitDir).
  */
 function getGlobalConfigDir(runtime, explicitDir) {
-    // A retired runtime id must never resolve — checked before `explicitDir` so
-    // an explicit directory cannot mask the fact that the runtime itself is gone.
-    (0, runtime_name_policy_cjs_1.assertNotRetiredRuntime)(runtime);
+    // A retired or unknown runtime id must never resolve — checked before
+    // `explicitDir` so an explicit directory cannot mask the fact that the runtime
+    // itself is gone (retired) or was never registered (#5169). An absent id
+    // (`''`) is the generic "no runtime" path and still reaches the default.
+    (0, runtime_name_policy_cjs_1.assertKnownRuntime)(runtime);
     if (explicitDir)
         return expandTilde(explicitDir);
-    // ── Grok: not in the registry — hardcoded branch ─────────────────────────
-    if (runtime === 'grok') {
+    // ── Legacy non-registry runtimes (grok): table-driven, not registry-backed ─
+    if (Object.prototype.hasOwnProperty.call(runtime_name_policy_cjs_1.LEGACY_NON_REGISTRY_RUNTIME_HOMES, runtime)) {
+        const legacy = runtime_name_policy_cjs_1.LEGACY_NON_REGISTRY_RUNTIME_HOMES[runtime];
         const env = process.env;
-        return env['GROK_AGENTS_HOME'] ? expandTilde(env['GROK_AGENTS_HOME']) : node_path_1.default.join(node_os_1.default.homedir(), '.agents');
+        const override = env[legacy.env];
+        return override ? expandTilde(override) : node_path_1.default.join(node_os_1.default.homedir(), ...legacy.dir);
     }
     // ── Descriptor-driven: look up in capability-registry ────────────────────
     const { runtimes } = getRegistry();
@@ -487,6 +489,7 @@ function resolveSkillsBaseFromDescriptor(configHome, opts = {}, skillsDestSubpat
     return node_path_1.default.join(base, skillsDestSubpath);
 }
 function getGlobalSkillsBase(runtime) {
+    (0, runtime_name_policy_cjs_1.assertKnownRuntime)(runtime);
     const runtimeEntry = getRegistry().runtimes[runtime];
     const descriptor = runtimeEntry?.runtime;
     // #2103: a runtime with `configHome.kind === 'none'` (e.g. vscode —

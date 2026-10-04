@@ -44,6 +44,8 @@ const { toPosixPath, generateSlugInternal, readSubdirectories, extractCanonicalP
 const phaseIdMod = require("./phase-id.cjs");
 const { normalizePhaseName, phaseMarkdownRegexSource, comparePhaseNum, matchPhaseDirs, isSentinelPhaseId, scopeToPhase, OPTIONAL_PROJECT_CODE_PREFIX_SOURCE, OPTIONAL_PHASE_TAG_SOURCE, PHASE_NUMBER_TOKEN_SOURCE, phaseHeadingPrefixSrcFor, PHASE_HEADING_BASELINE, buildPhaseHeadingScanRegex, } = phaseIdMod;
 const pattern_cjs_1 = require("./pattern.cjs");
+const gate_exit_cjs_1 = require("./gate-exit.cjs");
+const gate_verdict_cjs_1 = require("./gate-verdict.cjs");
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- phase-locator.cjs is an export= CommonJS module
 const phaseLocatorMod = require("./phase-locator.cjs");
 const { findPhaseInternal, getArchivedPhaseDirs, listMilestonePhaseDirs, listAllPhaseDirs } = phaseLocatorMod;
@@ -4400,6 +4402,9 @@ function cmdPhaseUatPassed(cwd, phaseNum, raw, opts = {}) {
     const phaseFullDir = node_path_1.default.join(cwd, phaseInfo['directory']);
     const report = evaluateUatPassed(phaseFullDir, { policy: opts.policy });
     output({ phase: phaseNum, ...report }, raw);
+    // #5170: the exit status follows the verdict (status mode: a failing verdict is exit 1). Declared
+    // AFTER output(), which rewrites the pending-outcome cell. The JSON above is unchanged.
+    (0, gate_exit_cjs_1.declareGateExit)((0, gate_verdict_cjs_1.gateVerdict)(report.passed ? 'pass' : 'block', !report.passed, { phase: phaseNum, ...report }), 'status');
 }
 // #1437 — phase.list-plans: list plan files for a given phase number.
 // Returns the full scan result from scanPhasePlans so callers can read plan
