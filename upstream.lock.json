@@ -1,6 +1,6 @@
 {
   "repo": "https://github.com/open-gsd/gsd-core.git",
   "ref": "next",
-  "commit": "943dc11ac3227e6a8fc51ec90f6e688ce703efe9",
-  "version": "1.15.0"
+  "commit": "13d37238ba08377929e4850fd6ae4b8db49a22ca",
+  "version": "1.16.0"
 }

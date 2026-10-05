@@ -38,10 +38,10 @@ const gate_predicate_cjs_1 = require("./gate-predicate.cjs");
 const gate_api_coverage_verify_pre_cjs_1 = require("./gate-api-coverage-verify-pre.cjs");
 const decision_coverage_support_cjs_1 = require("./decision-coverage-support.cjs");
 const check_auto_mode_cjs_1 = require("./check-auto-mode.cjs");
-// eslint-disable-next-line @typescript-eslint/no-require-imports
-const verifyModule = require("./verify.cjs");
-const { cmdVerifySchemaDrift, cmdVerifyCodebaseDrift, cmdVerifyContextDrift } = verifyModule;
-const prohibition_enforcement_cjs_1 = require("./prohibition-enforcement.cjs");
+const gate_schema_drift_cjs_1 = require("./gate-schema-drift.cjs");
+const gate_codebase_drift_cjs_1 = require("./gate-codebase-drift.cjs");
+const gate_context_drift_cjs_1 = require("./gate-context-drift.cjs");
+const gate_prohibition_enforcement_cjs_1 = require("./gate-prohibition-enforcement.cjs");
 /** A gate's usage failure as `error()`: the gate's own message, and its code when it is a known reason. */
 function failGate(failed) {
     const reason = Object.values(ERROR_REASON).find((value) => value === failed.failure.code);
@@ -100,7 +100,20 @@ function cmdCheckPredicate(projectDir, args, raw) {
 function cmdApiCoverageVerifyPre(projectDir, args, raw) {
     emitGateResult((0, gate_api_coverage_verify_pre_cjs_1.evaluateApiCoverageVerifyPre)({ projectDir, args: args.slice(2) }), raw);
 }
-function routeCheckCommand({ args, cwd, raw }) {
+/** `GSD_SKIP_SCHEMA_CHECK` is the schema-drift bypass: it arrives as `env`, read here, never by the gate. */
+function cmdSchemaDriftGate(projectDir, args, raw, env) {
+    emitGateResult((0, gate_schema_drift_cjs_1.evaluateSchemaDriftGate)({ projectDir, args: args.slice(2), env }), raw);
+}
+function cmdCodebaseDriftGate(projectDir, args, raw) {
+    emitGateResult((0, gate_codebase_drift_cjs_1.evaluateCodebaseDriftGate)({ projectDir, args: args.slice(2) }), raw);
+}
+function cmdContextDriftGate(projectDir, args, raw) {
+    emitGateResult((0, gate_context_drift_cjs_1.evaluateContextDriftGate)({ projectDir, args: args.slice(2) }), raw);
+}
+function cmdProhibitionEnforcement(projectDir, args, raw) {
+    emitGateResult((0, gate_prohibition_enforcement_cjs_1.evaluateProhibitionEnforcementGate)({ projectDir, args: args.slice(2) }), raw);
+}
+function routeCheckCommand({ args, cwd, raw, env = process.env }) {
     // Normalize dots to hyphens in the subcommand so both forms are accepted.
     // This makes `check.query = "ui.plan-gate"` (dotted form in capability.json gates)
     // directly runnable as `gsd_run check ui.plan-gate` — the dot is normalized to
@@ -156,27 +169,22 @@ function routeCheckCommand({ args, cwd, raw }) {
         case 'ui-safety-gate':
             cmdUiSafetyGate(cwd, args, raw);
             return;
-        case 'verify-schema-drift': {
-            // Delegates to verify.schema-drift — drift capability gate at execute:wave:post (blocking).
+        case 'verify-schema-drift':
+            // The drift capability's gate at execute:wave:post (blocking; src/gate-schema-drift.cts).
             // Dot-to-hyphen normalization means query "verify.schema-drift" routes here.
-            // Honor GSD_SKIP_SCHEMA_CHECK=true to bypass the gate (preserves the original inline gate behavior).
-            const phaseArg = typeof args[2] === 'string' ? args[2] : '';
-            const skipSchemaCheck = process.env['GSD_SKIP_SCHEMA_CHECK'] === 'true';
-            cmdVerifySchemaDrift(cwd, phaseArg, skipSchemaCheck, raw);
+            // GSD_SKIP_SCHEMA_CHECK=true bypasses the gate: read from `env` here, passed to the gate.
+            cmdSchemaDriftGate(cwd, args, raw, env);
             return;
-        }
         case 'verify-codebase-drift':
-            // Delegates to verify.codebase-drift — drift capability gate at execute:wave:post (non-blocking).
+            // The drift capability's gate at execute:wave:post (non-blocking; src/gate-codebase-drift.cts).
             // Dot-to-hyphen normalization means query "verify.codebase-drift" routes here.
-            cmdVerifyCodebaseDrift(cwd, raw);
+            cmdCodebaseDriftGate(cwd, args, raw);
             return;
-        case 'verify-context-drift': {
-            // Delegates to verify.context-drift — drift capability gate at plan:pre (non-blocking).
+        case 'verify-context-drift':
+            // The drift capability's gate at plan:pre (non-blocking; src/gate-context-drift.cts).
             // Dot-to-hyphen normalization means query "verify.context-drift" routes here.
-            const phaseArg = typeof args[2] === 'string' ? args[2] : '';
-            cmdVerifyContextDrift(cwd, phaseArg, raw);
+            cmdContextDriftGate(cwd, args, raw);
             return;
-        }
         case 'predicate':
             // Generic gate-predicate evaluator (#2008). The workflow gate-dispatch calls
             // this for any gate whose `check` carries a `predicate` (instead of a `query`),
@@ -190,9 +198,10 @@ function routeCheckCommand({ args, cwd, raw }) {
         case 'prohibition-enforcement':
             // The deterministic test-tier prohibition PRODUCER/gate (#1259, ADR-550 D5d). Locates the
             // wired mechanical check (node-test or lint-rule), confirms fail-first, runs it, builds
-            // enforcementEvidence, and emits the dispositionForProhibition verdict. Invocable as
+            // enforcementEvidence, and emits the dispositionForProhibition verdict
+            // (src/gate-prohibition-enforcement.cts). Invocable as
             // `gsd_run check prohibition-enforcement <request.json>`.
-            (0, prohibition_enforcement_cjs_1.routeProhibitionEnforcement)(args, raw);
+            cmdProhibitionEnforcement(cwd, args, raw);
             return;
         default:
             error('Unknown check subcommand. Available: api-coverage-verify-pre, auto-mode, decision-coverage-plan, decision-coverage-verify, evaluation-scope, gap-analysis-plan-post, predicate, prohibition-enforcement, tdd-red-evidence, tdd-review-checkpoint, ui-plan-gate, ui-safety-gate, verify-command-paths, verify-failure-directions, verify-schema-drift, verify-codebase-drift, verify-context-drift', ERROR_REASON.SDK_UNKNOWN_COMMAND);

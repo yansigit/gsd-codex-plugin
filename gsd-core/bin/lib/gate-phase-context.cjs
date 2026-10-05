@@ -20,9 +20,11 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.resolveContainedPath = resolveContainedPath;
 exports.unresolvableProbeVerdict = unresolvableProbeVerdict;
 exports.resolvePhaseDir = resolvePhaseDir;
+exports.resolvePhaseDirByToken = resolvePhaseDirByToken;
 exports.findUiSpecInDir = findUiSpecInDir;
 exports.locateUiSpec = locateUiSpec;
 exports.lookupRoadmapPhase = lookupRoadmapPhase;
+const node_fs_1 = __importDefault(require("node:fs"));
 const node_path_1 = __importDefault(require("node:path"));
 const security_cjs_1 = require("./security.cjs");
 const gate_verdict_cjs_1 = require("./gate-verdict.cjs");
@@ -33,6 +35,9 @@ const { planningDir } = planningWorkspaceMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const phaseLocatorMod = require("./phase-locator.cjs");
 const { findPhaseInternal } = phaseLocatorMod;
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const phaseIdMod = require("./phase-id.cjs");
+const { normalizePhaseName, matchPhaseDirs } = phaseIdMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const roadmapModule = require("./roadmap.cjs");
 const { getRoadmapPhaseWithFallback } = roadmapModule;
@@ -89,6 +94,32 @@ function resolvePhaseDir(projectDir, phase) {
         return (0, gate_evidence_cjs_1.evidenceFound)(result);
     }
     return (0, gate_evidence_cjs_1.evidenceNone)();
+}
+/**
+ * Resolve a phase argument to its directory DIRECTLY under a given `phasesDir`, for the two drift
+ * gates (schema-drift, context-drift; #1571, #2528, #5219).
+ *
+ * It is NOT `resolvePhaseDir`: that one asks the phase locator (`findPhaseInternal`), which looks
+ * through the current milestone's phases AND the milestone archives and reads the active workstream.
+ * The drift gates are handed ONE phases directory and must look nowhere else, and they resolve
+ * through the canonical phase-directory matcher (`matchPhaseDirs`, never a naive substring test: a
+ * bare `.includes(phaseArg)` lets a non-existent phase match a different phase whose directory merely
+ * contains the token, e.g. "1" matching "11-expansion"), then fall back to an exact directory name
+ * contained in `phasesDir` (a name escaping it resolves to nothing). Folding it into
+ * `resolvePhaseDir` would widen what those gates inspect, so the two stay apart and each states its
+ * scope. Throws when `phasesDir` cannot be listed; both callers sit inside their non-blocking catch.
+ */
+function resolvePhaseDirByToken(phasesDir, phaseArg) {
+    const normalizedPhase = normalizePhaseName(phaseArg);
+    const dirEntries = node_fs_1.default.readdirSync(phasesDir, { withFileTypes: true });
+    const dirNames = dirEntries.filter((e) => e.isDirectory()).map((e) => e.name);
+    const matched = matchPhaseDirs(dirNames, normalizedPhase).matches[0];
+    if (matched)
+        return node_path_1.default.join(phasesDir, matched);
+    const contained = (0, security_cjs_1.tryWithinRoot)(phaseArg, phasesDir);
+    if (contained !== null && (0, gate_evidence_cjs_1.statEvidence)(contained).kind === 'found')
+        return contained;
+    return null;
 }
 /** The `*-UI-SPEC.md` inside `phaseDir` (absolute path): `none` when the directory or the spec is absent. */
 function findUiSpecInDir(phaseDir) {

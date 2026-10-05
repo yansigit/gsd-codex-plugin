@@ -22,6 +22,7 @@ exports.collectSections = collectSections;
 exports.collectSection = collectSection;
 exports.iterateBullets = iterateBullets;
 exports.updateBullet = updateBullet;
+exports.updateHeading = updateHeading;
 exports.extractTaggedBlocks = extractTaggedBlocks;
 exports.stripTaggedBlocks = stripTaggedBlocks;
 exports.replaceSection = replaceSection;
@@ -724,13 +725,47 @@ function updateBullet(content, match, transform) {
                     bulletText = nm[2];
             }
         }
-        if (bulletText !== null && match(bulletText, rawLine)) {
+        if (bulletText !== null && match(bulletText, rawLine, i)) {
             const newLine = transform(rawLine);
             if (typeof newLine !== 'string')
                 return content;
             return content.slice(0, offset) + newLine + content.slice(offset + rawLine.length);
         }
         offset += rawLine.length + 1;
+    }
+    return content;
+}
+// ─── updateHeading ────────────────────────────────────────────────────────────
+/**
+ * Rewrite the physical line of the FIRST ATX heading (outside fenced code)
+ * accepted by `match` — the heading analogue of `updateBullet` (ADR-5057 §6,
+ * Phase 13, #5217). Heading discovery is `tokenizeHeadings`' (the one fence
+ * state machine for headings); this function adds only the splice.
+ *
+ * `rawLine` (second argument to `match`, the only argument to `transform`) is
+ * the UNMODIFIED physical line between `\n` separators, so on a CRLF document
+ * its trailing `\r` is included and every untouched byte — including every
+ * other line's own terminator — is copied from `content` verbatim. `lineIndex`
+ * is the 0-based physical line index, the same indexing as
+ * `content.split('\n')`, so a caller holding a pre-computed line-indexed plan
+ * can disambiguate two headings with identical text.
+ *
+ * Bounded no-op: no accepted heading, or `transform` returning a non-string,
+ * returns `content` unchanged.
+ */
+function updateHeading(content, match, transform) {
+    if (typeof content !== 'string' || content.length === 0)
+        return content;
+    for (const heading of tokenizeHeadings(content)) {
+        const newlineAt = content.indexOf('\n', heading.offset);
+        const lineEnd = newlineAt === -1 ? content.length : newlineAt;
+        const rawLine = content.slice(heading.offset, lineEnd);
+        if (!match(heading, rawLine, heading.line - 1))
+            continue;
+        const newLine = transform(rawLine);
+        if (typeof newLine !== 'string')
+            return content;
+        return content.slice(0, heading.offset) + newLine + content.slice(lineEnd);
     }
     return content;
 }

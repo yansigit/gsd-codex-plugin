@@ -359,7 +359,7 @@ function buildMessage(elements, affectedPaths, withheldCount, action, runtime) {
     }
     else if (affectedPaths.length > 0) {
         // drift.cts is a pure library — it must never read env/config. The
-        // caller (verify.cmdVerifyCodebaseDrift) resolves the runtime once and
+        // caller (gate-codebase-drift.cts) resolves the runtime once and
         // passes it in via input.runtime so emitted commands match the project
         // the caller is targeting, not the current process directory.
         const mapCmd = (0, runtime_slash_cjs_1.formatGsdSlash)('map-codebase', runtime || 'claude');

@@ -58,17 +58,10 @@ exports.eslintHasFatalError = eslintHasFatalError;
 exports.eslintJsonHasRule = eslintJsonHasRule;
 exports.defaultProveFailFirst = defaultProveFailFirst;
 exports.runProhibitionEnforcement = runProhibitionEnforcement;
-exports.routeProhibitionEnforcement = routeProhibitionEnforcement;
 const node_fs_1 = __importDefault(require("node:fs"));
 const node_path_1 = __importDefault(require("node:path"));
 const node_child_process_1 = require("node:child_process");
-// Import the leaf I/O module directly (core.cjs re-export spine retired in epic #1267).
-// eslint-disable-next-line @typescript-eslint/no-require-imports
-const io = require("./io.cjs");
-const { output, error, ERROR_REASON } = io;
 const probe_core_cjs_1 = require("./probe-core.cjs");
-const gate_verdict_cjs_1 = require("./gate-verdict.cjs");
-const gate_exit_cjs_1 = require("./gate-exit.cjs");
 /**
  * READ-BACK ADAPTER (#1278, plan 01-03): reconstruct a `CheckDescriptor` from the flat scalar keys
  * `projectProhibitions` emits onto a prohibition item (`check_kind` / `check_target` / `check_rule`,
@@ -731,58 +724,4 @@ function runProhibitionEnforcement(prohibition, check, options = {}) {
         evidence,
         ...(mode ? { mode } : {}),
     };
-}
-/**
- * Parse a `{ prohibition, check, mode }` request from a JSON file path or inline `--json` string.
- * Returns null on any parse failure (the caller surfaces a structured error, never a throw).
- */
-function parseRequest(args) {
-    // args[0] = 'check', args[1] = 'prohibition-enforcement', args[2] = <json-file-path | --json>
-    const jsonFlagIdx = args.indexOf('--json');
-    let payload = '';
-    if (jsonFlagIdx !== -1 && typeof args[jsonFlagIdx + 1] === 'string') {
-        payload = args[jsonFlagIdx + 1];
-    }
-    else if (typeof args[2] === 'string' && args[2]) {
-        try {
-            payload = node_fs_1.default.readFileSync(args[2], 'utf-8');
-        }
-        catch {
-            return null;
-        }
-    }
-    else {
-        return null;
-    }
-    try {
-        const parsed = JSON.parse(payload);
-        const checkRaw = parsed['check'];
-        const check = (checkRaw && typeof checkRaw === 'object')
-            ? checkRaw
-            : null;
-        const modeRaw = parsed['mode'];
-        const mode = typeof modeRaw === 'string' ? modeRaw : undefined;
-        return { prohibition: parsed['prohibition'] ?? null, check, ...(mode ? { mode } : {}) };
-    }
-    catch {
-        return null;
-    }
-}
-/**
- * CLI surface: `gsd_run check prohibition-enforcement <request.json>` (or `--json '<inline>'`).
- * Parses the request, runs the producer, and emits the result as JSON. Honors the no-throw
- * contract: malformed input -> structured `error(...)`, never an uncaught throw.
- */
-function routeProhibitionEnforcement(args, raw) {
-    const req = parseRequest(args);
-    if (!req) {
-        error('prohibition-enforcement requires a JSON request: check prohibition-enforcement <request.json> | --json \'{"prohibition":{...},"check":{...}}\'', ERROR_REASON.SDK_MISSING_ARG);
-        return;
-    }
-    const result = runProhibitionEnforcement(req.prohibition, req.check, req.mode ? { mode: req.mode } : {});
-    // A producer, not a blocking gate: its disposition is a delivered answer (an advisory verdict) and
-    // the exit status follows it through the seam like every other `check <verb>` (#5170, payload mode).
-    const verdict = (0, gate_verdict_cjs_1.gateVerdict)('advisory', false, { ...result });
-    output(verdict.payload, raw, undefined);
-    (0, gate_exit_cjs_1.declareGateExit)(verdict, 'payload');
 }

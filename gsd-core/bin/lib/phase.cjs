@@ -3563,8 +3563,12 @@ function cmdPhaseComplete(cwd, phaseNum, raw) {
                             if (!planId)
                                 continue;
                             const planEscaped = (0, pattern_cjs_1.escapeRegex)(planId);
-                            const planCheckboxPattern = new RegExp(`(-\\s*\\[) (\\]\\s*(?:\\*\\*)?${planEscaped}(?:\\*\\*)?)`, 'i');
-                            b = b.replace(planCheckboxPattern, '$1x$2');
+                            // ADR-5057 §6 (Phase 13, #5217): the per-plan flip is a bullet
+                            // mutation, so it goes through `updateBullet` like the phase
+                            // checkbox flip above — first matching bullet only, never a
+                            // fenced line, never a mid-line occurrence.
+                            const planCheckboxPattern = new RegExp(`^(\\s*-\\s*\\[) (\\]\\s*(?:\\*\\*)?${planEscaped}(?:\\*\\*)?)`, 'i');
+                            b = (0, markdown_sectionizer_cjs_1.updateBullet)(b, (_bulletText, rawLine) => planCheckboxPattern.test(rawLine), (rawLine) => rawLine.replace(planCheckboxPattern, '$1x$2'));
                         }
                         return b;
                     });
