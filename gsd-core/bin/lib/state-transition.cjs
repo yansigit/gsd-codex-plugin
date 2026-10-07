@@ -417,7 +417,41 @@ function createStateWriteIntent(transaction, init = {}) {
         err.code = 'STATE_WRITE_INTENT_TRANSACTION_REQUIRED';
         throw err;
     }
-    const assertions = Object.freeze((init.assertions ?? []).map((a) => Object.freeze({ field: a.field, requirement: a.requirement })));
+    // C2 (ADR-4629 §8.2): an unknown `requirement` is a construction error. §8.2
+    // judges only `'required'` assertions, so a mistyped value (`'Required'`)
+    // would otherwise be silently skipped: a fail-open verifier.
+    for (const a of init.assertions ?? []) {
+        if (a.requirement !== 'required' && a.requirement !== 'best-effort') {
+            const err = new Error(`createStateWriteIntent: assertion ${JSON.stringify(a.field)} has unknown requirement ` +
+                `${JSON.stringify(a.requirement)}; expected 'required' or 'best-effort' (ADR-4629 §8.1).`);
+            err.code = 'STATE_WRITE_INTENT_REQUIREMENT_INVALID';
+            throw err;
+        }
+    }
+    if (init.scope !== undefined && init.scope !== 'narrow' && init.scope !== 'broad') {
+        const err = new Error(`createStateWriteIntent: unknown scope ${JSON.stringify(init.scope)}; expected 'narrow' or 'broad' ` +
+            '(ADR-4629 §8.1).');
+        err.code = 'STATE_WRITE_INTENT_SCOPE_INVALID';
+        throw err;
+    }
+    // C2 (ADR-4629 §8.2): an unknown `target` is a construction error, never a
+    // silent fall-back to field semantics (a JS caller passing `'sections'`).
+    for (const a of init.assertions ?? []) {
+        if (a.target !== undefined && a.target !== 'field' && a.target !== 'section') {
+            const err = new Error(`createStateWriteIntent: assertion ${JSON.stringify(a.field)} has unknown target ` +
+                `${JSON.stringify(a.target)}; expected 'field' or 'section' (ADR-4629 §8.2).`);
+            err.code = 'STATE_WRITE_INTENT_TARGET_INVALID';
+            throw err;
+        }
+    }
+    // C2 (ADR-4629 §8.2): `target` / `value` are copied only when the caller set
+    // them, so a C1-shaped assertion stays exactly `{ field, requirement }`.
+    const assertions = Object.freeze((init.assertions ?? []).map((a) => Object.freeze({
+        field: a.field,
+        requirement: a.requirement,
+        ...(a.target !== undefined ? { target: a.target } : {}),
+        ...(a.value !== undefined ? { value: a.value } : {}),
+    })));
     return Object.freeze({
         ...transaction,
         assertions,
