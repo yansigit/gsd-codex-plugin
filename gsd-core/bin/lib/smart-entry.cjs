@@ -52,13 +52,16 @@ const ioMod = require("./io.cjs");
 const { output } = ioMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const planningWorkspace = require("./planning-workspace.cjs");
-const { planningPaths } = planningWorkspace;
+const { planningPaths, resolvePhaseIdConvention } = planningWorkspace;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const frontmatter = require("./frontmatter.cjs");
 const { extractFrontmatter, frontmatterBlock } = frontmatter;
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- phase-lifecycle.cjs is an export= CommonJS module
 const phaseLifecycle = require("./phase-lifecycle.cjs");
 const { deriveProgressFromRoadmap } = phaseLifecycle;
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const roadmapParser = require("./roadmap-parser.cjs");
+const { extractCurrentMilestone, scanMilestonePhaseIds } = roadmapParser;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const stateDocument = require("./state-document.cjs");
 const { stateFieldValue } = stateDocument;
@@ -352,6 +355,7 @@ function detectSignals(cwd, now = Date.now) {
         stale_activity: false,
         roadmap_total_phases: null,
         roadmap_completed_phases: null,
+        milestone_phases: [],
         // No STATE.md (or unreadable) → no stamp to compare. Unknown, not fresh.
         state_commits_behind: null,
         state_commit_stale: null,
@@ -425,12 +429,18 @@ function detectSignals(cwd, now = Date.now) {
     // Progress table — isComplete falls back to the legacy comparison in that case.
     let roadmapTotalPhases = null;
     let roadmapCompletedPhases = null;
+    let milestonePhases = [];
     if (hasRoadmap) {
         try {
             const roadmapContent = node_fs_1.default.readFileSync(paths.roadmap, 'utf8');
             const derived = deriveProgressFromRoadmap(roadmapContent);
             roadmapTotalPhases = derived.totalPhases;
             roadmapCompletedPhases = derived.completedPhases;
+            // #5228: the ordered phase list of the current milestone, from the same
+            // scan the milestone-scoped commands use.
+            milestonePhases = [
+                ...scanMilestonePhaseIds(extractCurrentMilestone(roadmapContent, cwd), resolvePhaseIdConvention(cwd)),
+            ].sort(comparePhaseNum);
         }
         catch {
             /* ROADMAP.md unreadable — leave null; isComplete falls back to legacy. */
@@ -457,6 +467,7 @@ function detectSignals(cwd, now = Date.now) {
         stale_activity: staleActivity,
         roadmap_total_phases: roadmapTotalPhases,
         roadmap_completed_phases: roadmapCompletedPhases,
+        milestone_phases: milestonePhases,
         state_commits_behind: freshness.commits_behind,
         state_commit_stale: freshness.commit_stale,
     };
@@ -488,10 +499,21 @@ function isComplete(s) {
         // Legacy path: STATE.md comparison. It only fires when ROADMAP.md is
         // absent or has no Progress table, and uses canonical phase-id ordering
         // so dotted phase ids are never coerced to JavaScript numbers.
-        if (s.total_phases === null || s.current_phase === null)
+        if (s.current_phase === null)
             return false;
-        if (comparePhaseNum(s.current_phase, s.total_phases) < 0)
-            return false;
+        if (s.milestone_phases.length > 0) {
+            // #5228: compare against the milestone's LAST phase. The phase count is
+            // not a phase number once numbering continues from an earlier milestone.
+            const last = s.milestone_phases[s.milestone_phases.length - 1];
+            if (comparePhaseNum(s.current_phase, last) < 0)
+                return false;
+        }
+        else {
+            if (s.total_phases === null)
+                return false;
+            if (comparePhaseNum(s.current_phase, s.total_phases) < 0)
+                return false;
+        }
     }
     // Status regex: require milestone-level completion language. The pre-fix
     // regex matched any "shipped" / "done" substring (per-phase language).
@@ -663,7 +685,7 @@ function buildSummary(situation, s) {
         case 'needs-first-phase':
             return 'Project initialized — plan your first phase';
         case 'planning':
-            return `Phase ${s.current_phase ?? '?'} of ${s.total_phases ?? '?'} — needs a plan`;
+            return `${phasePosition(s)} — needs a plan`;
         case 'executing':
             return progressLine('executing', s);
         case 'verify-pending':
@@ -677,10 +699,24 @@ function buildSummary(situation, s) {
             return 'Unsure of state — showing progress';
     }
 }
+/**
+ * "Phase N of M" for the current phase. N is the phase's 1-based position in
+ * the current milestone's ordered phase list (#5228), so a milestone that
+ * continues the numbering of an earlier one (phases 9-17) reads "Phase 1 of 9",
+ * not "Phase 9 of 9". When the phase is not in that list (or the roadmap lists
+ * none) the STATE.md figures are printed as recorded.
+ */
+function phasePosition(s) {
+    const current = s.current_phase;
+    const at = current === null ? -1 : s.milestone_phases.findIndex((id) => comparePhaseNum(id, current) === 0);
+    if (at >= 0)
+        return `Phase ${at + 1} of ${s.milestone_phases.length}`;
+    return `Phase ${s.current_phase ?? '?'} of ${s.total_phases ?? '?'}`;
+}
 function progressLine(tail, s) {
     const parts = [];
     if (s.current_phase !== null && s.total_phases !== null) {
-        parts.push(`Phase ${s.current_phase} of ${s.total_phases}`);
+        parts.push(phasePosition(s));
     }
     else if (s.current_phase !== null) {
         parts.push(`Phase ${s.current_phase}`);

@@ -1741,6 +1741,17 @@ function _installNativePluginIfDeclared(runtime, configDir, behaviors, src) {
             }
         }
     }
+    // OpenCode 2.x terminal-client plugin (ADR-5331 Phase 3): a TUI entrypoint kept in its own directory under
+    // plugins/. OpenCode 1.x scans plugins/*.js|ts only, so it never loads this directory.
+    const cli = behaviors.nativeCliPlugin;
+    if (cli && cli.source) {
+        const cliSrc = node_path_1.default.join(src, cli.source);
+        if (installFs().existsSync(cliSrc)) {
+            const cliDest = runtimeArtifactInstallPlan.assertDestWithinConfigHome(configDir, node_path_1.default.join(cli.dir, cli.file));
+            installFs().mkdirSync(node_path_1.default.dirname(cliDest), { recursive: true });
+            installFs().copyFileSync(cliSrc, cliDest);
+        }
+    }
 }
 // ---------------------------------------------------------------------------
 // _migrateLegacyOpencodeCommandDir
