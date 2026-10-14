@@ -36,6 +36,7 @@ exports.resolveExplicitRuntime = resolveExplicitRuntime;
 exports.resolveRuntime = resolveRuntime;
 exports.resolveActiveRuntime = resolveActiveRuntime;
 exports.formatGsdSlashFor = formatGsdSlashFor;
+exports.runtimeCommand = runtimeCommand;
 const node_fs_1 = __importDefault(require("node:fs"));
 const node_path_1 = __importDefault(require("node:path"));
 const runtime_name_policy_cjs_1 = require("./runtime-name-policy.cjs");
@@ -226,4 +227,16 @@ function resolveActiveRuntime(config, env = process.env) {
  */
 function formatGsdSlashFor(projectDir, commandName) {
     return formatGsdSlash(commandName, resolveRuntime(projectDir));
+}
+/**
+ * #4859: the command as the project's runtime registers it, typed as a string —
+ * for runtime code that builds user-facing guidance. String literals in compiled
+ * runtime code are printed verbatim (the install-time conversion only rewrites
+ * markdown artifact bodies), so a hard-coded `/gsd:<cmd>` names a command no
+ * install route registers. Route every such reference through here:
+ * `runtimeCommand(cwd, 'plan-phase 3 --research')` → `/gsd-plan-phase 3 --research`
+ * (`$gsd-plan-phase …` on Codex). `commandName` is the bare name plus any argument tail.
+ */
+function runtimeCommand(projectDir, commandName) {
+    return String(formatGsdSlashFor(projectDir, commandName));
 }

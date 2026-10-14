@@ -19,6 +19,7 @@ exports.evaluateUiSafetyGate = evaluateUiSafetyGate;
 const gate_verdict_cjs_1 = require("./gate-verdict.cjs");
 const gate_phase_context_cjs_1 = require("./gate-phase-context.cjs");
 const gate_evaluation_scope_cjs_1 = require("./gate-evaluation-scope.cjs");
+const runtime_slash_cjs_1 = require("./runtime-slash.cjs");
 const ui_safety_gate_cjs_1 = require("./ui-safety-gate.cjs");
 const UI_FILE_EXTENSIONS_RE = /\.(tsx|jsx|css|scss|sass|less|vue|svelte|html)$/i;
 const UI_PATH_PATTERNS_RE = /\/(components|pages|views|screens|layouts|ui|frontend)\//i;
@@ -52,7 +53,7 @@ function computeUiSafetyGate(projectDir, phase) {
     const result = { frontend, hasUiFiles, hasUiSpec, block };
     if (block) {
         result.message = `UI files changed in this wave but no UI-SPEC.md exists for Phase ${phase}. ` +
-            `Run /gsd:ui-phase ${phase} to generate the design contract before continuing.`;
+            `Run ${(0, runtime_slash_cjs_1.runtimeCommand)(projectDir, `ui-phase ${phase}`)} to generate the design contract before continuing.`;
     }
     if (phaseLookupFailed)
         result.phaseLookupFailed = true;

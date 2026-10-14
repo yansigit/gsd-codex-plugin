@@ -28,6 +28,7 @@ const node_path_1 = __importDefault(require("node:path"));
 const gate_verdict_cjs_1 = require("./gate-verdict.cjs");
 const gate_evidence_cjs_1 = require("./gate-evidence.cjs");
 const gate_config_cjs_1 = require("./gate-config.cjs");
+const runtime_slash_cjs_1 = require("./runtime-slash.cjs");
 const gate_phase_context_cjs_1 = require("./gate-phase-context.cjs");
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- planning-workspace.cjs is an export= CommonJS module
 const planningWorkspace = require("./planning-workspace.cjs");
@@ -45,13 +46,13 @@ const { defaultPhaseCleanCommitTimesMs } = verificationMod;
 function computeContextDrift(contextEffectiveMs, entries) {
     return entries.filter((e) => e.effectiveMs < contextEffectiveMs).map((e) => e.file);
 }
-function buildContextDriftMessage(staleArtifacts, phaseArg) {
+function buildContextDriftMessage(staleArtifacts, phaseArg, projectDir) {
     const parts = [`CONTEXT.md decisions are newer than: ${staleArtifacts.join(', ')}.`];
     if (staleArtifacts.some((f) => f.endsWith('-RESEARCH.md'))) {
-        parts.push(`Regenerate research: /gsd:plan-phase ${phaseArg} --research.`);
+        parts.push(`Regenerate research: ${(0, runtime_slash_cjs_1.runtimeCommand)(projectDir, `plan-phase ${phaseArg} --research`)}.`);
     }
     if (staleArtifacts.some((f) => f.endsWith('-PATTERNS.md'))) {
-        parts.push('Regenerate patterns: delete the PATTERNS.md file, then re-run /gsd:plan-phase.');
+        parts.push(`Regenerate patterns: delete the PATTERNS.md file, then re-run ${(0, runtime_slash_cjs_1.runtimeCommand)(projectDir, 'plan-phase')}.`);
     }
     if (staleArtifacts.some((f) => f.endsWith('-VALIDATION.md') || (f.endsWith('-SPEC.md') && !f.endsWith('-AI-SPEC.md') && !f.endsWith('-UI-SPEC.md')))) {
         parts.push('Regenerate or manually reconcile VALIDATION.md / SPEC.md against the current decisions.');
@@ -114,7 +115,7 @@ function runContextDriftGate(cwd, phaseArg) {
     // missing or malformed config is "key absent", nothing is printed).
     const action = (0, gate_config_cjs_1.readWorkflowConfigValue)(cwd, 'workflow.context_drift_action').value === 'block' ? 'block' : 'warn';
     const block = staleArtifacts.length > 0 && action === 'block';
-    const message = staleArtifacts.length > 0 ? buildContextDriftMessage(staleArtifacts, phaseArg) : '';
+    const message = staleArtifacts.length > 0 ? buildContextDriftMessage(staleArtifacts, phaseArg, cwd) : '';
     return (0, gate_verdict_cjs_1.gateVerdict)(block ? 'block' : (staleArtifacts.length > 0 ? 'advisory' : 'pass'), block, {
         block,
         skipped: false,

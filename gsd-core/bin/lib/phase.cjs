@@ -4199,6 +4199,26 @@ function cmdPhaseComplete(cwd, phaseNum, raw) {
                 // #3374 / #3469).
                 const nextPhaseDisplayName = phaseDisplayNameFromRoadmap(roadmapContent, nextPhaseNum) ??
                     phaseDisplayNameFromSlug(nextPhaseName);
+                // #4824: classify the SELECTED next phase from disk (the same ladder
+                // roadmap analyze uses) so the Status / Current Plan / Stopped-at
+                // handoff does not say "ready to plan" for a phase already planned or
+                // executed. A missing directory or unreadable phase keeps the
+                // historical wording.
+                let nextPhaseDisk = null;
+                if (nextPhaseNum && !isLastPhase) {
+                    try {
+                        const nextInfo = findPhaseInternal(cwd, nextPhaseNum);
+                        if (nextInfo && nextInfo.found && nextInfo.directory) {
+                            const { value } = (0, phase_status_cjs_1.phaseStatus)(node_path_1.default.join(cwd, nextInfo.directory), {
+                                convention: resolvePhaseIdConvention(cwd),
+                            });
+                            nextPhaseDisk = { status: value.status, planCount: value.planCount, summaryCount: value.summaryCount };
+                        }
+                    }
+                    catch {
+                        /* best-effort: an unreadable next phase keeps `Ready to plan` */
+                    }
+                }
                 const completeResult = (0, state_transition_cjs_1.transitionCore)(stateContent, {
                     kind: 'completePhase',
                     phaseNum,
@@ -4207,6 +4227,7 @@ function cmdPhaseComplete(cwd, phaseNum, raw) {
                     isLastPhase,
                     planCount,
                     summaryCount,
+                    nextPhaseDisk,
                 }, {
                     clock: clock_cjs_1.realClock,
                     roadmapProvider: () => roadmapContent,
