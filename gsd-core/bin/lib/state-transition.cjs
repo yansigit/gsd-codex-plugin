@@ -1798,15 +1798,27 @@ function completePhaseCore(content, intent, deps) {
     // Only runs when a Completed Phases field exists (the existing guard).
     const completedRaw = (0, state_document_cjs_1.stateExtractField)(body, 'Completed Phases');
     if (completedRaw !== null) {
-        let newCompleted = parseInt(completedRaw, 10);
+        const recordedCompleted = parseInt(completedRaw, 10);
+        let newCompleted = recordedCompleted;
         let derivedTotalPhases = null;
         const roadmapContent = deps.roadmapProvider ? deps.roadmapProvider() : null;
         if (roadmapContent) {
             const derived = (0, phase_lifecycle_cjs_1.deriveProgressFromRoadmap)(roadmapContent);
-            if (derived.completedPhases !== null)
-                newCompleted = derived.completedPhases;
-            if (derived.totalPhases !== null)
-                derivedTotalPhases = derived.totalPhases;
+            // #4901: completed counters only ratchet up, like the frontmatter twin
+            // (applyAuthoritativeProgressSubkeys, completedOnlyRaise). A derivation
+            // that lands BELOW the recorded counter read a narrower scope than the
+            // counter spans (e.g. the first `## Progress` section of a multi-milestone
+            // roadmap), so its total is just as suspect: keep the recorded counter and
+            // fall back to the recorded Total Phases for the percent below.
+            const derivedLowered = derived.completedPhases !== null
+                && Number.isFinite(recordedCompleted)
+                && derived.completedPhases < recordedCompleted;
+            if (!derivedLowered) {
+                if (derived.completedPhases !== null)
+                    newCompleted = derived.completedPhases;
+                if (derived.totalPhases !== null)
+                    derivedTotalPhases = derived.totalPhases;
+            }
         }
         // #3057 B9: only mark 'Completed Phases' updated when the text actually
         // changed. `stateReplaceField` returns the full (re-)substituted content

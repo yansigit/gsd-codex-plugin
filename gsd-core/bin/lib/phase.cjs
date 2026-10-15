@@ -4230,7 +4230,11 @@ function cmdPhaseComplete(cwd, phaseNum, raw) {
                     nextPhaseDisk,
                 }, {
                     clock: clock_cjs_1.realClock,
-                    roadmapProvider: () => roadmapContent,
+                    // #4901: the body counter derives from the same current-milestone scope
+                    // as its frontmatter twin below (postCompletionRoadmapScope), not the
+                    // whole file, so the two writers cannot disagree on which
+                    // `## Progress` table they count.
+                    roadmapProvider: () => (roadmapContent !== null ? extractCurrentMilestone(roadmapContent, cwd) : null),
                     sourcePath: statePath,
                 });
                 stateContent = completeResult.content;
