@@ -922,6 +922,8 @@ function transitionCore(content, intent, deps) {
  */
 function beginPhaseCore(content, intent, deps) {
     const updated = [];
+    // #4945: a re-entry whose earlier plans already have summaries starts at the first plan still to run.
+    const startPlan = intent.startPlan && intent.startPlan > 0 ? Math.floor(intent.startPlan) : 1;
     // #1255: body-field replacements operate on body only (frontmatter stripped),
     // not on the full content. The YAML `status:` key matches `^Status:\s*`
     // before the body pipe-table row if full content is passed.
@@ -977,7 +979,7 @@ function beginPhaseCore(content, intent, deps) {
         if (intent.phaseName) {
             tryField('Current Phase Name', intent.phaseName);
         }
-        tryField('Current Plan', '1');
+        tryField('Current Plan', String(startPlan));
         if (intent.planCount) {
             tryField('Total Plans in Phase', String(intent.planCount));
         }
@@ -996,14 +998,21 @@ function beginPhaseCore(content, intent, deps) {
         // end-of-line (inert here since `.` never crosses line terminators
         // without `/s`, which is not set).
         const focusPattern = /^([ \t]*\*\*Current focus:\*\*[ \t]*)(.*)$/im;
-        if (focusPattern.test(body)) {
-            body = body.replace(focusPattern, (_match, prefix) => `${prefix}${focusLabel}`);
+        const focusMatch = focusPattern.exec(body);
+        if (focusMatch) {
+            // #4945: a value an author wrapped onto further lines is replaced whole, so its tail is not
+            // left behind under the new value. The lines that count are the ones `state validate` already
+            // reports as a field's continuation (stops at a blank line, a heading, a list item, a table
+            // row, a fence or a sibling field). An empty first line has no value to continue.
+            const valueEnd = focusMatch.index + focusMatch[0].length;
+            const end = focusMatch[2].trim() === '' ? valueEnd : (0, state_document_cjs_2.fieldContinuationEnd)(body, valueEnd);
+            body = body.slice(0, focusMatch.index) + focusMatch[1] + focusLabel + body.slice(end);
             updated.push('Current focus');
         }
         // ## Current Position section mutation (#1104, #1365).
         // `locateCurrentPosition` (fence-aware, tokenizeHeadings-based) locates
         // the section; mirrors state.cts:2261-2324 byte-for-behaviour.
-        body = mutateCurrentPositionFirstTime(body, intent, today, updated);
+        body = mutateCurrentPositionFirstTime(body, { ...intent, startPlan }, today, updated);
     }
     else {
         // Resume path: only update Last activity timestamp in Current Position
@@ -1107,7 +1116,7 @@ function mutateCurrentPositionFirstTime(body, intent, today, updated) {
             sectionBody = replaced;
     }
     // Plan line.
-    const planValue = `1 of ${intent.planCount || '?'}`;
+    const planValue = `${intent.startPlan} of ${intent.planCount || '?'}`;
     if (/^Plan:/m.test(sectionBody)) {
         sectionBody = sectionBody.replace(/^Plan:.*$/m, `Plan: ${planValue}`);
     }
