@@ -27,6 +27,7 @@ jobs:
         run: npm test
       - uses: actions/upload-artifact@v4
         with:
+          retention-days: 1
           name: verified-upstream
           include-hidden-files: true
           path: |
