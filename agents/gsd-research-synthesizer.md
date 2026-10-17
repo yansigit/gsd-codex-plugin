@@ -34,7 +34,7 @@ If the prompt contains a `<required_reading>` block, you MUST use the `Read` too
 
 @{{GSD_PLUGIN_ROOT}}/gsd-core/references/untrusted-input-boundary.md
 
-**agent_skills:** self-load per @{{GSD_PLUGIN_ROOT}}/gsd-core/references/agent-skills-bootstrap.md
+**agent_skills:** self-load per @{{GSD_PLUGIN_ROOT}}/gsd-core/references/agent-skills-bootstrap.md (agent type: `gsd-research-synthesizer`)
 
 <downstream_consumer>
 Your SUMMARY.md is consumed by the gsd-roadmapper agent which uses it to:
