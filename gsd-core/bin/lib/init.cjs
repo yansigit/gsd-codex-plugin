@@ -20,6 +20,8 @@ const markdown_sectionizer_cjs_1 = require("./markdown-sectionizer.cjs");
 const io = require("./io.cjs");
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- config-loader.cjs is an export= CommonJS module
 const configLoader = require("./config-loader.cjs");
+// eslint-disable-next-line @typescript-eslint/no-require-imports -- capability-ledger.cjs is an export= CommonJS module
+const capabilityLedger = require("./capability-ledger.cjs");
 const project_root_cjs_1 = require("./project-root.cjs");
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- model-resolver.cjs is an export= CommonJS module
 const modelResolver = require("./model-resolver.cjs");
@@ -4076,7 +4078,7 @@ function buildSkillManifest(cwd, skillsDir = null) {
             if (!entry.isDirectory())
                 continue;
             const skillMdPath = node_path_1.default.join(rootPath, entry.name, 'SKILL.md');
-            const content = (0, shell_command_projection_cjs_1.platformReadSync)(skillMdPath);
+            const content = capabilityLedger.readSkillFile(skillMdPath);
             if (content !== null) {
                 if (pushSkillEntry(`${entry.name}/SKILL.md`, content, skillMdPath))
                     skillCount++;
@@ -4101,7 +4103,7 @@ function buildSkillManifest(cwd, skillsDir = null) {
                 if (!nested.isDirectory())
                     continue;
                 const nestedSkillMd = node_path_1.default.join(nestedSkillsDir, nested.name, 'SKILL.md');
-                const nestedContent = (0, shell_command_projection_cjs_1.platformReadSync)(nestedSkillMd);
+                const nestedContent = capabilityLedger.readSkillFile(nestedSkillMd);
                 if (nestedContent === null)
                     continue;
                 // Use forward-slash separator explicitly so manifest paths are posix-style
