@@ -3190,8 +3190,48 @@ const capabilities = {
       "localConfigDir": ".pi",
       "configFormat": "none",
       "artifactLayout": {
-        "global": [],
-        "local": []
+        "global": [
+          {
+            "kind": "skills",
+            "destSubpath": "skills",
+            "prefix": "gsd-",
+            "nesting": "flat",
+            "recursive": false,
+            "converter": "convertClaudeCommandToPiSkill"
+          },
+          {
+            "kind": "agents",
+            "destSubpath": "agents",
+            "prefix": "gsd-",
+            "nesting": "flat",
+            "recursive": false,
+            "excludeSuffixes": [
+              ".compact.md"
+            ],
+            "converter": "convertClaudeAgentToPiAgent"
+          }
+        ],
+        "local": [
+          {
+            "kind": "skills",
+            "destSubpath": "skills",
+            "prefix": "gsd-",
+            "nesting": "flat",
+            "recursive": false,
+            "converter": "convertClaudeCommandToPiSkill"
+          },
+          {
+            "kind": "agents",
+            "destSubpath": "agents",
+            "prefix": "gsd-",
+            "nesting": "flat",
+            "recursive": false,
+            "excludeSuffixes": [
+              ".compact.md"
+            ],
+            "converter": "convertClaudeAgentToPiAgent"
+          }
+        ]
       },
       "triggerPrecedence": [
         "skills",
@@ -3233,6 +3273,7 @@ const capabilities = {
           "source": "pi/gsd.cjs"
         },
         "pluginOnlyInstall": true,
+        "contentRewriteProfile": "slash-lookahead-tilde-restore",
         "sharedHooksDirName": "gsd-hooks"
       }
     }
@@ -7441,8 +7482,48 @@ const runtimes = {
       "localConfigDir": ".pi",
       "configFormat": "none",
       "artifactLayout": {
-        "global": [],
-        "local": []
+        "global": [
+          {
+            "kind": "skills",
+            "destSubpath": "skills",
+            "prefix": "gsd-",
+            "nesting": "flat",
+            "recursive": false,
+            "converter": "convertClaudeCommandToPiSkill"
+          },
+          {
+            "kind": "agents",
+            "destSubpath": "agents",
+            "prefix": "gsd-",
+            "nesting": "flat",
+            "recursive": false,
+            "excludeSuffixes": [
+              ".compact.md"
+            ],
+            "converter": "convertClaudeAgentToPiAgent"
+          }
+        ],
+        "local": [
+          {
+            "kind": "skills",
+            "destSubpath": "skills",
+            "prefix": "gsd-",
+            "nesting": "flat",
+            "recursive": false,
+            "converter": "convertClaudeCommandToPiSkill"
+          },
+          {
+            "kind": "agents",
+            "destSubpath": "agents",
+            "prefix": "gsd-",
+            "nesting": "flat",
+            "recursive": false,
+            "excludeSuffixes": [
+              ".compact.md"
+            ],
+            "converter": "convertClaudeAgentToPiAgent"
+          }
+        ]
       },
       "triggerPrecedence": [
         "skills",
@@ -7484,6 +7565,7 @@ const runtimes = {
           "source": "pi/gsd.cjs"
         },
         "pluginOnlyInstall": true,
+        "contentRewriteProfile": "slash-lookahead-tilde-restore",
         "sharedHooksDirName": "gsd-hooks"
       }
     }

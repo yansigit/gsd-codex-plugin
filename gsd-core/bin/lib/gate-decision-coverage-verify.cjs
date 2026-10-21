@@ -103,6 +103,9 @@ function evaluateDecisionCoverageVerify(input) {
     const planContents = (0, decision_coverage_support_cjs_1.loadPlanContents)(phaseDir);
     if (planContents.kind === 'unreadable')
         return unreadableVerify(`${planContents.span ?? phaseDir}: ${planContents.reason}`);
+    const tracker = (0, decision_coverage_support_cjs_1.resolveTrackerBodies)(projectDir, planContents.value, input.deps);
+    if (tracker.kind === 'unreadable')
+        return unreadableVerify(`${tracker.span}: ${tracker.reason}`);
     const summaryParts = (0, decision_coverage_support_cjs_1.loadSummaryContents)(phaseDir);
     if (summaryParts.kind === 'unreadable')
         return unreadableVerify(`${summaryParts.span ?? phaseDir}: ${summaryParts.reason}`);
@@ -115,7 +118,7 @@ function evaluateDecisionCoverageVerify(input) {
     if (modifiedFiles.kind === 'unreadable')
         return unreadableVerify(`${modifiedFiles.span ?? 'files_modified'}: ${modifiedFiles.reason}`);
     const haystack = [
-        planContents.value.join('\n\n'),
+        planContents.value.map((c, i) => c + (tracker.value.bodies[i] ? '\n' + tracker.value.bodies[i] : '')).join('\n\n'),
         summaryParts.value.join('\n\n'),
         modifiedFiles.value,
         (0, decision_coverage_support_cjs_1.phaseCommitMessages)(projectDir, phaseDir),
@@ -128,6 +131,8 @@ function evaluateDecisionCoverageVerify(input) {
         else
             notHonored.push({ id: decision.id, text: decision.text, category: decision.category });
     }
+    if (notHonored.length > 0 && tracker.value.missingResolver)
+        return unreadableVerify(`${tracker.value.missingResolver.span}: ${tracker.value.missingResolver.reason}`);
     return (0, gate_verdict_cjs_1.gateVerdict)(notHonored.length === 0 ? 'pass' : 'advisory', false, {
         skipped: false,
         blocking: false,

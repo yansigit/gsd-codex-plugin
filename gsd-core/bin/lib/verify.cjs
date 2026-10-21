@@ -1809,6 +1809,8 @@ function repairFixText(slash, action) {
             return `Run ${slash('health')} --repair to add key`;
         case REMEDY_ACTION.BACKFILL_MILESTONES:
             return `Run ${slash('health')} --backfill to synthesize missing entries from archive snapshots`;
+        case REMEDY_ACTION.REPAIR_VERIFICATION_STATUS:
+            return `Run ${slash('health')} --repair to rewrite the legacy status (original kept as legacy_status)`;
         default:
             return '';
     }

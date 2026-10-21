@@ -163,7 +163,10 @@ function evaluateDecisionCoveragePlan(input) {
     if (phaseDir && planContents.value.length === 0) {
         return (0, gate_verdict_cjs_1.gateVerdict)('block', true, { passed: false, skipped: false, reason: 'phase directory holds no plans', total: null, covered: null, message: `Decision coverage gate: the phase directory "${positionals[0]}" holds no PLAN files, so no plans were scanned. Pass the phase DIRECTORY that holds the plans (e.g. .planning/phases/01-slug), not the phase number.` });
     }
-    const sections = planContents.value.map(decision_coverage_support_cjs_1.extractPlanDesignatedSections);
+    const tracker = (0, decision_coverage_support_cjs_1.resolveTrackerBodies)(projectDir, planContents.value, input.deps);
+    if (tracker.kind === 'unreadable')
+        return unreadableDecisionGate(`${tracker.span}: ${tracker.reason}`);
+    const sections = planContents.value.map((c, i) => (0, decision_coverage_support_cjs_1.extractPlanDesignatedSections)(c) + (tracker.value.bodies[i] ? '\n' + tracker.value.bodies[i] : ''));
     const uncovered = [];
     let covered = 0;
     for (const decision of decisions) {
@@ -172,6 +175,8 @@ function evaluateDecisionCoveragePlan(input) {
         else
             uncovered.push({ id: decision.id, text: decision.text, category: decision.category });
     }
+    if (uncovered.length > 0 && tracker.value.missingResolver)
+        return unreadableDecisionGate(`${tracker.value.missingResolver.span}: ${tracker.value.missingResolver.reason}`);
     const passed = uncovered.length === 0;
     return (0, gate_verdict_cjs_1.gateVerdict)(passed ? 'pass' : 'block', !passed, {
         passed,

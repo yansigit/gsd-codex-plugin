@@ -2799,8 +2799,14 @@ milestoneExplicitlyNull) {
                         // — no second ROADMAP parser here. A ROADMAP without a canonical
                         // `## Progress` table resolves no table → floor inert (disk count
                         // stands), the owner's own answer to "what is countable".
+                        // #5165: the milestone-grouped `## Progress` table keeps every
+                        // milestone's rows and sits OUTSIDE any narrower roadmapScope, so the
+                        // floor names the milestone STATE asserts (assertedMilestoneVersion —
+                        // present on every resync path, unlike the optional storedMilestone
+                        // parameter) and the owner counts only that milestone's rows. No row
+                        // for it => nulls => the floor is inert and the disk count stands.
                         const roadmapCompletedPhases = roadmapScope !== null && safeToUseRoadmapCount && !diskCountsWithheld
-                            ? deriveProgressFromRoadmap(roadmapScope).completedPhases
+                            ? deriveProgressFromRoadmap(roadmapScope, assertedMilestoneVersion ?? storedMilestone).completedPhases
                             : null;
                         const flooredCompletedPhases = roadmapCompletedPhases !== null
                             ? Math.max(diskCompletedPhases, roadmapCompletedPhases)
@@ -3227,6 +3233,8 @@ function applyAuthoritativeProgressSubkeys(fm, intent, opts) {
     for (const [subkey, value] of Object.entries(intent)) {
         if (typeof value !== 'number' || !Number.isFinite(value))
             continue;
+        if (subkey === 'percent')
+            continue; // composed below, never applied raw (#5165)
         if (!getFieldClassification(`progress.${subkey}`))
             continue;
         const isCompletedCounter = subkey === 'completed_phases' || subkey === 'completed_plans';
@@ -3244,10 +3252,18 @@ function applyAuthoritativeProgressSubkeys(fm, intent, opts) {
     }
     // percent: applied only when a completed counter moved (coherent with the
     // counters that just landed) or when no percent exists to contradict.
+    // #5165 / ADR-4629 §8.5: `computeProgressPercent` is the one composition
+    // owner (min(plan fraction, phase fraction)) that every resyncing write uses.
+    // When the block carries the counters it needs, the percent is composed by
+    // that owner over the counters just landed, so a later resyncing write
+    // cannot move what this transition wrote. The intent's own percent (a
+    // phase-only fraction) is only the fallback for a block without plan counts.
     const intentPercent = intent['percent'];
     if (typeof intentPercent === 'number' && Number.isFinite(intentPercent) && (completedMoved || (0, state_document_cjs_1.toFiniteNumber)(base['percent']) === null)) {
-        if (!Object.is(base['percent'], intentPercent)) {
-            base['percent'] = intentPercent;
+        const composed = (0, state_document_cjs_1.computeProgressPercent)((0, state_document_cjs_1.toFiniteNumber)(base['completed_plans']), (0, state_document_cjs_1.toFiniteNumber)(base['total_plans']), (0, state_document_cjs_1.toFiniteNumber)(base['completed_phases']), (0, state_document_cjs_1.toFiniteNumber)(base['total_phases']), SCOPE.COMPLETE);
+        const nextPercent = composed !== null ? composed : intentPercent;
+        if (!Object.is(base['percent'], nextPercent)) {
+            base['percent'] = nextPercent;
             changed = true;
         }
     }
@@ -4789,8 +4805,9 @@ function stateSectionScopeUnits(units, sectionTargets) {
  * matching `readStateTarget`'s long-standing special case.
  */
 function verifyStateWriteIntent(intent, preContent, postContent, statePath, bodyDeltas) {
-    const pre = (0, shell_command_projection_cjs_1.normalizeContent)(statePath, preContent).content;
-    const post = (0, shell_command_projection_cjs_1.normalizeContent)(statePath, postContent).content;
+    // #5165: the write lands scoped to what it changed (platformWriteSync reads the file it replaces).
+    const pre = (0, shell_command_projection_cjs_1.normalizeContent)(statePath, preContent, { prior: preContent }).content;
+    const post = (0, shell_command_projection_cjs_1.normalizeContent)(statePath, postContent, { prior: preContent }).content;
     const preFm = extractFrontmatter(pre, statePath);
     const postFm = extractFrontmatter(post, statePath);
     const preBody = stripFrontmatter(pre);
@@ -4989,7 +5006,7 @@ function applyStateWriteIntent(statePath, intent, transformFn, cwd, options = {}
             return unwritten(verification);
         (0, shell_command_projection_cjs_1.platformWriteSync)(statePath, candidate);
         const reread = (0, shell_command_projection_cjs_1.platformReadSync)(statePath) || '';
-        if (reread !== (0, shell_command_projection_cjs_1.normalizeContent)(statePath, candidate).content) {
+        if (reread !== (0, shell_command_projection_cjs_1.normalizeContent)(statePath, candidate, { prior: pre }).content) {
             return Object.freeze({
                 ok: false,
                 reasons: Object.freeze([STATE_WRITE_INTENT_FAILURE.REREAD_MISMATCH]),

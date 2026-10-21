@@ -940,7 +940,7 @@ function stageSkillsForRuntimeAsSkills(srcCommandsDir, resolvedProfile, converte
  * @param isGlobal        install scope passed through to the converter
  * @param agentCtx        optional cross-cutting context (ADR-1235 §1)
  */
-function stageAgentsForRuntimeWithConverter(srcAgentsDir, resolvedProfile, converter, isGlobal = false, agentCtx) {
+function stageAgentsForRuntimeWithConverter(srcAgentsDir, resolvedProfile, converter, isGlobal = false, agentCtx, excludeSuffixes) {
     if (!installFs().existsSync(srcAgentsDir))
         return srcAgentsDir;
     const stageDir = mkInstallTempDir('gsd-profile-runtime-agents-');
@@ -975,6 +975,8 @@ function stageAgentsForRuntimeWithConverter(srcAgentsDir, resolvedProfile, conve
             if (!entry.isFile())
                 continue;
             if (!entry.name.endsWith('.md'))
+                continue;
+            if (excludeSuffixes && excludeSuffixes.some((s) => entry.name.endsWith(s)))
                 continue;
             // For tiered profiles, gate by agent stem (full filename without extension).
             if (resolvedProfile.skills !== '*') {
