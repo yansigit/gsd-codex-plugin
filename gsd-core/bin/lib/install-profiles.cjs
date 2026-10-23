@@ -302,7 +302,7 @@ function _capabilitySkillsForMode(mode, registry) {
 /**
  * Resolve a profile (or composed profiles) to a typed result object.
  */
-function resolveProfile({ modes, manifest, _profilesOverride, registry } = {}) {
+function resolveProfile({ modes, manifest, _profilesOverride, registry, agentManifest } = {}) {
     const profiles = _profilesOverride || PROFILES;
     const activeModes = (modes && modes.length > 0) ? modes : ['full'];
     const normalizedModes = activeModes
@@ -337,10 +337,13 @@ function resolveProfile({ modes, manifest, _profilesOverride, registry } = {}) {
     }
     // Derive agents: union of all agent names referenced in the body text of
     // every skill in unionSkills. Agent names are stored in the manifest under
-    // _calls_agents_<stem> keys (populated by loadSkillsManifest).
+    // _calls_agents_<stem> keys (populated by loadSkillsManifest). #5503: read from
+    // `agentManifest` when given, so a profile that skips the skill closure still
+    // stages the agents its own skills spawn.
+    const agentMan = agentManifest || man;
     const unionAgents = new Set();
     for (const skillStem of unionSkills) {
-        const agentRefs = man.get(`_calls_agents_${skillStem}`) || [];
+        const agentRefs = agentMan.get(`_calls_agents_${skillStem}`) || [];
         for (const agentStem of agentRefs) {
             unionAgents.add(agentStem);
         }

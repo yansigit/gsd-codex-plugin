@@ -4105,6 +4105,7 @@ module.exports = {
     convertClaudeCommandToKimiSkill,
     convertClaudeCommandToKimiCodeSkill,
     convertClaudeCommandToPiSkill,
+    PI_UNSUPPORTED_SKILLS,
     buildKimiAgentArtifacts,
     convertClaudeToCursorMarkdown,
     convertClaudeCommandToCursorSkill,
