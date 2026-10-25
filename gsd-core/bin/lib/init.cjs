@@ -98,7 +98,7 @@ const { getRoadmapPhaseInternal, getMilestoneInfo, stripShippedMilestones, extra
 const { pathExistsInternal, generateSlugInternal, toPosixPath } = coreUtils;
 const { comparePhaseNum, normalizePhaseName, stripProjectCodePrefix, PHASE_NUMBER_TOKEN_SOURCE, PHASE_DEP_REF_SOURCE, isForeignPrefixedPhaseQuery, isSentinelPhaseId, extractPhaseToken, scopeToPhase, renderPhaseBranchName, parsePhaseId, renderPhaseId, phaseHeadingPrefixSrcFor, PHASE_HEADING_BASELINE, buildPhaseHeadingScanRegex, } = phaseId;
 const { pruneOrphanedWorktrees } = worktreeSafety;
-const { planningPaths, planningDir, planningRoot, todosDir, listAvailableWorkstreams, peekActiveWorkstream, resolveEnvWorkstream, diagnoseUnresolvedActiveWorkstream, describeUnresolvedWorkstreamReason, findContextMdIn, resolvePhaseIdConvention, worktreesOptedOut, } = planningWorkspace;
+const { planningPaths, planningDir, planningRoot, todosDir, listAvailableWorkstreams, peekActiveWorkstream, resolveEnvWorkstream, diagnoseUnresolvedActiveWorkstream, describeUnresolvedWorkstreamReason, findContextMdIn, findPhaseSpecIn, resolvePhaseIdConvention, worktreesOptedOut, } = planningWorkspace;
 const { extractFrontmatter, frontmatterBlock } = frontmatterMod;
 const { isPhaseComplete, resolveVerificationFile, resolveUatFile, VERIFICATION_STATUS, VerificationStatusError } = verificationMod;
 const { evaluateUatPassed } = uatPredicateMod;
@@ -176,6 +176,28 @@ function resolvePhaseDisplayName(phaseInfo, roadmapPhase) {
     return roadmapPhase?.['phase_name']
         || phaseInfo?.['phase_name']
         || null;
+}
+/**
+ * #5629: the phase SPEC as init facts, for every init payload a SPEC-consuming workflow parses
+ * (discuss-phase via `phase-op`, discuss-phase-assumptions, plan-phase). `has_spec` is always present;
+ * `spec_path` (absolute, posix) only when a plain `NN-SPEC.md` exists. One predicate (`findPhaseSpecIn`, shared
+ * with the context-drift gate) decides, so a UI-SPEC or AI-SPEC is never mistaken for the requirements lock and
+ * no workflow globs for it. A phase with no directory yet, or one that cannot be read, has no SPEC.
+ */
+function phaseSpecFacts(phaseDirAbs) {
+    if (!phaseDirAbs)
+        return { has_spec: false };
+    let files;
+    try {
+        files = node_fs_1.default.readdirSync(phaseDirAbs);
+    }
+    catch {
+        return { has_spec: false };
+    }
+    // Scoped to THIS phase's own artifacts first (#3511), like the sibling artifact lookups: a misfiled
+    // `02-SPEC.md` in phase 03's directory must not win (the context-drift gate scopes the same way).
+    const spec = findPhaseSpecIn(scopeToPhase(files, node_path_1.default.basename(phaseDirAbs)));
+    return spec ? { has_spec: true, spec_path: toPosixPath(node_path_1.default.join(phaseDirAbs, spec)) } : { has_spec: false };
 }
 /**
  * #2994 (review finding, DEFECT.GENERATIVE-FIX): shared archived/not-found
@@ -1139,6 +1161,8 @@ function cmdInitPlanPhase(cwd, phase, raw, options = {}) {
         state_path: node_fs_1.default.existsSync(statePath) ? toPosixPath(statePath) : null,
         roadmap_path: node_fs_1.default.existsSync(roadmapPath) ? toPosixPath(roadmapPath) : null,
         requirements_path: node_fs_1.default.existsSync(requirementsPath) ? toPosixPath(requirementsPath) : null,
+        // #5629: the phase SPEC (plan-phase lifts its Edge Coverage from it; no workflow globs for it).
+        ...phaseSpecFacts(phaseInfo?.['directory'] ? node_path_1.default.join(cwd, phaseInfo['directory']) : null),
         patterns_path: null,
     };
     if (phaseInfo?.['directory']) {
@@ -1934,6 +1958,8 @@ function cmdInitDiscussPhaseAssumptions(cwd, phase, raw, options = {}) {
         plan_count: phaseInfo?.['plans']?.length || 0,
         roadmap_exists: node_fs_1.default.existsSync(node_path_1.default.join(planningDir(cwd), 'ROADMAP.md')),
         planning_exists: node_fs_1.default.existsSync(planningDir(cwd)),
+        // #5629: the phase SPEC, so assumptions mode honours it like the default flow does.
+        ...phaseSpecFacts(phaseDir ? node_path_1.default.join(cwd, phaseDir) : null),
     };
     // #2994 (Phase 6.3): additive, optional field — degrades to null, never throws.
     const sectionManifestOptions = {
@@ -2065,6 +2091,8 @@ function cmdInitPhaseOp(cwd, phase, raw) {
         state_path: node_fs_1.default.existsSync(statePath) ? toPosixPath(statePath) : null,
         roadmap_path: node_fs_1.default.existsSync(roadmapPath) ? toPosixPath(roadmapPath) : null,
         requirements_path: node_fs_1.default.existsSync(requirementsPath) ? toPosixPath(requirementsPath) : null,
+        // #5629: the phase SPEC (discuss-phase reads it from here; no workflow globs for it).
+        ...phaseSpecFacts(phaseDir ? node_path_1.default.join(cwd, phaseDir) : null),
     };
     if (phaseInfo?.['directory']) {
         const phaseDirFull = node_path_1.default.join(cwd, phaseInfo['directory']);

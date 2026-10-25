@@ -647,17 +647,23 @@ function mergeResyncProgressRatchet(curatedRecord, derivedRecord) {
             merged[key] = value;
         }
     }
-    if ((0, state_document_cjs_2.toFiniteNumber)(derivedRecord.percent) !== null) {
-        const recomputed = (0, state_document_cjs_2.computeProgressPercent)((0, state_document_cjs_2.toFiniteNumber)(merged.completed_plans), (0, state_document_cjs_2.toFiniteNumber)(merged.total_plans), (0, state_document_cjs_2.toFiniteNumber)(merged.completed_phases), (0, state_document_cjs_2.toFiniteNumber)(merged.total_phases), planningScopeMod.SCOPE.COMPLETE);
-        // Same verbatim rule for percent: assign only when the recomputed value
-        // numerically differs, so a string-spelled derived percent ("67") is not
-        // churned into a number-spelled 67 (phantom-divergence noise, not a
-        // change).
-        if (recomputed !== null && recomputed !== (0, state_document_cjs_2.toFiniteNumber)(merged.percent)) {
-            merged.percent = recomputed;
-        }
-    }
+    recomputeMergedProgressPercent(merged, derivedRecord);
     return merged;
+}
+/**
+ * Make `merged.percent` the progress computation over the counters `merged` actually carries (#5619,
+ * #4129). Only when the derived side measured a percent: a derivation that withheld one (an incomplete
+ * scope, #1761/#3217) stays withheld, never invented. Same verbatim rule as the counters: assign only
+ * when the recomputed value numerically differs, so a string-spelled derived percent ("67") is not
+ * churned into a number-spelled 67 (phantom-divergence noise, not a change).
+ */
+function recomputeMergedProgressPercent(merged, derivedRecord) {
+    if ((0, state_document_cjs_2.toFiniteNumber)(derivedRecord.percent) === null)
+        return;
+    const recomputed = (0, state_document_cjs_2.computeProgressPercent)((0, state_document_cjs_2.toFiniteNumber)(merged.completed_plans), (0, state_document_cjs_2.toFiniteNumber)(merged.total_plans), (0, state_document_cjs_2.toFiniteNumber)(merged.completed_phases), (0, state_document_cjs_2.toFiniteNumber)(merged.total_phases), planningScopeMod.SCOPE.COMPLETE);
+    if (recomputed !== null && recomputed !== (0, state_document_cjs_2.toFiniteNumber)(merged.percent)) {
+        merged.percent = recomputed;
+    }
 }
 /**
  * Executor for `preservation: 'preserve-always'` (ADR-3408 §8.1). Only
@@ -723,18 +729,23 @@ function applyPreserveAlways(field, cls, ctx) {
             // completed after the plan count grew) — ratcheting UP only, never
             // deriving downward (preserves the #3242 curated-progress protection
             // for cases unrelated to plan-count growth, e.g. a deleted SUMMARY).
-            // percent also takes the derived value — the resync recomputed it from
-            // disk counts, and a stale curated percent would be incoherent against
-            // the ratcheted-up completed counts (e.g. 54/54 at 93%).
+            // percent is recomputed over the counters actually written (#5619): the
+            // disk-derived percent is only coherent with the DERIVED counters, and a
+            // stale curated percent would be incoherent against the ratcheted-up
+            // completed counts (e.g. 54/54 at 93%).
             const ratchetUpKeys = new Set(['completed_plans', 'completed_phases']);
             for (const [key, value] of Object.entries(curatedRecord)) {
                 if (key === 'total_plans' || key === 'total_phases' || key === 'percent')
                     continue;
                 if (ratchetUpKeys.has(key)) {
-                    const derivedNum = typeof derivedRecord[key] === 'number' ? derivedRecord[key] : -Infinity;
-                    const curatedNum = typeof value === 'number' ? value : -Infinity;
+                    // Frontmatter scalars arrive as STRINGS ("2", not 2): coerce through
+                    // `toFiniteNumber`, never a `typeof === 'number'` test (#5619 — that
+                    // test made both sides -Infinity and the ratchet unreachable).
+                    const derivedNum = (0, state_document_cjs_2.toFiniteNumber)(derivedRecord[key]) ?? -Infinity;
+                    const curatedNum = (0, state_document_cjs_2.toFiniteNumber)(value) ?? -Infinity;
                     // Take the derived value only when it ratchets up (strictly
-                    // greater — #2969's `>` not `>=`); else keep curated.
+                    // greater — #2969's `>` not `>=`); else keep curated, with its
+                    // spelling, on a tie too.
                     if (derivedNum > curatedNum)
                         continue;
                     merged[key] = value;
@@ -744,6 +755,7 @@ function applyPreserveAlways(field, cls, ctx) {
                 }
             }
         }
+        recomputeMergedProgressPercent(merged, derivedRecord);
         next = merged;
     }
     else {

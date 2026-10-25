@@ -770,7 +770,7 @@ function cmdStateAdvancePlan(cwd, raw) {
         // silently absorbed.
         const body = stripFrontmatter(content);
         const positionScope = matchCurrentPositionSection(body) ?? body;
-        const positionPhase = parseProsePhaseField((0, state_document_cjs_1.stateExtractField)(positionScope, 'Phase')).phase;
+        const positionPhase = parseProsePhaseField((0, state_document_cjs_1.stateExtractField)(positionScope, 'Phase'), resolvePhaseIdConvention(cwd)).phase;
         // #4093: a Current Position section with ZERO labeled fields has no
         // `Phase:` line either; frontmatter `current_phase` is the documented
         // survivor of body drift (the reporter's document still carried it, and
@@ -1283,7 +1283,7 @@ function cmdStateAddDecision(cwd, options, raw) {
     if (!phaseId) {
         const rawState = node_fs_1.default.readFileSync(statePath, 'utf-8');
         const fm = extractFrontmatter(rawState, statePath);
-        phaseId = resolveCurrentPhaseId(fm, stripFrontmatter(rawState)) ?? undefined;
+        phaseId = resolveCurrentPhaseId(fm, stripFrontmatter(rawState), resolvePhaseIdConvention(cwd)) ?? undefined;
     }
     const entry = `- [Phase ${phaseId || '?'}]: ${summaryText}${rationaleText ? ` — ${rationaleText}` : ''}`;
     let _added = false;
@@ -1428,7 +1428,7 @@ function cmdStateAddRoadmapEvolution(cwd, options, raw) {
     if (!phaseId) {
         const rawState = node_fs_1.default.readFileSync(statePath, 'utf-8');
         const fm = extractFrontmatter(rawState, statePath);
-        phaseId = resolveCurrentPhaseId(fm, stripFrontmatter(rawState)) ?? undefined;
+        phaseId = resolveCurrentPhaseId(fm, stripFrontmatter(rawState), resolvePhaseIdConvention(cwd)) ?? undefined;
     }
     const entry = `- Phase ${phaseId || '?'} ${actionText}${afterText}: ${flatNote}${urgentText}`;
     let duplicate = false;
@@ -1995,26 +1995,27 @@ function preferNewerLastActivity(existingFm, derivedFm) {
         derivedFm['last_activity'] = exRaw;
     }
 }
-function parseProsePhaseField(value) {
+function parseProsePhaseField(value, convention) {
     // #2121 Phase 2 (#2125): delegate to the canonical anchored parser so this
     // module holds no independent prose phase-id regex. Drives #2111 — the
     // anchored parser returns { phase: null } for a "Milestone vX.Y complete"
     // body line (the old unanchored regex mined the minor-version digit, e.g.
     // v0.5 -> "5"), so syncStateFrontmatter's #905 guard preserves the real
     // current_phase instead of clobbering it.
-    return parsePhaseFromProse(value);
+    // #5626: under `milestone-prefixed` the id is the whole `M-NN`; the convention comes from its owner.
+    return parsePhaseFromProse(value, convention);
 }
-function resolveStatePhase(fm, body) {
+function resolveStatePhase(fm, body, convention) {
     const currentPositionScope = matchCurrentPositionSection(body) ?? body;
     const frontmatterRaw = (0, state_document_cjs_1.stateFieldValue)(fm, body, 'current_phase', null).value;
     const legacyRaw = (0, state_document_cjs_1.stateFieldValue)(fm, currentPositionScope, null, 'Current Phase').value;
     const currentPositionRaw = (0, state_document_cjs_1.stateFieldValue)(fm, currentPositionScope, null, 'Phase').value;
     const sources = {
-        frontmatter: parseProsePhaseField(frontmatterRaw).phase,
-        legacy_current_phase: parseProsePhaseField(legacyRaw).phase,
-        current_position_phase: parseProsePhaseField(currentPositionRaw).phase,
+        frontmatter: parseProsePhaseField(frontmatterRaw, convention).phase,
+        legacy_current_phase: parseProsePhaseField(legacyRaw, convention).phase,
+        current_position_phase: parseProsePhaseField(currentPositionRaw, convention).phase,
     };
-    const prosePhase = parseProsePhaseField(currentPositionRaw);
+    const prosePhase = parseProsePhaseField(currentPositionRaw, convention);
     return {
         phase: sources.frontmatter ?? sources.legacy_current_phase ?? sources.current_position_phase,
         name: (0, state_document_cjs_1.stateFieldValue)(fm, body, 'current_phase_name', null).value
@@ -2069,9 +2070,9 @@ function resolveStatePhase(fm, body) {
  * Reconcile the two only by giving `resolveStatePhase` an explicit scope
  * parameter — never by pointing this at it and dropping the difference.
  */
-function resolveCurrentPhaseId(fm, body) {
+function resolveCurrentPhaseId(fm, body, convention) {
     const positionSection = sliceCurrentPositionSection(body);
-    const prosePhase = positionSection !== null ? parseProsePhaseField((0, state_document_cjs_1.stateFieldValue)(fm, positionSection, null, 'Phase').value).phase : null;
+    const prosePhase = positionSection !== null ? parseProsePhaseField((0, state_document_cjs_1.stateFieldValue)(fm, positionSection, null, 'Phase').value, convention).phase : null;
     return (0, state_document_cjs_1.stateFieldValue)(fm, body, 'current_phase', 'Current Phase').value ?? prosePhase;
 }
 function parseProseLastActivityField(value) {
@@ -2109,7 +2110,7 @@ function cmdStateSnapshot(cwd, raw) {
     // so it is scopeable exactly like Stopped At under ## Session. Fall back to
     // full-body search only when no ## Current Position section exists, so files
     // with no section heading keep their current behaviour.
-    const resolvedPhase = resolveStatePhase(fm, body);
+    const resolvedPhase = resolveStatePhase(fm, body, resolvePhaseIdConvention(cwd));
     const currentPhase = resolvedPhase.phase;
     const currentPhaseName = resolvedPhase.name;
     const totalPhasesRaw = (0, state_document_cjs_1.stateFieldValue)(fm, body, 'total_phases', 'Total Phases').value;
@@ -2531,7 +2532,7 @@ milestoneExplicitlyNull) {
     // section overwrites current_phase here, and the next read surfaces it. Fall
     // back to full-body search when no ## Current Position section exists.
     const currentPositionScope = matchCurrentPositionSection(bodyContent) ?? bodyContent;
-    const prosePhase = parseProsePhaseField((0, state_document_cjs_1.stateExtractField)(currentPositionScope, 'Phase'));
+    const prosePhase = parseProsePhaseField((0, state_document_cjs_1.stateExtractField)(currentPositionScope, 'Phase'), cwd ? resolvePhaseIdConvention(cwd) : null);
     const currentPhase = (0, state_document_cjs_1.stateExtractField)(bodyContent, 'Current Phase') ?? prosePhase.phase;
     const currentPhaseName = (0, state_document_cjs_1.stateExtractField)(bodyContent, 'Current Phase Name') ?? prosePhase.name;
     const currentPlan = (0, state_document_cjs_1.stateExtractField)(bodyContent, 'Current Plan');
@@ -3847,7 +3848,10 @@ function assertStatePreservationOptions(options, caller) {
         throw err;
     }
 }
-function applyPostSyncPreservation(originalContent, transformedContent, syncedContent, statePath, options) {
+function applyPostSyncPreservation(originalContent, transformedContent, syncedContent, statePath, options, 
+// #5626: the project's phase-id convention, resolved by the caller from its cwd (null: unset). Trailing and
+// optional so `options` stays the fifth parameter the options guard and its callers rely on.
+phaseIdConvention = null) {
     assertStatePreservationOptions(options, 'applyPostSyncPreservation');
     const { resync, authoritativeFm, deriveProgressKeys, divergedFields, explicitProgressField, preWriteState } = options;
     // Bug #1230: delta heuristic — snapshot pre-transform body source fields so
@@ -3904,7 +3908,7 @@ function applyPostSyncPreservation(originalContent, transformedContent, syncedCo
     const preCurrentPositionScope = matchCurrentPositionSection(preBody) ?? preBody;
     const preBodyCurrentPlan = (0, state_document_cjs_1.stateExtractField)(preBody, 'Current Plan');
     const preBodyCurrentPhase = (0, state_document_cjs_1.stateExtractField)(preBody, 'Current Phase')
-        ?? parseProsePhaseField((0, state_document_cjs_1.stateExtractField)(preCurrentPositionScope, 'Phase')).phase;
+        ?? parseProsePhaseField((0, state_document_cjs_1.stateExtractField)(preCurrentPositionScope, 'Phase'), phaseIdConvention).phase;
     const preBodyPausedAt = (0, state_document_cjs_1.stateExtractField)(preSessionScope, 'Paused At');
     const preBodyLastActivityRaw = (0, state_document_cjs_1.stateExtractField)(preBody, 'Last Activity')
         ?? (0, state_document_cjs_1.stateExtractField)(preBody, 'Last activity');
@@ -3930,7 +3934,7 @@ function applyPostSyncPreservation(originalContent, transformedContent, syncedCo
     const postCurrentPositionScope = matchCurrentPositionSection(postBody) ?? postBody;
     const postBodyCurrentPlan = (0, state_document_cjs_1.stateExtractField)(postBody, 'Current Plan');
     const postBodyCurrentPhase = (0, state_document_cjs_1.stateExtractField)(postBody, 'Current Phase')
-        ?? parseProsePhaseField((0, state_document_cjs_1.stateExtractField)(postCurrentPositionScope, 'Phase')).phase;
+        ?? parseProsePhaseField((0, state_document_cjs_1.stateExtractField)(postCurrentPositionScope, 'Phase'), phaseIdConvention).phase;
     const postBodyPausedAt = (0, state_document_cjs_1.stateExtractField)(postSessionScope, 'Paused At');
     const postBodyLastActivityRaw = (0, state_document_cjs_1.stateExtractField)(postBody, 'Last Activity')
         ?? (0, state_document_cjs_1.stateExtractField)(postBody, 'Last activity');
@@ -4147,7 +4151,7 @@ function applyPostSyncPreservation(originalContent, transformedContent, syncedCo
 function syncAndPreserveStateMd(originalContent, transformedContent, statePath, cwd, options) {
     assertStatePreservationOptions(options, 'syncAndPreserveStateMd');
     const synced = syncStateFrontmatter(transformedContent, cwd, options.authoritativeFm);
-    return applyPostSyncPreservation(originalContent, transformedContent, synced, statePath, options);
+    return applyPostSyncPreservation(originalContent, transformedContent, synced, statePath, options, cwd ? resolvePhaseIdConvention(cwd) : null);
 }
 /**
  * Atomic read-modify-write for STATE.md.
@@ -5072,7 +5076,7 @@ function cmdStateJson(cwd, raw) {
         const bodyPausedAt = (0, state_document_cjs_1.stateExtractField)(sessionScope, 'Paused At');
         const bodyPhaseSource = (0, state_document_cjs_1.stateExtractField)(body, 'Phase');
         const bodyCurrentPhase = (0, state_document_cjs_1.stateExtractField)(body, 'Current Phase')
-            ?? parseProsePhaseField((0, state_document_cjs_1.stateExtractField)(positionScope, 'Phase')).phase;
+            ?? parseProsePhaseField((0, state_document_cjs_1.stateExtractField)(positionScope, 'Phase'), resolvePhaseIdConvention(cwd)).phase;
         const bodyCurrentPlan = (0, state_document_cjs_1.stateExtractField)(body, 'Current Plan');
         const bodyStatus = (0, state_document_cjs_1.stateExtractField)(body, 'Status');
         // #3836: mirrors applyPostSyncPreservation's own derivation (state.cts
@@ -5774,7 +5778,7 @@ function cmdStateValidate(cwd, raw, opts = {}) {
     const { fm, body, scope: initialScope } = readStateFrontmatterScoped(content, statePath);
     const scope = initialScope;
     const status = (0, state_document_cjs_1.stateFieldValue)(fm, body, 'status', 'Status').value || '';
-    const resolvedPhase = resolveStatePhase(fm, body);
+    const resolvedPhase = resolveStatePhase(fm, body, resolvePhaseIdConvention(cwd));
     const currentPhase = resolvedPhase.phase;
     const totalPlansRaw = (0, state_document_cjs_1.stateFieldValue)(fm, body, 'total_plans_in_phase', 'Total Plans in Phase').value;
     const totalPlansInPhase = totalPlansRaw ? parseInt(totalPlansRaw, 10) : null;
@@ -6228,7 +6232,7 @@ function cmdStatePrune(cwd, options, raw) {
     const body = stripFrontmatter(rawState);
     // Prune needs an integer cutoff, so it parses the resolved id itself; a
     // non-numeric or absent id lands on 0 and prune bails, as before.
-    const currentPhase = parseInt(String(resolveCurrentPhaseId(fm, body)), 10) || 0;
+    const currentPhase = parseInt(String(resolveCurrentPhaseId(fm, body, resolvePhaseIdConvention(cwd))), 10) || 0;
     const cutoff = currentPhase - keepRecent;
     if (cutoff <= 0) {
         emit({ pruned: false, reason: `Only ${currentPhase} phases — nothing to prune with --keep-recent ${keepRecent}` }, raw, 'false');

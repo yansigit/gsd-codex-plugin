@@ -337,10 +337,18 @@ function checkCodexModelPosture(runtime, projectRoot) {
 // clean Codex install) and the canonical sources are `<root>/gsd-core/agents`.
 // Prefer the nested directory when it actually holds agent sources; fall back to
 // `<root>/agents`. `root` is a parameter so each layout is testable.
+//
+// #5636: "holds agent sources" is a recognized agent file, `gsd-<name>.md` (every file in the shipped
+// roster) that is not a `.compact.md` variant. Any markdown would let a stray README in the nested
+// directory hide the real sources, so the posture check found no role's canonical file and skipped all.
+const CANONICAL_AGENT_SOURCE_FILE = /^gsd-.+\.md$/;
+function isCanonicalAgentSourceFile(entry) {
+    return CANONICAL_AGENT_SOURCE_FILE.test(entry) && !entry.endsWith('.compact.md');
+}
 function canonicalAgentSourceDir(root = node_path_1.default.join(__dirname, '..', '..', '..')) {
     const nested = node_path_1.default.join(root, 'gsd-core', 'agents');
     try {
-        if (node_fs_1.default.readdirSync(nested).some((entry) => entry.endsWith('.md') && !entry.endsWith('.compact.md')))
+        if (node_fs_1.default.readdirSync(nested).some(isCanonicalAgentSourceFile))
             return nested;
     }
     catch {
