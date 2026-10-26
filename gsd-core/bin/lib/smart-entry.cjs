@@ -43,6 +43,7 @@ const node_fs_1 = __importDefault(require("node:fs"));
 const node_path_1 = __importDefault(require("node:path"));
 const node_child_process_1 = require("node:child_process");
 const markdown_sectionizer_cjs_1 = require("./markdown-sectionizer.cjs");
+const read_only_git_env_cjs_1 = require("./read-only-git-env.cjs");
 const runtime_slash_cjs_1 = require("./runtime-slash.cjs");
 // #3696: the calendar-validity predicate moved to the STATE.md document module
 // so `state validate` can assert the same `last_activity` invariant this reader
@@ -222,6 +223,18 @@ function readGitSignals(cwd) {
                 windowsHide: true,
                 stdio: ['pipe', 'pipe', 'pipe'],
                 timeout: 10_000,
+                // #5048: readGitSignals runs `git status`, which by default refreshes
+                // the index and takes an *optional* `.git/index.lock` to write the
+                // refreshed copy back. That lock is the one a real `git add` / `git
+                // commit` needs, so a routine "which phase am I in" probe can fail
+                // someone else's commit with `Unable to create '.git/index.lock': File
+                // exists`. GIT_OPTIONAL_LOCKS=0 turns off exactly that optional write.
+                // The `rev-parse` / `log` calls sharing this helper never open the
+                // index, so the variable is inert for them. The block itself is owned by
+                // src/read-only-git-env.cts and shared with every other read-only seam;
+                // parity across every read-only surface is asserted in
+                // tests/git-optional-locks-parity.test.cjs.
+                env: (0, read_only_git_env_cjs_1.readOnlyGitEnv)(),
             });
         }
         catch {

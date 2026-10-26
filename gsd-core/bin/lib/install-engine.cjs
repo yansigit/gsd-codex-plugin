@@ -52,6 +52,7 @@ const userArtifactStaging = require("./user-artifact-staging.cjs");
 // module-level doc comment on `isGlobalScope` for why the projection is
 // centralized rather than eliminated).
 const install_scope_cjs_1 = require("./install-scope.cjs");
+const args_terminator_cjs_1 = require("./args-terminator.cjs");
 const { processAttribution } = runtimeArtifactConversion;
 // resolveRuntimeArtifactLayout: accessed via module ref (not destructured) so
 // test stubs that monkeypatch the module's exports are seen at call time.
@@ -233,7 +234,8 @@ function applyOpencodeFamilyPathPrefix(content, runtime, pathPrefix) {
     content = content.replace(/\.\/\.claude\//g, `./${getDirName(runtime)}/`);
     content = content.replace(/~\/\.opencode\//g, pathPrefix);
     content = content.replace(/~\/\.kilo\//g, pathPrefix);
-    return content;
+    // #5637: the typed-text capture heredoc ends at a terminator the typed text cannot know.
+    return (0, args_terminator_cjs_1.stampInstalledContent)(content);
 }
 /**
  * Convert a Claude command (.md) to an OpenCode skill (SKILL.md).
