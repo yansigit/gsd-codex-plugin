@@ -54,7 +54,7 @@ const planningScopeMod = require("./planning-scope.cjs");
 const { SCOPE } = planningScopeMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- roadmap-parser.cjs is an export= CommonJS module
 const roadmapParserMod = require("./roadmap-parser.cjs");
-const { stripShippedMilestones, extractCurrentMilestone, currentMilestoneRawRanges, withPhaseSection, editOutsideShippedBlocks, findMilestoneScopeHeadingLines } = roadmapParserMod;
+const { stripShippedMilestones, extractCurrentMilestone, currentMilestoneRawRanges, withPhaseSection, editCurrentMilestone, activeScopeStart, findMilestoneScopeHeadingLines } = roadmapParserMod;
 // #4129: the single owner of "count the ROADMAP's milestone Complete rows"
 // (pure computation, no I/O — no cycle on this path) for the intent-first
 // progress counters the phase-complete transaction passes downstream.
@@ -78,7 +78,7 @@ const phase_status_cjs_1 = require("./phase-status.cjs");
 const markdown_sectionizer_cjs_1 = require("./markdown-sectionizer.cjs");
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- roadmap.cjs is an export= CommonJS module
 const roadmapMod = require("./roadmap.cjs");
-const { buildPhaseHeadingRegex } = roadmapMod;
+const { buildPhaseHeadingRegex, editFromPhaseTable, findPhaseTableHeader, editProgressTableSlice, foldPhaseId, insideOpenDetails, checklistEntrySrc } = roadmapMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- uat-predicate.cjs is an export= CommonJS module
 const uatPredicate = require("./uat-predicate.cjs");
 const { evaluateUatPassed } = uatPredicate;
@@ -1123,6 +1123,73 @@ function spliceRoadmapBlock(rawContent, atOffset, block) {
     const tail = after === '' || /^\r?\n/.test(after) ? '' : eol;
     return before + lead + body + tail + after;
 }
+/** Segment-wise numeric order of two folded phase ids; a non-numeric segment never orders after. */
+function comparePhaseIds(a, b) {
+    const x = a.split('.').map(Number);
+    const y = b.split('.').map(Number);
+    for (let n = 0; n < Math.max(x.length, y.length); n++) {
+        const d = (x[n] ?? -1) - (y[n] ?? -1);
+        if (Number.isNaN(d))
+            return -1;
+        if (d)
+            return d;
+    }
+    return 0;
+}
+const spliceAfter = (raw, at, eol, line) => `${raw.slice(0, at)}${eol}${line}${raw.slice(at)}`;
+/**
+ * #5221: give a tool-created phase a ROADMAP record, so ship's fail-closed gate can read it.
+ * Writes `- [ ] **Phase N: desc**` after the active milestone's checklist (for an insert: after
+ * phase `after`'s own entries, else before the first later entry); with no checklist, a `N. desc | Not started` progress-table row;
+ * with neither, nothing. Entries inside an open <details> (shipped blocks) are not the checklist.
+ */
+function recordNewPhase(raw, cwd, id, description, after) {
+    const start = activeScopeStart(raw, cwd);
+    // End at the active milestone's section so a later planned milestone's checklist is never the target.
+    const end = currentMilestoneRawRanges(raw, cwd)?.primary.end;
+    const scope = raw.slice(start, end !== undefined && end > start ? end : undefined);
+    let custom = false;
+    try {
+        custom = loadConfig(cwd).phase_naming === 'custom';
+    }
+    catch { /* unreadable config: numeric ids only */ }
+    const entrySrc = checklistEntrySrc(resolvePhaseIdConvention(cwd), false, custom);
+    const entryRe = new RegExp(`^[ \\t]*${entrySrc}[^\\r\\n]*`, 'gim');
+    const bullets = [...scope.matchAll(entryRe)].filter((m) => !insideOpenDetails(scope, m.index));
+    const eol = raw.includes('\r\n') ? '\r\n' : '\n';
+    const entry = `- [ ] **Phase ${id}: ${description}**`;
+    // An id past CUSTOM_PHASE_ID_SRC's cap is written but not readable by analyze: report that, not 'checklist'.
+    const kind = new RegExp(`^${entrySrc}`).test(entry) ? 'checklist' : 'none';
+    if (after !== undefined) {
+        const anchor = foldPhaseId(after);
+        const own = bullets.filter((m) => foldPhaseId(m[1]) === anchor || foldPhaseId(m[1]).startsWith(`${anchor}.`)).at(-1);
+        // Anchor phase has no entry: go before the first numerically later entry, so the checklist stays ordered.
+        const later = own ? undefined : bullets.find((m) => comparePhaseIds(foldPhaseId(m[1]), anchor) > 0);
+        if (later) {
+            const at = start + later.index;
+            return { content: `${raw.slice(0, at)}${entry}${eol}${raw.slice(at)}`, entry: kind };
+        }
+        if (own)
+            return { content: spliceAfter(raw, start + own.index + own[0].length, eol, entry), entry: kind };
+    }
+    const last = bullets.at(-1);
+    if (last)
+        return { content: spliceAfter(raw, start + last.index + last[0].length, eol, entry), entry: kind };
+    let wrote = false;
+    const archived = roadmapParserMod.maskArchivedDetails(raw, cwd);
+    const edited = editProgressTableSlice(archived.visible, (scoped) => {
+        if (findPhaseTableHeader(scoped) === -1)
+            return scoped;
+        const cell = { Phase: `${id}. ${description}`, 'Plans Complete': '0/0', Status: 'Not started' };
+        const r = (0, markdown_table_cjs_1.insertTableRow)(scoped, (col) => cell[col]);
+        if (!r.ok)
+            return scoped;
+        wrote = true;
+        return r.value;
+    }, archived.activeRange);
+    const content = wrote && !archived.ambiguous ? archived.restore(edited) : null;
+    return content !== null ? { content, entry: 'progress_table' } : { content: raw, entry: 'none' };
+}
 /**
  * #3163: compute the byte offset in `rawContent` where a new `### Phase N:`
  * entry should be inserted — at the end of the active phase list, scoped to the
@@ -1219,6 +1286,7 @@ function collectSiblingWorktreePhaseNums(cwd, used) {
     try {
         porcelain = (0, node_child_process_1.execFileSync)('git', ['worktree', 'list', '--porcelain'], {
             cwd,
+            env: (0, shell_command_projection_cjs_1.scrubGitLocationEnv)(process.env),
             encoding: 'utf-8',
             // Same subprocess band as the other git call sites (smart-entry, check-command-router):
             // inside the 5-30s git window, hidden console window on Windows, bounded buffer.
@@ -1292,7 +1360,7 @@ function cmdPhaseAdd(cwd, description, raw, customId) {
         error('ROADMAP.md not found');
     }
     const slug = generateSlugInternal(description) || '';
-    const { newPhaseId, dirName } = withPlanningLock(cwd, () => {
+    const { newPhaseId, dirName, roadmapEntry } = withPlanningLock(cwd, () => {
         const rawContent = node_fs_1.default.readFileSync(roadmapPath, 'utf-8');
         const content = extractCurrentMilestone(rawContent, cwd);
         const projectCode = config.project_code || '';
@@ -1369,9 +1437,9 @@ function cmdPhaseAdd(cwd, description, raw, customId) {
         const dependsOn = config.phase_naming === 'custom' ? '' : dependsOnLine(_newPhaseId, roadmapDeclaredPhaseNums(rawContent));
         const phaseEntry = `\n### Phase ${_newPhaseId}: ${description}\n\n**Goal:** [To be planned]\n**Requirements**: TBD${dependsOn}\n**Plans:** 0 plans\n\nPlans:\n- [ ] TBD (run ${(0, runtime_slash_cjs_1.formatGsdSlash)('plan-phase', (0, runtime_slash_cjs_1.resolveRuntime)(cwd))} ${_newPhaseId} to break down)\n`;
         const insertAt = phaseEntryInsertOffset(rawContent, cwd);
-        const updatedContent = spliceRoadmapBlock(rawContent, insertAt, phaseEntry);
-        (0, shell_command_projection_cjs_1.platformWriteSync)(roadmapPath, updatedContent, { verbatim: true });
-        return { newPhaseId: _newPhaseId, dirName: _dirName };
+        const recorded = recordNewPhase(spliceRoadmapBlock(rawContent, insertAt, phaseEntry), cwd, _newPhaseId, description);
+        (0, shell_command_projection_cjs_1.platformWriteSync)(roadmapPath, recorded.content, { verbatim: true });
+        return { newPhaseId: _newPhaseId, dirName: _dirName, roadmapEntry: recorded.entry };
     });
     const titleWarning = describeGoalShapedTitle(description);
     const result = {
@@ -1381,6 +1449,7 @@ function cmdPhaseAdd(cwd, description, raw, customId) {
         slug,
         directory: toPosixPath(node_path_1.default.join(node_path_1.default.relative(cwd, planningDir(cwd)), 'phases', dirName)),
         naming_mode: config.phase_naming,
+        roadmap_entry: roadmapEntry,
     };
     if (titleWarning)
         result['warning'] = titleWarning;
@@ -1489,8 +1558,10 @@ function cmdPhaseAddBatch(cwd, descriptions, raw) {
             const dependsOn = config.phase_naming === 'custom' ? '' : dependsOnLine(newPhaseId, roadmapDeclaredPhaseNums(rawContent));
             const phaseEntry = `\n### Phase ${newPhaseId}: ${description}\n\n**Goal:** [To be planned]\n**Requirements**: TBD${dependsOn}\n**Plans:** 0 plans\n\nPlans:\n- [ ] TBD (run ${(0, runtime_slash_cjs_1.formatGsdSlash)('plan-phase', (0, runtime_slash_cjs_1.resolveRuntime)(cwd))} ${newPhaseId} to break down)\n`;
             const insertAt = phaseEntryInsertOffset(rawContent, cwd);
-            rawContent = spliceRoadmapBlock(rawContent, insertAt, phaseEntry);
+            const recorded = recordNewPhase(spliceRoadmapBlock(rawContent, insertAt, phaseEntry), cwd, newPhaseId, description);
+            rawContent = recorded.content;
             added.push({
+                roadmap_entry: recorded.entry,
                 phase_number: typeof newPhaseId === 'number' ? newPhaseId : String(newPhaseId),
                 padded: typeof newPhaseId === 'number' ? String(newPhaseId).padStart(2, '0') : String(newPhaseId),
                 name: description,
@@ -1602,7 +1673,7 @@ function cmdPhaseInsert(cwd, afterPhase, description, raw, allocation = 'nested'
         error('ROADMAP.md not found');
     }
     const slug = generateSlugInternal(description) || '';
-    const { decimalPhase, dirName } = withPlanningLock(cwd, () => {
+    const { decimalPhase, dirName, roadmapEntry } = withPlanningLock(cwd, () => {
         const rawContent = node_fs_1.default.readFileSync(roadmapPath, 'utf-8');
         const content = extractCurrentMilestone(rawContent, cwd);
         const normalizedAfter = normalizePhaseName(afterPhase);
@@ -1666,6 +1737,7 @@ function cmdPhaseInsert(cwd, afterPhase, description, raw, allocation = 'nested'
         (0, shell_command_projection_cjs_1.platformEnsureDir)(dirPath);
         (0, shell_command_projection_cjs_1.platformWriteSync)(node_path_1.default.join(dirPath, '.gitkeep'), '');
         let updatedContent;
+        let roadmapEntry;
         if (isBulletStyle) {
             const boldBulletPattern = new RegExp(`-\\s*\\[[ x]\\]\\s*\\*\\*Phase\\s+${afterPhaseEscaped}${OPTIONAL_PHASE_TAG_SOURCE}:`, 'i');
             const useBold = boldBulletPattern.test(content);
@@ -1680,6 +1752,8 @@ function cmdPhaseInsert(cwd, afterPhase, description, raw, allocation = 'nested'
             // templating it via detectEol(rawContent) was inert dead code. '\n'
             // matches what platformWriteSync enforces anyway.
             const bulletEntry = `\n- [ ] ${phaseLabel}`;
+            // A non-bold bullet is not an entry `roadmap analyze` reads (checklistEntrySrc needs `**`).
+            roadmapEntry = new RegExp(checklistEntrySrc(insertConvention, false, true)).test(bulletEntry) ? 'checklist' : 'none';
             // #3413: was `[^\n]*`, which on CRLF content swallows the line's
             // trailing \r into the match, shifting bulletLineEnd to land BETWEEN
             // the \r and \n of the original CRLF pair — a pure splice-POSITION
@@ -1761,11 +1835,10 @@ function cmdPhaseInsert(cwd, afterPhase, description, raw, allocation = 'nested'
                     break;
                 }
             }
-            updatedContent =
-                rawContent.slice(0, insertIdx) + phaseEntry + rawContent.slice(insertIdx);
+            ({ content: updatedContent, entry: roadmapEntry } = recordNewPhase(rawContent.slice(0, insertIdx) + phaseEntry + rawContent.slice(insertIdx), cwd, _decimalPhase, description, afterPhase));
         }
         (0, shell_command_projection_cjs_1.platformWriteSync)(roadmapPath, updatedContent);
-        return { decimalPhase: _decimalPhase, dirName: _dirName };
+        return { decimalPhase: _decimalPhase, dirName: _dirName, roadmapEntry };
     });
     const result = {
         phase_number: decimalPhase,
@@ -1773,6 +1846,7 @@ function cmdPhaseInsert(cwd, afterPhase, description, raw, allocation = 'nested'
         name: description,
         slug,
         directory: toPosixPath(node_path_1.default.join(node_path_1.default.relative(cwd, planningDir(cwd)), 'phases', dirName)),
+        roadmap_entry: roadmapEntry,
     };
     output(result, raw, decimalPhase);
     // #3227: unconditional here because `platformWriteSync(roadmapPath, updatedContent)`
@@ -3521,7 +3595,7 @@ function cmdPhaseComplete(cwd, phaseNum, raw) {
                 // bug because a GSD-authored ROADMAP.md milestone checklist never puts
                 // its own `- [ ] Phase N: …` entries inside a fenced code block, but it
                 // is a real (and correct) behavioural difference on pathological input.
-                const checkboxPattern = new RegExp(`^[ \\t]*(-\\s*\\[)[ ](\\]\\s*(?:\\*\\*)?\\s*Phase\\s+${phaseEscaped}${OPTIONAL_PHASE_TAG_SOURCE}[:\\s][^\\n]*)`, 'i');
+                const checkboxPattern = new RegExp(`^[ \\t]*(-\\s*\\[)[ ](\\]\\s*(?:\\*\\*)?\\s*Phase\\s+${phaseEscaped}${OPTIONAL_PHASE_TAG_SOURCE}[:\\s][^\\r\\n]*)`, 'i');
                 // #5165: pre-mutation read of the same checklist line, checked this time.
                 const checkedBoxPattern = new RegExp(`^[ \\t]*(-\\s*\\[)[xX](\\]\\s*(?:\\*\\*)?\\s*Phase\\s+${phaseEscaped}${OPTIONAL_PHASE_TAG_SOURCE}[:\\s][^\\n]*)`);
                 const originalMilestoneScope = extractCurrentMilestone(originalRoadmapContent, cwd);
@@ -3571,7 +3645,7 @@ function cmdPhaseComplete(cwd, phaseNum, raw) {
                 const editProgressHeadingSlice = (text, edit) => {
                     const progressMatch = text.match(/^##[ \t]+Progress\b/im);
                     if (!progressMatch || progressMatch.index === undefined) {
-                        return edit(text);
+                        return editFromPhaseTable(text, edit);
                     }
                     const headingOffset = progressMatch.index;
                     const beforeHeading = text.slice(0, headingOffset);
@@ -3579,7 +3653,7 @@ function cmdPhaseComplete(cwd, phaseNum, raw) {
                     const nextHeading = fromHeading.search(/\n#{1,2}[ \t]/);
                     const scoped = nextHeading >= 0 ? fromHeading.slice(0, nextHeading) : fromHeading;
                     const after = nextHeading >= 0 ? fromHeading.slice(nextHeading) : '';
-                    return beforeHeading + edit(scoped) + after;
+                    return beforeHeading + editFromPhaseTable(scoped, edit) + after;
                 };
                 // ADR-2143 §4: the plan-count write is now routed through
                 // withPhaseSection (see mutateMilestonePhase below), which hands this
@@ -3732,39 +3806,16 @@ function cmdPhaseComplete(cwd, phaseNum, raw) {
                             if (!coreUtilsMod.summaryPairsWithAnyPlan(phaseInfo['plans'] ?? [], summaryFile))
                                 continue;
                             // ADR-5057 §6 (Phase 13, #5217): the per-plan flip is a bullet
-                            // mutation, so it goes through `updateBullet` like the phase
+                            // mutation (`updateBullet` inside the helper) like the phase
                             // checkbox flip above — first matching bullet only, never a
                             // fenced line, never a mid-line occurrence.
-                            const planCheckboxPattern = coreUtilsMod.planRowPattern(planId, { anchored: true });
-                            b = (0, markdown_sectionizer_cjs_1.updateBullet)(b, (_bulletText, rawLine) => planCheckboxPattern.test(rawLine), (rawLine) => rawLine.replace(planCheckboxPattern, '$1x$2'));
+                            b = coreUtilsMod.tickAnchoredPlanRow(b, planId);
                         }
                         return b;
                     });
                     return s;
                 };
-                const milestoneRanges = currentMilestoneRawRanges(roadmapContent, cwd);
-                if (milestoneRanges) {
-                    // Splice later windows first so an earlier window's offsets are not
-                    // shifted by a length-changing mutation in a later window.
-                    const windows = [milestoneRanges.details, milestoneRanges.primary]
-                        .filter((w) => w !== null)
-                        .sort((a, b) => b.start - a.start);
-                    for (const w of windows) {
-                        roadmapContent =
-                            roadmapContent.slice(0, w.start)
-                                + mutateMilestonePhase(roadmapContent.slice(w.start, w.end))
-                                + roadmapContent.slice(w.end);
-                    }
-                }
-                else {
-                    // #5543: the active milestone could not be resolved (no STATE
-                    // `milestone:`, no marker). Writing the whole document would let
-                    // `withPhaseSection` pick the first `### Phase N:` in document order,
-                    // which can sit inside a shipped `<details>` block. Hide the shipped
-                    // blocks from the mutation and restore them untouched; a ROADMAP with
-                    // no shipped block is mutated whole, as before.
-                    roadmapContent = editOutsideShippedBlocks(roadmapContent, mutateMilestonePhase);
-                }
+                roadmapContent = editCurrentMilestone(roadmapContent, cwd, mutateMilestonePhase);
                 writes.push({
                     filePath: roadmapPath,
                     before: originalRoadmapContent,

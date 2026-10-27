@@ -42,6 +42,7 @@ const node_path_1 = __importDefault(require("node:path"));
 const frontmatter_fence_cjs_1 = require("./frontmatter-fence.cjs");
 // pattern.cjs is a leaf module (escapeRegex only), so this adds no cycle.
 const pattern_cjs_1 = require("./pattern.cjs");
+const markdown_sectionizer_cjs_1 = require("./markdown-sectionizer.cjs");
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const phaseIdModule = require("./phase-id.cjs");
 // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -553,6 +554,15 @@ function planRowPattern(planId, opts = {}) {
     const lead = opts.anchored ? '^(\\s*-\\s*\\[)' : '(-\\s*\\[)';
     return new RegExp(`${lead}${box}(\\]\\s*(?:\\*\\*)?${(0, pattern_cjs_1.escapeRegex)(planId)}${PLAN_ID_ROW_BOUNDARY_SOURCE}(?:\\*\\*)?)`, 'i');
 }
+/**
+ * Tick the first line-anchored unchecked row for `planId` in `text` (the
+ * `phase complete` / `roadmap update-plan-progress` bullet flip): a bullet
+ * mutation through `updateBullet`, so never a fenced line or mid-line match.
+ */
+function tickAnchoredPlanRow(text, planId) {
+    const row = planRowPattern(planId, { anchored: true });
+    return (0, markdown_sectionizer_cjs_1.updateBullet)(text, (_bulletText, rawLine) => row.test(rawLine), (rawLine) => rawLine.replace(row, '$1x$2'));
+}
 module.exports = {
     toPosixPath,
     normalizeLineEndings,
@@ -570,4 +580,5 @@ module.exports = {
     findOrphanSummaries,
     summaryPairsWithAnyPlan,
     planRowPattern,
+    tickAnchoredPlanRow,
 };

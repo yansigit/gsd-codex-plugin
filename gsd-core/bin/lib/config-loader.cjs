@@ -213,16 +213,16 @@ function _deepMergeConfig(base, overlay) {
 const _warnedUnknownConfigKeys = new Set();
 // ─── Git utilities ────────────────────────────────────────────────────────────
 const _gitIgnoredCache = new Map();
-function isGitIgnored(cwd, targetPath) {
+function isGitIgnored(cwd, targetPath, env) {
     // #2206: strip trailing slashes — `git check-ignore` has a quirk where a
     // CRLF .gitignore with blank lines falsely reports a trailing-slash path
     // (e.g. `.planning/`) as ignored. Normalizing here protects every call site.
     const normalized = targetPath.replace(/\/+$/, '');
-    const key = cwd + '::' + normalized;
+    const key = cwd + '::' + normalized + (env ? '::env:' + JSON.stringify(Object.entries(env).sort()) : '');
     if (_gitIgnoredCache.has(key))
         return _gitIgnoredCache.get(key);
     // --no-index checks .gitignore rules regardless of whether the file is tracked.
-    const result = (0, shell_command_projection_cjs_1.execGit)(['check-ignore', '-q', '--no-index', '--', normalized], { cwd });
+    const result = (0, shell_command_projection_cjs_1.execGit)(['check-ignore', '-q', '--no-index', '--', normalized], { cwd, env });
     const ignored = result.exitCode === 0;
     _gitIgnoredCache.set(key, ignored);
     return ignored;

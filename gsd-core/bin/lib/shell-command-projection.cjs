@@ -15,7 +15,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.PATH_ACTION_REASON = void 0;
+exports.scrubGitLocationEnv = exports.GIT_LOCATION_ENV_VARS = exports.PATH_ACTION_REASON = void 0;
 exports.toPosixPath = toPosixPath;
 exports.toNativePath = toNativePath;
 exports.posixNormalize = posixNormalize;
@@ -615,6 +615,10 @@ function _spawnResult(result, program) {
         timedOut: isSpawnTimeout({ error }),
     };
 }
+// #5548: owned by read-only-git-env.cts (its default base is scrubbed); re-exported for callers.
+var read_only_git_env_cjs_2 = require("./read-only-git-env.cjs");
+Object.defineProperty(exports, "GIT_LOCATION_ENV_VARS", { enumerable: true, get: function () { return read_only_git_env_cjs_2.GIT_LOCATION_ENV_VARS; } });
+Object.defineProperty(exports, "scrubGitLocationEnv", { enumerable: true, get: function () { return read_only_git_env_cjs_2.scrubGitLocationEnv; } });
 function execGit(args, opts = {}) {
     // Non-interactive defaults: a hung credential prompt or terminal-input
     // probe must surface as a timeout, not block the tool forever. Callers

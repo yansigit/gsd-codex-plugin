@@ -8,19 +8,28 @@
  * from the prior hand-written .cjs; only types are added.
  */
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.KNOWN_STATUS_PATTERNS = exports.KNOWN_TEMPLATE_DEFAULTS = exports.STATUS_ANCHORED_PATTERNS = exports.STATUS_EXACT_TOKENS = void 0;
+exports.KNOWN_STATUS_PATTERNS = exports.KNOWN_TEMPLATE_DEFAULTS = exports.STATUS_ANCHORED_PATTERNS = exports.STATUS_EXACT_TOKENS = exports.FIELD_LINE_BREAK_RE = void 0;
 exports.toFiniteNumber = toFiniteNumber;
 exports.isUnfilledFieldValue = isUnfilledFieldValue;
 exports.leadingCalendarDate = leadingCalendarDate;
 exports.isRealCalendarDate = isRealCalendarDate;
 exports.stateFieldContinuation = stateFieldContinuation;
+exports.editedLineContinuation = editedLineContinuation;
+exports.readableEditedBoldLabel = readableEditedBoldLabel;
+exports.markdownFencedBlocks = markdownFencedBlocks;
+exports.maskFencedLines = maskFencedLines;
+exports.writeOutsideFences = writeOutsideFences;
+exports.readableBoldLabels = readableBoldLabels;
 exports.fieldContinuationEnd = fieldContinuationEnd;
+exports.insertMissingSessionFields = insertMissingSessionFields;
 exports.stateExtractField = stateExtractField;
 exports.stateFieldValue = stateFieldValue;
 exports.stateCurrentPositionSlice = stateCurrentPositionSlice;
 exports.stateReplaceField = stateReplaceField;
 exports.stateReplaceFieldWithFallback = stateReplaceFieldWithFallback;
 exports.stateReplaceFieldInSession = stateReplaceFieldInSession;
+exports.isSessionHeading = isSessionHeading;
+exports.isSessionContinuityHeading = isSessionContinuityHeading;
 exports.normalizeStateStatus = normalizeStateStatus;
 exports.computeProgressPercent = computeProgressPercent;
 exports.shouldPreserveExistingProgress = shouldPreserveExistingProgress;
@@ -32,6 +41,9 @@ const phase_lifecycle_cjs_1 = require("./phase-lifecycle.cjs");
 const markdown_sectionizer_cjs_1 = require("./markdown-sectionizer.cjs");
 const pattern_cjs_1 = require("./pattern.cjs");
 const planning_document_cjs_1 = require("./planning-document.cjs");
+Object.defineProperty(exports, "FIELD_LINE_BREAK_RE", { enumerable: true, get: function () { return planning_document_cjs_1.FIELD_LINE_BREAK_RE; } });
+const frontmatter_fence_cjs_1 = require("./frontmatter-fence.cjs");
+const state_md_schema_cjs_1 = require("./state-md-schema.cjs");
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- planning-scope.cjs is an export= CommonJS module
 const planningScopeMod = require("./planning-scope.cjs");
 const { SCOPE } = planningScopeMod;
@@ -324,8 +336,19 @@ function isRealCalendarDate(year, month, day) {
  * produce false S009 fires on well-formed content: an indented code block, an
  * HTML block, and a setext underline (`===`, which the `[-*_]{3,}` rule does not
  * cover — it only knows `-`, `*` and `_`).
+ *
+ * #4998: a fence, an ATX heading (an empty `##` included), a blockquote or a
+ * thematic break opens with up to three leading spaces, as Markdown allows —
+ * such a line directly below a field was read as its continuation, so
+ * record-session skipped a field that does not wrap. Four spaces or a tab is
+ * the indented-code arm. Other indented structure (an indented bullet) stays a
+ * continuation on purpose: it fails toward skipping the field, never toward
+ * splitting a note from the field it annotates.
  */
-const MD_STRUCTURE_LINE_RE = /^(?:#{1,6}\s|\||>|```|~~~|[-*_]{3,}\s*$|=+\s*$|[-*+]\s|\d+[.)]\s|\[[^\]]+\]:|<|(?: {4}|\t))/;
+// The backtick fence is spelled `\x60{3}`: a literal run of backticks in a
+// regex literal opens a template string for the source scanners in
+// scripts/ (lint-state-field-drift), which then misread the rest of the file.
+const MD_STRUCTURE_LINE_RE = /^(?:\||>| {0,3}(?:#{1,6}(?:\s|$)|\x60{3}|~~~|>|[-*_]{3,}\s*$)|[-*_]{3,}\s*$|=+\s*$|[-*+]\s|\d+[.)]\s|\[[^\]]+\]:|<|(?: {4}|\t))/;
 /**
  * A setext heading's underline — `===` or `---` on its own line. The line ABOVE
  * one of these is a heading TITLE, which is indistinguishable from prose on its
@@ -334,7 +357,36 @@ const MD_STRUCTURE_LINE_RE = /^(?:#{1,6}\s|\||>|```|~~~|[-*_]{3,}\s*$|=+\s*$|[-*
  * continuation text (#3696 review round 2).
  */
 const SETEXT_UNDERLINE_RE = /^(?:=+|-+)\s*$/;
-const STATE_SIBLING_FIELD_LINE_RE = /^\*{0,2}[A-Za-z][A-Za-z0-9 _-]*\*{0,2}:{1,2}\*{0,2}(?:\s|$)/;
+// #4998: a sibling field may be indented as the field above it may be
+// (`stateExtractField`'s bold rung tolerates leading whitespace); up to three
+// spaces, as for MD_STRUCTURE_LINE_RE — four is indented code either way. The
+// label admits `.`, `(`, `)` and `/` as well (`Phase 3.1 status:`,
+// `Next (planned):`): a sibling read as a continuation made record-session
+// refuse a field that does not wrap.
+const STATE_SIBLING_FIELD_LINE_RE = /^ {0,3}\*{0,2}[A-Za-z][A-Za-z0-9 _.()/-]*\*{0,2}:{1,2}\*{0,2}(?:\s|$)/;
+/**
+ * #4998 review (trek-e 5638530738, Minor 2): the labels STATE.md defines —
+ * every body source the frontmatter sync reads, plus the session and position
+ * fields the template writes. Lower-cased.
+ */
+const STATE_FIELD_LABELS = new Set([
+    ...Object.values(state_md_schema_cjs_1.STATE_FIELD_SCHEMA).flatMap((row) => row.bodySource ?? []),
+    'Last session', 'Last Date', 'Resume file', 'Phase', 'Plan', 'Progress', 'Current focus',
+].map((label) => label.toLowerCase()));
+/**
+ * A plain `words: text` line below a field is a sibling field or a wrapped
+ * tail (`records and verified: all good`); its shape cannot tell which. A
+ * line is a sibling beyond doubt only when its label is bold or one STATE.md
+ * defines. Each caller resolves the ambiguous rest toward its own safe side:
+ * the record-session wrap check (`editedLineContinuation`) reads it as a
+ * continuation and leaves the field whole; the validator and the writer that
+ * removes a continuation (`fieldContinuationEnd`) end the value there, so a
+ * sibling is never deleted.
+ */
+function isUnambiguousSiblingLine(line) {
+    const m = /^ {0,3}(\*\*)?([A-Za-z][A-Za-z0-9 _.()/-]*?)(?:\*\*)?:{1,2}(?:\*\*)?(?:\s|$)/.exec(line);
+    return m !== null && (m[1] !== undefined || STATE_FIELD_LABELS.has(m[2].trim().toLowerCase()));
+}
 /**
  * Return the prose that FOLLOWS a single-line field but plainly belongs to it —
  * i.e. the remainder `stateExtractField` silently drops when a writer emits a
@@ -373,17 +425,197 @@ function stateFieldContinuation(content, fieldName) {
     if (!match)
         return null;
     // `(.+)` stops at the line terminator, so the field's line ends where the
-    // match does. JS `.` excludes \r as well as \n, so on a CRLF document the \r
-    // sits just AFTER the match rather than inside it — hence the strip below
-    // before testing for the newline.
-    const afterValue = match.index + match[0].length;
+    // match does.
+    return continuationAfter(content, match.index + match[0].length);
+}
+/**
+ * #4998: where the line a single-line field write changed starts — found from
+ * the edit itself, the first byte where `before` and `after` differ, so it is
+ * always the occurrence the writer touched, whichever label grammar or
+ * occurrence it matched. The bytes before that point are common to both, so
+ * the offset holds in either string. Callers handle `before === after`.
+ */
+function editedLineStart(before, after) {
+    const limit = Math.min(before.length, after.length);
+    let i = 0;
+    while (i < limit && before.charCodeAt(i) === after.charCodeAt(i))
+        i++;
+    // `lastIndexOf` clamps a negative start to 0, so i = 0 would find a
+    // newline AT byte 0 and misplace the edited line onto the next one.
+    return i === 0 ? 0 : before.lastIndexOf('\n', i - 1) + 1;
+}
+/**
+ * #4998: the continuation (as `stateFieldContinuation` defines it) of the line
+ * a single-line field write CHANGED (`editedLineStart`). `null` when nothing
+ * changed — an identical-value write leaves every byte, the continuation
+ * included, where it was — when the edited line is the last line, or when it
+ * is a pipe-table row (a table cell cannot wrap).
+ */
+function editedLineContinuation(before, after) {
+    if (before === after)
+        return null;
+    const lineStart = editedLineStart(before, after);
+    const lineEnd = before.indexOf('\n', lineStart);
+    // The edited line only: trimming the rest of the document would let a blank
+    // edited line borrow a later table row's pipe.
+    const line = before.slice(lineStart, lineEnd === -1 ? before.length : lineEnd).replace(/\r$/, '');
+    if (line.trimStart().startsWith('|'))
+        return null;
+    // A line break INSIDE the edited line (a bare CR, U+2028, U+2029) already
+    // wraps the value for the `m`-flag readers, which stop there: the text after
+    // it is a continuation, exactly as a following LF line is (Codex review round 3).
+    const inner = line.search(planning_document_cjs_1.FIELD_LINE_BREAK_RE);
+    if (inner !== -1)
+        return line.slice(inner + 1).split(planning_document_cjs_1.FIELD_LINE_BREAK_RE).map((part) => part.trim()).join(' ').trim();
+    return lineEnd === -1 ? null : continuationAfter(before, lineEnd, false);
+}
+/**
+ * #4998: `after` with the line a single-line write changed respelled from
+ * `**Label**:` to `**Label:**` — the spelling `stateExtractField` reads — so a
+ * value `state record-session` just wrote reads back into the frontmatter
+ * sync. `stateReplaceField` keeps the author's spelling by contract (#5007),
+ * and that contract stands for every other caller: this is applied only by
+ * the one writer whose lines the sync must read back, and only to the one
+ * line it wrote. Widening the reader to `**Label**:` instead was tried and
+ * reverted — it made the sync read fenced examples. Any other line is
+ * untouched.
+ */
+function readableEditedBoldLabel(before, after) {
+    if (before === after)
+        return after;
+    const lineStart = editedLineStart(before, after);
+    const lineEnd = after.indexOf('\n', lineStart);
+    const end = lineEnd === -1 ? after.length : lineEnd;
+    const line = after.slice(lineStart, end).replace(/^([ \t]*)\*\*([^*\r\n]+)\*\*:/, '$1**$2:**');
+    return after.slice(0, lineStart) + line + after.slice(end);
+}
+/**
+ * Index of the closing `---` of a closed frontmatter block at the top of a
+ * whole document, or -1 (always -1 outside `document` scope).
+ */
+function lastFrontmatterLine(lines, scope) {
+    if (!scope.document)
+        return -1;
+    const text = lines.join('\n');
+    const fm = (0, frontmatter_fence_cjs_1.locateFrontmatterFence)(text);
+    return fm && fm.closed ? text.slice(0, fm.closingStart).split('\n').length - 1 : -1;
+}
+/**
+ * #4998: `scanFencedBlocks` over the Markdown of `lines` only. In a whole
+ * document the frontmatter block is YAML, where a ``` line is data (a block
+ * scalar), not a fence; its lines are blanked for the scan, so they never open
+ * a fence that shifts every boundary after them (Codex review). Line indices
+ * are those of `lines`.
+ */
+function markdownFencedBlocks(lines, scope = {}) {
+    const last = lastFrontmatterLine(lines, scope);
+    return last === -1 ? (0, markdown_sectionizer_cjs_1.scanFencedBlocks)(lines) : (0, markdown_sectionizer_cjs_1.scanFencedBlocks)(lines.map((line, i) => (i <= last ? '' : line)));
+}
+/**
+ * Per line of `lines`: whether a field reader or writer must not see it — a
+ * fenced block's line (delimiters included) or, in a whole document, a line
+ * of frontmatter between its `---` delimiters (YAML data that a Markdown
+ * scanner would otherwise read as a heading, a fence or a field).
+ */
+function maskedLineFlags(lines, scope) {
+    const masked = lines.map(() => false);
+    for (const block of markdownFencedBlocks(lines, scope)) {
+        const end = block.closeLineIdx === -1 ? lines.length - 1 : block.closeLineIdx;
+        for (let i = block.openLineIdx; i <= end; i++)
+            masked[i] = true;
+    }
+    const last = lastFrontmatterLine(lines, scope);
+    for (let i = 1; i < last; i++)
+        masked[i] = true;
+    return masked;
+}
+/**
+ * #4998: `content` with every fenced line blanked to spaces — same length,
+ * same line terminators — for reading a field the way `writeOutsideFences`
+ * writes it: an example line in a fence is not a field. With
+ * `{ document: true }` the frontmatter's content lines are blanked too (its
+ * `---` delimiters kept), so scanners that do not know frontmatter — the
+ * heading tokenizer behind `collectSection`, `parsePlanningDoc` — see only
+ * the Markdown body (Codex review rounds 2 and 3).
+ */
+function maskFencedLines(content, scope = {}) {
+    const lines = content.split('\n');
+    const masked = maskedLineFlags(lines, scope);
+    return lines.map((line, i) => (masked[i] ? line.replace(/[^\r]/g, ' ') : line)).join('\n');
+}
+/**
+ * #4998: apply a single-line field write (`stateReplaceField` and kin) to
+ * `content` as if its fenced blocks were absent, so a fenced example line is
+ * never the occurrence a write replaces — the same rule
+ * `insertMissingSessionFields` follows, through the same scanner. `write` runs
+ * against a masked copy (`maskFencedLines`); its one edit is then spliced into
+ * the real text at the same offsets. Returns what `write` returns for "no
+ * match" (`null`, or the input unchanged as `content`), and `null` if the
+ * edit cannot be carried back exactly (it touched a fenced line or changed
+ * the line structure) — the stateReplaceField no-match contract, never a
+ * partial write.
+ */
+function writeOutsideFences(content, write, scope = {}) {
+    // Outside a whole document a leading `---` is a horizontal rule
+    // (`FenceScope`), but the field writers parse what they are given as a
+    // document, where it opens frontmatter and hides the fields below it: a
+    // section starting with a rule got a duplicate field inserted (Codex
+    // review). They are handed the text after a line break, which is removed again.
+    const run = (text) => {
+        if (scope.document)
+            return write(text);
+        const out = write(`\n${text}`);
+        return out !== null && out.startsWith('\n') ? out.slice(1) : null;
+    };
+    const masked = maskFencedLines(content, scope);
+    if (masked === content)
+        return run(content);
+    const result = run(masked);
+    if (result === null)
+        return null;
+    if (result === masked)
+        return content;
+    const limit = Math.min(masked.length, result.length);
+    let p = 0;
+    while (p < limit && masked.charCodeAt(p) === result.charCodeAt(p))
+        p++;
+    let s = 0;
+    while (s < limit - p && masked.charCodeAt(masked.length - 1 - s) === result.charCodeAt(result.length - 1 - s))
+        s++;
+    // The span the write replaced must lie on unfenced lines — an edit that
+    // touched a fenced line cannot be carried back, even when the masked and
+    // real bytes there happen to agree (a whitespace-only fenced line).
+    const lineOf = (offset) => content.slice(0, offset).split('\n').length - 1;
+    const fenced = maskedLineFlags(content.split('\n'), scope);
+    for (let line = lineOf(p); line <= lineOf(content.length - s); line++)
+        if (fenced[line])
+            return null;
+    const spliced = content.slice(0, p) + result.slice(p, result.length - s) + content.slice(content.length - s);
+    return maskFencedLines(spliced, scope) === result ? spliced : null;
+}
+/**
+ * #4998: `content` with every `**Label**:` line respelled `**Label:**`, for
+ * READING a field the way the writer finds it: `stateReplaceField` matches
+ * both spellings, `stateExtractField` only the second, so a `**Resume
+ * file**: plan.md` read as absent while the writer could still replace it.
+ * Never written back.
+ */
+function readableBoldLabels(content) {
+    // allow-adhoc-markdown: a read-only copy for stateExtractField, never written back — not a document mutation
+    return content.replace(/^([ \t]*)\*\*([^*\r\n]+)\*\*:/gm, '$1**$2:**');
+}
+/** The continuation lines following the line that ends at `afterValue`. */
+function continuationAfter(content, afterValue, ambiguousLabelEnds = true) {
+    // JS `.` excludes \r as well as \n, so on a CRLF document the \r sits just
+    // AFTER a `(.+)` match rather than inside it — hence the strip below before
+    // testing for the newline.
     const rest = content.slice(afterValue).replace(/^\r/, '');
     // #5460: U+2028 / U+2029 are line starts to the `m`-flag readers (and stop `(.+)`), so they end
     // the value's line exactly as `\n` does.
     if (!/^[\n\u2028\u2029]/.test(rest))
         return null; // end of file: nothing follows
     const lines = rest.slice(1).split(LINE_SEPARATOR_RE).map((line) => line.replace(/\r$/, ''));
-    const continuation = lines.slice(0, continuationLineCount(lines)).map((line) => line.trim());
+    const continuation = lines.slice(0, continuationLineCount(lines, ambiguousLabelEnds)).map((line) => line.trim());
     return continuation.length ? continuation.join(' ') : null;
 }
 /**
@@ -391,7 +623,7 @@ function stateFieldContinuation(content, fieldName) {
  * `stateFieldContinuation` reports on, shared so a writer that replaces the value removes exactly
  * the lines a validator would call its continuation (#4945). `lines` are CR-free.
  */
-function continuationLineCount(lines) {
+function continuationLineCount(lines, ambiguousLabelEnds = true) {
     let count = 0;
     for (let i = 0; i < lines.length; i++) {
         const line = lines[i];
@@ -399,7 +631,9 @@ function continuationLineCount(lines) {
             break;
         if (MD_STRUCTURE_LINE_RE.test(line))
             break;
-        if (STATE_SIBLING_FIELD_LINE_RE.test(line))
+        // A label line the shape cannot place is a sibling only where the caller
+        // fails safe that way (`isUnambiguousSiblingLine`).
+        if (STATE_SIBLING_FIELD_LINE_RE.test(line) && (ambiguousLabelEnds || isUnambiguousSiblingLine(line)))
             break;
         // Look ahead one line: a setext underline below makes THIS line a heading
         // title, so stop before consuming it rather than after.
@@ -436,6 +670,63 @@ function fieldContinuationEnd(content, valueEnd) {
     if (rawLines[count - 1].endsWith('\r'))
         removed -= 1;
     return valueEnd + removed;
+}
+/**
+ * #4998: insert each needed field of `fields` — given in template order — into
+ * `body`, beside the sibling it follows in that order (below the sibling's own
+ * wrapped lines, never between them), else before the sibling it precedes,
+ * else at the top in bold. Plain beside a plain sibling, else bold, in the
+ * spellings `stateExtractField` reads back. Every existing line is kept, in
+ * order, and lines inside a fenced block are examples: never an anchor, never
+ * an insertion point. An inserted line ends as the body's lines do (CRLF when
+ * the body uses CRLF).
+ */
+function insertMissingSessionFields(body, fields) {
+    const lines = body.split('\n');
+    const fenced = maskedLineFlags(lines, {});
+    const cr = body.includes('\r\n') ? '\r' : '';
+    // The spellings stateReplaceField writes: `**Label:**`, `**Label**:`, `Label:`.
+    const lineOf = (label) => {
+        const re = new RegExp(`^[ \\t]*(?:\\*\\*)?${(0, pattern_cjs_1.escapeRegex)(label)}(?::\\*\\*|\\*\\*:|:)(?:\\s|$)`, 'i');
+        return lines.findIndex((l, i) => !fenced[i] && re.test(l));
+    };
+    // Where field k goes: below the nearest earlier sibling present (past its
+    // wrapped lines, stopping before a fence the continuation scan does not
+    // recognize), else above the nearest later one, else the top.
+    const placement = (k) => {
+        for (let j = k - 1; j >= 0; j--) {
+            const anchor = lineOf(fields[j].label);
+            if (anchor === -1)
+                continue;
+            // An ambiguous `words: text` line is taken as the anchor's tail, as the
+            // wrap check takes it: inserting inside a wrapped value splits it
+            // (Codex review); inserting below a sibling only moves the new line.
+            const tailEnd = anchor + 1 + continuationLineCount(lines.slice(anchor + 1).map((l) => l.replace(/\r$/, '')), false);
+            let at = anchor + 1;
+            while (at < tailEnd && !fenced[at])
+                at++;
+            return { at, anchor };
+        }
+        for (let j = k + 1; j < fields.length; j++) {
+            const anchor = lineOf(fields[j].label);
+            if (anchor !== -1)
+                return { at: anchor, anchor };
+        }
+        return { at: 0, anchor: -1 };
+    };
+    fields.forEach(({ label, needed, value }, k) => {
+        if (!needed)
+            return;
+        const { at, anchor } = placement(k);
+        const bold = anchor === -1 || lines[anchor].trimStart().startsWith('**');
+        const line = (bold ? `**${label}:** ` : `${label}: `) + value;
+        // Appended after an unterminated last line: that line gains the CR.
+        if (at === lines.length)
+            lines[at - 1] += cr;
+        lines.splice(at, 0, at === lines.length ? line : line + cr);
+        fenced.splice(at, 0, false);
+    });
+    return lines.join('\n');
 }
 function stateExtractField(content, fieldName) {
     const escaped = (0, pattern_cjs_1.escapeRegex)(fieldName);
@@ -644,14 +935,13 @@ function stateReplaceField(content, fieldName, newValue) {
     // is the same, already-precedented widening as the "Depends on"
     // migration (src/phase.cts) — intentional, not scope creep.
     //
-    // A parse failure, an absent/case-mismatched label, or a value containing
-    // a line break (\r/\n — would forge sibling structure on splice, the same
-    // hazard `setFieldValue` refuses unconditionally at #4917/ADR-4910
-    // Decision 2 & 4; this local splice has no seam call to inherit that
-    // refusal from, so it is re-checked here) falls through to the
+    // A parse failure or an absent/case-mismatched label falls through to the
     // plain/pipe-table branches below unchanged — the same silent
     // per-occurrence no-op-on-no-match contract the removed regex had for any
-    // input it didn't match.
+    // input it didn't match. A value containing a line break
+    // (`FIELD_LINE_BREAK_RE` — would forge sibling structure on splice, the
+    // same hazard `setFieldValue` refuses at #4917/ADR-4910 Decision 2 & 4)
+    // is refused by every rung (#4998): the function returns null.
     const parsed = (0, planning_document_cjs_1.parsePlanningDoc)(content, 'STATE.md');
     if (parsed.ok) {
         let boldField = null;
@@ -675,11 +965,16 @@ function stateReplaceField(content, fieldName, newValue) {
             const newValueStr = `${newValue}`;
             const needsSeparator = newValueStr.length > 0 && !/[ \t]$/.test(spacingText);
             const writeValue = `${needsSeparator ? ' ' : ''}${newValueStr}`;
-            if (!/[\r\n]/.test(writeValue)) {
+            if (!planning_document_cjs_1.FIELD_LINE_BREAK_RE.test(writeValue)) {
                 return (content.slice(0, boldField.valueSpan.start) + writeValue + content.slice(boldField.trailingSpan.end));
             }
         }
     }
+    // #4998: the plain and table rungs refuse a line break too. Spliced in, it
+    // forges sibling lines exactly as the bold rung's refusal above prevents;
+    // falling through to them only moved the forgery one rung down.
+    if (planning_document_cjs_1.FIELD_LINE_BREAK_RE.test(`${newValue}`))
+        return null;
     // Plain line-start format: FieldName: value (same same-line confinement as above)
     const plainPattern = new RegExp(`(^${escaped}:[ \\t]*)(.*)`, 'im');
     if (plainPattern.test(content)) {
@@ -722,14 +1017,28 @@ function stateReplaceFieldWithFallback(content, primary, fallback, value) {
  * Replace-only (no insertion): returns `content` unchanged when no session
  * section exists or the field is absent from it, so a STATE.md layout without
  * the line keeps its shape and the post-sync preservation pass decides the
- * frontmatter value (see #3374).
+ * frontmatter value (see #3374). Lines inside a fenced block are examples and
+ * are never the occurrence replaced (#4998, `writeOutsideFences`).
  */
 function stateReplaceFieldInSession(content, primary, fallback, value) {
-    const isSession = (h) => h.level === 2 && h.text.trim().toLowerCase() === 'session';
-    const isSessionContinuity = (h) => h.level === 2 && h.text.trim().toLowerCase() === 'session continuity';
-    const hasCanonicalSession = (0, markdown_sectionizer_cjs_1.collectSection)(content, isSession, { levelBounded: true }) !== null;
-    const target = hasCanonicalSession ? isSession : isSessionContinuity;
-    return (0, markdown_sectionizer_cjs_1.withSection)(content, target, (sectionBody) => stateReplaceFieldWithFallback(sectionBody, primary, fallback, value));
+    const hasCanonicalSession = (0, markdown_sectionizer_cjs_1.collectSection)(content, isSessionHeading, { levelBounded: true }) !== null;
+    const target = hasCanonicalSession ? isSessionHeading : isSessionContinuityHeading;
+    // #4998: a fenced example line is never the field written, as the session
+    // readers (state.cts sessionFieldScope) never read one.
+    return (0, markdown_sectionizer_cjs_1.withSection)(content, target, (sectionBody) => writeOutsideFences(sectionBody, (visible) => stateReplaceFieldWithFallback(visible, primary, fallback, value)) ?? sectionBody);
+}
+/**
+ * The two session headings, as every session reader and writer recognises
+ * them: one grammar (the `collectSection` tokenizer), so a heading the readers
+ * take is never one a writer misses. #4998 review: `state record-session`
+ * detected the section with its own regex, which rejected `##  Session`, and
+ * appended a duplicate section.
+ */
+function isSessionHeading(h) {
+    return h.level === 2 && h.text.trim().toLowerCase() === 'session';
+}
+function isSessionContinuityHeading(h) {
+    return h.level === 2 && h.text.trim().toLowerCase() === 'session continuity';
 }
 /**
  * #4186: the DECLARED raw-status vocabulary `normalizeStateStatus` recognizes.

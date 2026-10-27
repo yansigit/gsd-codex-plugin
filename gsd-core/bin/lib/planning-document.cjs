@@ -30,7 +30,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.PLANNING_ARTIFACTS = void 0;
+exports.PLANNING_ARTIFACTS = exports.FIELD_LINE_BREAK_RE = void 0;
 exports.parsePlanningDoc = parsePlanningDoc;
 exports.findField = findField;
 exports.readNode = readNode;
@@ -48,6 +48,15 @@ const artifacts_cjs_1 = require("./artifacts.cjs");
 // is imported as a default import (esModuleInterop), not a named import.
 const frontmatter_cjs_1 = __importDefault(require("./frontmatter.cjs"));
 const frontmatter_fence_cjs_1 = require("./frontmatter-fence.cjs");
+/**
+ * #4998: every character that ends a line for the planning-document readers.
+ * Their `^`/`$` run with the `m` flag, and a JavaScript multiline anchor
+ * matches at U+2028 LINE SEPARATOR and U+2029 PARAGRAPH SEPARATOR as well as
+ * at CR and LF — so a single-line value carrying either one forges a sibling
+ * line just as `\n` does. Every single-line writer, here (`setFieldValue`,
+ * `replaceProse`) and in `state-document.cts`, refuses a value matching this.
+ */
+exports.FIELD_LINE_BREAK_RE = /[\r\n\u2028\u2029]/;
 const { extractFrontmatter, FRONTMATTER_UNPARSEABLE } = frontmatter_cjs_1.default;
 /**
  * Canonical `.planning/` root artifact basenames this seam recognises,
@@ -562,13 +571,25 @@ function setFieldValue(doc, id, value) {
         return { ok: false, reason: `node kind '${node.kind}' is not writable this phase` };
     }
     // #4917 / ADR-4910 Decision 2 & 4: a boldField's token boundary is a LINE
-    // boundary, not just an offset range — a value containing \n or \r escapes
+    // boundary, not just an offset range — a value containing any
+    // FIELD_LINE_BREAK_RE character (#4998: U+2028/U+2029 too) escapes
     // the field's own span and reparses as sibling structure (a forged field)
     // once spliced back into the source. Decision 4 licenses refusal for any
     // value the grammar cannot represent; Phase 3 may widen this to escaping,
     // but Phase 1 refuses outright. Do not remove this as an over-restriction.
-    if (/[\r\n]/.test(value)) {
-        return { ok: false, reason: 'field value must not contain a line break (\\r or \\n)' };
+    // One carve-out (#4998, Codex review): a U+2028/U+2029 the field ALREADY
+    // carries may stay when everything from it on is byte-identical — a rewrite
+    // of the text before it (phase renumbering a `Depends on`) adds no line, and
+    // refusing it left the field silently unrenumbered.
+    const breakAt = value.search(exports.FIELD_LINE_BREAK_RE);
+    if (breakAt !== -1) {
+        const current = doc.source.slice(node.valueSpan.start, node.valueSpan.end);
+        const currentBreak = current.search(exports.FIELD_LINE_BREAK_RE);
+        const keepsExistingTail = !/[\r\n]/.test(value) && currentBreak !== -1
+            && value.slice(breakAt) === current.slice(currentBreak);
+        if (!keepsExistingTail) {
+            return { ok: false, reason: 'field value must not contain a line break (\\r, \\n, U+2028 or U+2029)' };
+        }
     }
     // #4917 / ADR-4910 Decision 4: "a value that cannot be represented in the
     // grammar is refused by the writer, with a report." This is a GENERAL
@@ -664,7 +685,7 @@ function replaceProse(doc, from, to) {
     if (typeof from !== 'string' || from.length === 0) {
         return { ok: false, reason: 'replaceProse: `from` must be a non-empty string' };
     }
-    if (typeof to !== 'string' || /[\r\n]/.test(from) || /[\r\n]/.test(to)) {
+    if (typeof to !== 'string' || exports.FIELD_LINE_BREAK_RE.test(from) || exports.FIELD_LINE_BREAK_RE.test(to)) {
         return { ok: false, reason: 'replaceProse: `from` and `to` must be single-line strings' };
     }
     if (doc.staged.size > 0) {
