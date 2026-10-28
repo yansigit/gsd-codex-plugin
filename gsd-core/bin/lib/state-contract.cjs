@@ -8,7 +8,8 @@
  * already answers:
  *   - `planning-workspace.cjs`'s `planningPaths` for every `.planning/` path
  *     (workstream-aware — never re-derived here).
- *   - `phase-lifecycle.cjs`'s `locateProgressTable` (this issue's Edit 1) for
+ *   - `roadmap-progress.cjs`'s `locateRoadmapProgress` (#5761; was
+ *     `phase-lifecycle`'s `locateProgressTable`) for
  *     "where is the Progress table" — the SAME table
  *     `deriveProgressFromRoadmap` counts from, so `phases[]` and
  *     `deriveProgressFromRoadmap`'s `totalPhases` can never disagree about
@@ -114,7 +115,7 @@ function owners() {
     /* eslint-disable @typescript-eslint/no-require-imports */
     const planningWorkspaceMod = require('./planning-workspace.cjs');
     const shellCommandProjectionMod = require('./shell-command-projection.cjs');
-    const phaseLifecycleMod = require('./phase-lifecycle.cjs');
+    const roadmapProgressMod = require('./roadmap-progress.cjs');
     const phaseIdMod = require('./phase-id.cjs');
     const roadmapParserMod = require('./roadmap-parser.cjs');
     const markdownSectionizerMod = require('./markdown-sectionizer.cjs');
@@ -126,7 +127,7 @@ function owners() {
         planningPaths: planningWorkspaceMod.planningPaths,
         platformReadSync: shellCommandProjectionMod.platformReadSync,
         platformWriteSync: shellCommandProjectionMod.platformWriteSync,
-        locateProgressTable: phaseLifecycleMod.locateProgressTable,
+        locateRoadmapProgress: roadmapProgressMod.locateRoadmapProgress,
         isSentinelPhaseId: phaseIdMod.isSentinelPhaseId,
         parsePhaseFromProse: phaseIdMod.parsePhaseFromProse,
         resolvePhaseIdConvention: planningWorkspaceMod.resolvePhaseIdConvention,
@@ -249,7 +250,7 @@ function phasesFromChecklist(roadmapContent, cwd, statePath, convention) {
     return phases;
 }
 function buildPhases(cwd, paths) {
-    const { platformReadSync, locateProgressTable } = owners();
+    const { platformReadSync, locateRoadmapProgress } = owners();
     try {
         let content = platformReadSync(paths.roadmap);
         if (content === null)
@@ -257,7 +258,7 @@ function buildPhases(cwd, paths) {
         if (content.charCodeAt(0) === 0xfeff)
             content = content.slice(1); // strip leading BOM
         const convention = phaseIdConventionOf(cwd);
-        const table = locateProgressTable(content);
+        const { table } = locateRoadmapProgress(content);
         if (table)
             return phasesFromProgressTable(table, convention);
         return phasesFromChecklist(content, cwd, paths.state, convention);

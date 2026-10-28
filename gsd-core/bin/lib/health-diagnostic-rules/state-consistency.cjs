@@ -46,7 +46,7 @@ const healthDiagnosticMod = require("../health-diagnostic-types.cjs");
 const { SEVERITY, adviseRemedy } = healthDiagnosticMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const phaseIdMod = require("../phase-id.cjs");
-const { getMilestoneFromPhaseId, matchPhaseDirs, normalizePhaseName, extractPhaseToken, PHASE_NUMBER_TOKEN_SOURCE } = phaseIdMod;
+const { getMilestoneFromPhaseId, matchPhaseDirs, phaseLookupQuery, extractPhaseToken, PHASE_NUMBER_TOKEN_SOURCE } = phaseIdMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- the single owner of the persisted status vocabulary
 const stateDocumentMod = require("../state-document.cjs");
 const { normalizeStateStatus } = stateDocumentMod;
@@ -332,8 +332,8 @@ const RULE_W026 = {
         // field's own doc comment on `PlanningSnapshot` for why
         // `roadmapDeclaredPhases`'s `milestone` attribution is the wrong fit).
         const unstarted = [];
+        const directoryContext = snapshot.directoryContext ?? phaseIdMod.phaseDirectoryContext(snapshot.config.value ?? {}, '', snapshot.currentMilestoneRoadmapPhaseIds.value);
         for (const phaseId of snapshot.currentMilestoneRoadmapPhaseIds.value) {
-            const normalized = normalizePhaseName(phaseId);
             // `allPhaseDirNames` — every directory under `phases/`, UNWINDOWED by
             // ROADMAP-declaration membership — mirrors the original's own
             // unwindowed `phaseDirNames2` (`verify.cts:2372-2382`, a direct
@@ -346,7 +346,7 @@ const RULE_W026 = {
             // moved the read onto the shared selector; the convention rides along,
             // since the selector's primary match IS the `phaseTokenMatches` call this
             // line used to make directly.
-            const hasDirectory = matchPhaseDirs(snapshot.allPhaseDirNames.value, normalized, snapshot.phaseIdConvention).matches.length > 0;
+            const hasDirectory = matchPhaseDirs(snapshot.allPhaseDirNames.value, phaseLookupQuery(phaseId, directoryContext), snapshot.phaseIdConvention, undefined, directoryContext).matches.length > 0;
             if (!hasDirectory)
                 unstarted.push(phaseId);
         }

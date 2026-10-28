@@ -38,6 +38,7 @@ const state_document_cjs_1 = require("./state-document.cjs");
 const state_document_cjs_2 = require("./state-document.cjs");
 const markdown_sectionizer_cjs_1 = require("./markdown-sectionizer.cjs");
 const phase_lifecycle_cjs_1 = require("./phase-lifecycle.cjs");
+const roadmap_progress_cjs_1 = require("./roadmap-progress.cjs");
 const pattern_cjs_1 = require("./pattern.cjs");
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- phase-id.cjs is an export= CommonJS module
 const phaseIdMod = require("./phase-id.cjs");
@@ -1769,8 +1770,8 @@ function completePhaseCore(content, intent, deps) {
     // else the milestone STATE asserts. It scopes the roadmap-derived counters
     // below to that milestone's Progress-table rows, the same milestone
     // `phase complete` scopes its frontmatter progress to.
-    const currentMilestone = (0, phase_lifecycle_cjs_1.milestoneVersionOf)(intent.milestone)
-        ?? (0, phase_lifecycle_cjs_1.milestoneVersionOf)(extractFrontmatter(content, deps.sourcePath)['milestone']);
+    const currentMilestone = (0, roadmap_progress_cjs_1.milestoneVersionOf)(intent.milestone)
+        ?? (0, roadmap_progress_cjs_1.milestoneVersionOf)(extractFrontmatter(content, deps.sourcePath)['milestone']);
     // Consult the field-classification table for the frontmatter keys this
     // transition touches (same guard beginPhaseCore applies). A missing row is a
     // substrate defect — fail loudly rather than silently re-encoding policy.

@@ -69,10 +69,13 @@ const stateDocument = require("./state-document.cjs");
 const { stateFieldValue } = stateDocument;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const phaseId = require("./phase-id.cjs");
-const { comparePhaseNum, extractPhaseToken, matchPhaseDirs, normalizePhaseName, parsePhaseFromProse, stripProjectCodePrefix } = phaseId;
+const { comparePhaseNum, extractPhaseToken, customPhaseQuery, customDirectoryOwner, parsePhaseFromProse, stripProjectCodePrefix } = phaseId;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const stateMod = require("./state.cjs");
 const { readStateHeadFreshness } = stateMod;
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const phaseLocatorMod = require("./phase-locator.cjs");
+const { phaseDirectoryOptions, resolvePhaseDirectoryLookup, matchPhaseDirsForLookup } = phaseLocatorMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const unusableInput = require("./unusable-input.cjs");
 const { warnUnusableInput, UNUSABLE_REASON } = unusableInput;
@@ -120,8 +123,8 @@ function parseIntOrNull(s) {
     const n = Number.parseInt(cleaned, 10);
     return Number.isFinite(n) ? n : null;
 }
-function phaseTokenFromDirName(name) {
-    const token = extractPhaseToken(name);
+function phaseTokenFromDirName(name, convention) {
+    const token = extractPhaseToken(name, convention);
     // #2528: the shape probe runs on the PROJECT-CODE-STRIPPED token. A prefixed
     // directory tokenizes to `MEM-05-80-20`, which does not start with a digit,
     // so the unstripped probe rejected it and the entry was dropped before any
@@ -252,9 +255,9 @@ function readGitSignals(cwd) {
     const unpushed = run(['log', '@{u}..HEAD', '--oneline']).trim().length > 0;
     return { has_git: true, dirty, unpushed };
 }
-/** Leading numeric phase token from a STATE.md scalar or body `Phase:` value. */
-function phaseTokenFromState(raw) {
-    return parsePhaseFromProse(raw).phase;
+/** Phase identity from a STATE.md scalar or body `Phase:` value, honoring custom naming when a context is supplied. */
+function phaseTokenFromState(raw, context) {
+    return parsePhaseFromProse(raw, undefined, context).phase;
 }
 /**
  * Detect whether the current phase's verify report indicates failure. The
@@ -264,12 +267,20 @@ function phaseTokenFromState(raw) {
  */
 function detectVerifyFailed(cwd, currentPhaseRaw) {
     const phasesDir = node_path_1.default.join(planningPaths(cwd).phases);
+    // #4304: both the directory admission scan and the later selector must read
+    // the same current-checkout grammar. Bracket is the only opt-in widening.
+    const convention = resolvePhaseIdConvention(cwd) === 'bracket' ? 'bracket' : undefined;
+    const directoryContext = phaseDirectoryOptions(cwd);
     let entries = [];
     try {
         entries = node_fs_1.default.readdirSync(phasesDir)
-            .map((name) => ({ name, phaseToken: phaseTokenFromDirName(name) }))
+            .map((name) => {
+            const custom = customPhaseQuery(name, directoryContext);
+            const parts = custom && customDirectoryOwner(name, custom);
+            return { name, phaseToken: parts ? parts.id : phaseTokenFromDirName(name, convention) };
+        })
             .filter((entry) => entry.phaseToken !== null)
-            .sort((a, b) => comparePhaseNum(a.phaseToken, b.phaseToken) || a.name.localeCompare(b.name))
+            .sort((a, b) => comparePhaseNum(a.phaseToken, b.phaseToken, directoryContext) || a.name.localeCompare(b.name))
             .map((entry) => entry.name);
     }
     catch {
@@ -277,10 +288,10 @@ function detectVerifyFailed(cwd, currentPhaseRaw) {
     }
     if (entries.length === 0)
         return false;
-    const phaseToken = phaseTokenFromState(currentPhaseRaw);
+    const phaseToken = phaseTokenFromState(currentPhaseRaw, directoryContext);
     let targetDir;
     if (phaseToken) {
-        const normalized = normalizePhaseName(phaseToken);
+        const lookup = resolvePhaseDirectoryLookup(cwd, phaseToken, undefined, directoryContext);
         // #2528: the fourth directory-resolution site, and the one where a miss is
         // silent — a phase whose directory cannot be found reports "not failed",
         // which reads identically to a healthy phase. It must therefore apply the
@@ -289,7 +300,7 @@ function detectVerifyFailed(cwd, currentPhaseRaw) {
         // surfaces its own failed verification. `entries` is already sorted, and
         // `matchPhaseDirs` filters without reordering, so taking the first match
         // preserves the previous `.find()` selection exactly.
-        const { matches } = matchPhaseDirs(entries, normalized);
+        const { matches } = matchPhaseDirsForLookup(entries, lookup, undefined, directoryContext);
         targetDir = matches[0];
         if (!targetDir)
             return false;

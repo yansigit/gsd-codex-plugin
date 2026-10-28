@@ -31,13 +31,13 @@ const coreUtilsMod = require("./core-utils.cjs");
 const { toPosixPath, generateSlugInternal, extractOneLinerFromBody } = coreUtilsMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const phaseIdMod = require("./phase-id.cjs");
-const { normalizePhaseName, comparePhaseNum, extractPhaseToken, PHASE_NUMBER_TOKEN_SOURCE, isSentinelPhaseId, renderPhaseBranchName, parsePhaseId, renderPhaseId, phaseHeadingPrefixSrcFor, PHASE_HEADING_BASELINE, } = phaseIdMod;
+const { customPhaseQuery, customDirectoryOwner, isCustomPhaseId, normalizePhaseName, comparePhaseNum, extractPhaseToken, PHASE_NUMBER_TOKEN_SOURCE, isSentinelPhaseId, renderPhaseBranchName, parsePhaseId, renderPhaseId, phaseHeadingPrefixSrcFor, PHASE_HEADING_BASELINE, } = phaseIdMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const phaseIdDisplayMod = require("./phase-id-display.cjs");
 const { renderBracketMilestoneDisplay } = phaseIdDisplayMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const phaseLocatorMod = require("./phase-locator.cjs");
-const { getArchivedPhaseDirs, findPhaseInternal, listMilestonePhaseDirs } = phaseLocatorMod;
+const { phaseDirectoryOptions, getArchivedPhaseDirs, findPhaseInternal, listMilestonePhaseDirs } = phaseLocatorMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const roadmapParserMod = require("./roadmap-parser.cjs");
 const { extractCurrentMilestone, stripShippedMilestones: _stripShippedMilestones, getMilestoneInfo, getRoadmapPhaseInternal } = roadmapParserMod;
@@ -1822,7 +1822,7 @@ function cmdCommit(cwd, message, files, raw, amend, noVerify, filesRemoved) {
             // phase — the phase arm must never branch-mutate for it (isSentinelPhaseId
             // is the invariant's single owner, src/phase-id.cts).
             if (phaseNum && !isSentinelPhaseId(phaseNum)) {
-                const phaseInfo = findPhaseInternal(cwd, phaseNum);
+                const phaseInfo = findPhaseInternal(cwd, phaseNum, undefined, phaseDirectoryOptions(cwd, config));
                 if (phaseInfo) {
                     // #4126: shared with init.cts's cmdInitExecutePhase branch_name field
                     // via the one canonical renderer (src/phase-id.cts) so an undeliverable
@@ -3053,6 +3053,7 @@ function cmdProgressRender(cwd, format, raw) {
         ? renderBracketMilestoneDisplay(milestone?.version, loadConfig(cwd).project_code)
         : null;
     const milestoneVersion = milestoneDisplay ?? milestone?.version ?? null;
+    const directoryContext = phaseDirectoryOptions(cwd);
     const phases = [];
     let totalPlans = 0;
     let totalSummaries = 0;
@@ -3091,9 +3092,11 @@ function cmdProgressRender(cwd, format, raw) {
                 }
             }
             else {
+                const custom = customPhaseQuery(dir, directoryContext);
+                const owner = custom && customDirectoryOwner(dir, custom);
                 const dm = dir.match(/^(\d+(?:\.\d+)*)-?(.*)/);
-                phaseNum = dm ? dm[1] : dir;
-                phaseName = dm && dm[2] ? dm[2].replace(/-/g, ' ') : '';
+                phaseNum = owner ? owner.id : dm ? dm[1] : dir;
+                phaseName = owner ? owner.slug.replace(/-/g, ' ') : dm && dm[2] ? dm[2].replace(/-/g, ' ') : '';
             }
             // #3183/#5060: canonical plan/summary counts and lifecycle status
             // (root+nested, superseded-excluded, canonical pairing) from the
@@ -3212,7 +3215,7 @@ function cmdTodoMatchPhase(cwd, phase, raw) {
         .map(w => w.replace(/[^a-z0-9]/g, ''))
         .filter(w => w.length > 2 && !stopWords.has(w)));
     // Find phase directory to get expected file paths
-    const phaseInfoDisk = findPhaseInternal(cwd, phase);
+    const phaseInfoDisk = findPhaseInternal(cwd, phase, undefined, phaseDirectoryOptions(cwd));
     const phasePlans = [];
     if (phaseInfoDisk && phaseInfoDisk['found']) {
         try {
@@ -3394,7 +3397,7 @@ function cmdScaffold(cwd, type, options, raw) {
     const padded = phase ? normalizePhaseName(phase) : '00';
     const today = clock_cjs_1.realClock.localToday();
     // Find phase directory
-    const phaseInfo = phase ? findPhaseInternal(cwd, phase) : null;
+    const phaseInfo = phase && type !== 'phase-dir' ? findPhaseInternal(cwd, phase, undefined, phaseDirectoryOptions(cwd)) : null;
     const phaseDir = phaseInfo ? node_path_1.default.join(cwd, phaseInfo['directory']) : null;
     if (phase && !phaseDir && type !== 'phase-dir') {
         error(`Phase ${phase} directory not found`);
@@ -3422,14 +3425,14 @@ function cmdScaffold(cwd, type, options, raw) {
             }
             const slug = generateSlugInternal(name);
             // #3287: apply project_code prefix to stay consistent with phase.add/phase.insert
-            const scaffoldConfig = loadConfig(cwd);
-            const scaffoldProjectCode = scaffoldConfig['project_code'] || '';
-            const scaffoldPrefix = scaffoldProjectCode ? `${scaffoldProjectCode}-` : '';
-            const dirName = `${scaffoldPrefix}${padded}-${slug}`;
-            const phasesParent = planningPaths(cwd).phases;
-            (0, shell_command_projection_cjs_1.platformEnsureDir)(phasesParent);
-            const dirPath = node_path_1.default.join(phasesParent, dirName);
-            (0, shell_command_projection_cjs_1.platformEnsureDir)(dirPath);
+            const scaffoldConfig = phaseDirectoryOptions(cwd, undefined, '');
+            const roadmapPath = node_path_1.default.join(planningDir(cwd), 'ROADMAP.md');
+            const roadmap = scaffoldConfig.phaseNaming === 'custom' && node_fs_1.default.existsSync(roadmapPath)
+                ? node_fs_1.default.readFileSync(roadmapPath, 'utf8') : '';
+            const [{ dirPath }] = phaseLocatorMod.createPhaseDirectories(cwd, [{
+                    id: phase, slug: slug || '',
+                    directoryId: scaffoldConfig.phaseNaming === 'custom' && isCustomPhaseId(phase) ? phase : padded,
+                }], { ...scaffoldConfig, roadmap }, false);
             output({ created: true, directory: toPosixPath(node_path_1.default.relative(cwd, dirPath)), path: dirPath }, raw, dirPath);
             return;
         }

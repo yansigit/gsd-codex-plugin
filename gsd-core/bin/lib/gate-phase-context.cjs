@@ -34,10 +34,7 @@ const planningWorkspaceMod = require("./planning-workspace.cjs");
 const { planningDir } = planningWorkspaceMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const phaseLocatorMod = require("./phase-locator.cjs");
-const { findPhaseInternal } = phaseLocatorMod;
-// eslint-disable-next-line @typescript-eslint/no-require-imports
-const phaseIdMod = require("./phase-id.cjs");
-const { normalizePhaseName, matchPhaseDirs } = phaseIdMod;
+const { phaseDirectoryOptions, findPhaseInternal, resolvePhaseDirectoryLookup, matchPhaseDirsForLookup } = phaseLocatorMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const roadmapModule = require("./roadmap.cjs");
 const { getRoadmapPhaseWithFallback } = roadmapModule;
@@ -78,7 +75,7 @@ function unresolvableProbeVerdict(readError) {
 function resolvePhaseDir(projectDir, phase) {
     let result;
     try {
-        result = findPhaseInternal(projectDir, phase);
+        result = findPhaseInternal(projectDir, phase, undefined, phaseDirectoryOptions(projectDir));
     }
     catch (err) {
         return (0, gate_evidence_cjs_1.evidenceFromError)(err, `phase ${phase}`);
@@ -109,11 +106,13 @@ function resolvePhaseDir(projectDir, phase) {
  * `resolvePhaseDir` would widen what those gates inspect, so the two stay apart and each states its
  * scope. Throws when `phasesDir` cannot be listed; both callers sit inside their non-blocking catch.
  */
-function resolvePhaseDirByToken(phasesDir, phaseArg) {
-    const normalizedPhase = normalizePhaseName(phaseArg);
+function resolvePhaseDirByToken(cwd, phasesDir, phaseArg, directoryContext = phaseDirectoryOptions(cwd)) {
+    const lookup = resolvePhaseDirectoryLookup(cwd, phaseArg, undefined, directoryContext);
     const dirEntries = node_fs_1.default.readdirSync(phasesDir, { withFileTypes: true });
     const dirNames = dirEntries.filter((e) => e.isDirectory()).map((e) => e.name);
-    const matched = matchPhaseDirs(dirNames, normalizedPhase).matches[0];
+    // #4304: both drift gates resolve a directory in the current checkout.
+    // Bracket is the only opt-in grammar; all other conventions remain legacy.
+    const matched = matchPhaseDirsForLookup(dirNames, lookup, undefined, directoryContext).matches[0];
     if (matched)
         return node_path_1.default.join(phasesDir, matched);
     const contained = (0, security_cjs_1.tryWithinRoot)(phaseArg, phasesDir);

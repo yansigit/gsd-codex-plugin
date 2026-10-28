@@ -186,12 +186,12 @@ function ownConfigValue(configPath, keyPath) {
  * GSD_PROJECT/GSD_WORKSTREAM value containing path separators or `..`, and
  * that shape resolves to "not present".
  */
-function readScopedConfigValue(cwd, keyPath) {
+function readScopedConfigValue(cwd, keyPath, workstream) {
     try {
-        const scoped = ownConfigValue(node_path_1.default.join(planningDir(cwd), 'config.json'), keyPath);
+        const scoped = ownConfigValue(node_path_1.default.join(planningDir(cwd, workstream), 'config.json'), keyPath);
         if (scoped.present)
             return scoped;
-        if (resolveEnvWorkstream() !== null) {
+        if ((workstream === undefined ? resolveEnvWorkstream() : workstream) !== null) {
             return ownConfigValue(node_path_1.default.join(planningRoot(cwd), 'config.json'), keyPath);
         }
     }

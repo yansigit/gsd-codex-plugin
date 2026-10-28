@@ -75,4 +75,6 @@ function renderBracketMilestoneDisplay(milestone, projectCode) {
 module.exports = {
     renderBracketPhaseDisplay,
     renderBracketMilestoneDisplay,
+    milestoneToken,
+    phaseToken,
 };

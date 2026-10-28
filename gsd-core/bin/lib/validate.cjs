@@ -43,6 +43,7 @@ exports.checkBracketCoherence = checkBracketCoherence;
 exports.textEncodingError = textEncodingError;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const phaseIdMod = require("./phase-id.cjs");
+const phase_entry_grammar_cjs_1 = require("./phase-entry-grammar.cjs");
 const { OPTIONAL_PROJECT_CODE_PREFIX_SOURCE, 
 // #2528 review: taken from the owner rather than derived here by
 // `replaceAll('A-Z', 'A-Za-z')` — that derivation silently no-ops (and narrows
@@ -228,7 +229,7 @@ function buildRoadmapPhaseVariants(roadmapContent, convention) {
     // shape (bold bullet index + detail headings) where the icebox appears as both.
     // `validate health` stayed silent on the same repo, so the two verbs disagreed
     // — the disagreement `sentinelPhases` exists to close.
-    const checklistPattern = new RegExp(`-\\s*\\[[ xX]\\]\\s*\\*{0,2}${phaseHeadingPrefixSrcFor(PHASE_HEADING_BASELINE.LABEL_ONLY, convention, capturing)}([\\w][\\w.-]*)\\s*:`, 'gi');
+    const checklistPattern = (0, phase_entry_grammar_cjs_1.phaseEntryRegExp)(`${phaseHeadingPrefixSrcFor(PHASE_HEADING_BASELINE.LABEL_ONLY, convention, capturing)}([\\w][\\w.-]*)\\s*:`, 'gi');
     let cm;
     while ((cm = checklistPattern.exec(roadmapContent)) !== null) {
         const cBracketId = g ? cm[1] : undefined;
@@ -252,7 +253,7 @@ function buildNotStartedPhaseVariants(roadmapContent, convention) {
     // Trailing class is `[:\s*]` — a SPACE terminates the token here, not only a
     // colon — so this site is the loosest of the three and the one where a
     // retro-granted bracket tolerance would suppress a live W006.
-    const uncheckedPattern = new RegExp(`-\\s*\\[\\s\\]\\s*\\*{0,2}${phaseHeadingPrefixSrcFor(PHASE_HEADING_BASELINE.LABEL_ONLY, convention)}([\\w][\\w.-]*)[:\\s*]`, 'gi');
+    const uncheckedPattern = (0, phase_entry_grammar_cjs_1.phaseEntryRegExp)(`${phaseHeadingPrefixSrcFor(PHASE_HEADING_BASELINE.LABEL_ONLY, convention)}([\\w][\\w.-]*)[:\\s*]`, 'gi', { state: 'unchecked' });
     let um;
     while ((um = uncheckedPattern.exec(roadmapContent)) !== null) {
         for (const variant of phaseVariants(um[1]))

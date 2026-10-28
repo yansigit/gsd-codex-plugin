@@ -38,7 +38,7 @@ const stateContract = require("./state-contract.cjs");
 const { publishStateContract } = stateContract;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const phaseIdMod = require("./phase-id.cjs");
-const { normalizePhaseName, matchPhaseDirs, isSentinelPhaseId, isSentinelPhaseDir, buildPhaseHeadingScanRegex, PHASE_HEADING_BASELINE } = phaseIdMod;
+const { isSentinelPhaseId, isSentinelPhaseDir, buildPhaseHeadingScanRegex, PHASE_HEADING_BASELINE } = phaseIdMod;
 const pattern_cjs_1 = require("./pattern.cjs");
 const milestone_release_map_cjs_1 = require("./milestone-release-map.cjs");
 // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -55,7 +55,7 @@ const planScanMod = require("./plan-scan.cjs");
 const { scanPhasePlans } = planScanMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- phase-locator.cjs is an export= CommonJS module
 const phaseLocatorMod = require("./phase-locator.cjs");
-const { listMilestonePhaseDirs } = phaseLocatorMod;
+const { phaseDirectoryOptions, listMilestonePhaseDirs, resolvePhaseDirectoryLookup, matchPhaseDirsForLookup } = phaseLocatorMod;
 const { planningPaths, resolvePhaseIdConvention } = planningWorkspace;
 const { extractFrontmatter } = frontmatterMod;
 // ADR-3408 §8.3 / #3469: `writeStateMd` gets sync and NO preservation — the
@@ -585,7 +585,7 @@ function cmdMilestoneComplete(cwd, version, options, raw) {
     // `platformEnsureDir(archiveDir)` below — a refused run (scope not COMPLETE,
     // no --force) must be a true no-op on disk, and creating the archive
     // directory first left an empty directory behind even on refusal.
-    const isDirInMilestone = getMilestonePhaseFilter(cwd, version);
+    const isDirInMilestone = getMilestonePhaseFilter(cwd, version, undefined, undefined, phaseDirectoryOptions(cwd));
     if (isDirInMilestone.missingExplicitVersion) {
         error(`no phases found for milestone ${version} in ROADMAP.md`);
     }
@@ -610,6 +610,10 @@ function cmdMilestoneComplete(cwd, version, options, raw) {
             `entries, even though the ROADMAP has phase entries elsewhere), so phase scoping ` +
             `cannot be trusted for this destructive operation. Re-run with --force to override.`);
     }
+    // #2761/#4304: resolve once for every phase-directory consumer in this
+    // command. The matcher opts in only for bracket; the milestone enumerator
+    // retains the full resolved value it already accepted.
+    const phaseConvention = resolvePhaseIdConvention(cwd);
     // Guard: prevent marking complete when ROADMAP still lists phases that have
     // no directory on disk (disk_status: no_directory). This catches the case
     // where the active milestone was erroneously marked complete before phases
@@ -691,8 +695,8 @@ function cmdMilestoneComplete(cwd, version, options, raw) {
             // properly-scaffolded bracket phase reads as disk_status: 'no_directory'
             // — turning a real bracket project's own phases into false "ROADMAP
             // lists N unstarted phase(s)" failures on `milestone complete`.
-            const convention = resolvePhaseIdConvention(cwd);
-            const { regex: phasePattern, phaseNumGroup } = buildPhaseHeadingScanRegex(PHASE_HEADING_BASELINE.ANY_BRACKET, convention);
+            const directoryContext = phaseDirectoryOptions(cwd, undefined, scopedContent);
+            const { regex: phasePattern, phaseNumGroup } = buildPhaseHeadingScanRegex(PHASE_HEADING_BASELINE.ANY_BRACKET, phaseConvention, directoryContext);
             const noDirectoryPhases = [];
             let pm;
             const phaseDirEntries = (() => {
@@ -716,12 +720,14 @@ function cmdMilestoneComplete(cwd, version, options, raw) {
                 // #3185: canonical sentinel predicate (SENTINEL_RANGES [0,999]) — this local check already covered both 0 and 999; now delegates to the single canonical owner.
                 if (isSentinelPhaseId(phaseNum))
                     continue;
-                const normalized = normalizePhaseName(phaseNum);
+                const lookup = resolvePhaseDirectoryLookup(cwd, phaseNum, undefined, directoryContext);
                 // A phase has disk_status: 'no_directory' when no phase directory
                 // with a matching token exists on disk. Use the same matchPhaseDirs
                 // owner that roadmap.analyze uses to avoid false positives on decimal
-                // (2.1) and letter-suffix (12A) phase IDs. (#2528)
-                const hasDirectory = matchPhaseDirs(phaseDirEntries, normalized, convention).matches.length > 0;
+                // (2.1) and letter-suffix (12A) phase IDs. (#2528) Under #4304 the
+                // current checkout's bracket convention and migration-window legacy
+                // fallback are both owned by the shared lookup adapter.
+                const hasDirectory = matchPhaseDirsForLookup(phaseDirEntries, lookup, undefined, directoryContext).matches.length > 0;
                 if (!hasDirectory) {
                     noDirectoryPhases.push(phaseNum);
                 }
@@ -751,7 +757,7 @@ function cmdMilestoneComplete(cwd, version, options, raw) {
     let totalPlans = 0;
     let totalTasks = 0;
     const accomplishments = [];
-    // #2761 (round-11 BLOCKER): resolved ONCE, ambiently (no explicit `ws` —
+    // #2761: resolved ONCE above, ambiently (no explicit `ws` —
     // this function has none of its own and already resolves everything else
     // off `cwd` via planningPaths(cwd), matching the ambient-workstream
     // contract `resolvePhaseIdConvention`/`planningDir` share), and threaded
@@ -766,7 +772,6 @@ function cmdMilestoneComplete(cwd, version, options, raw) {
     // the silent-inherit path without changing behavior for `null` /
     // `milestone-prefixed` projects, whose resolved convention is the same
     // value `undefined` would have lazily produced anyway.
-    const phaseConvention = resolvePhaseIdConvention(cwd);
     // #3597 (ADR-3180 Decision 2): SINGLE resolution of "which phase
     // directories belong to the current milestone" AND the SCOPE discriminator
     // that resolution came from — shared verbatim by the read-only stats loop

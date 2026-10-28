@@ -58,7 +58,7 @@ const { routeHubCommandFamily } = cjsCommandRouterAdapter;
 const { isCapabilityActive } = capabilityStateMod;
 const { resolveConfigKey } = capabilityActivationMod;
 const { loadConfig } = configLoaderMod;
-const { findPhaseInternal, listMilestonePhaseDirs } = phaseLocatorMod;
+const { phaseDirectoryOptions, findPhaseInternal, listMilestonePhaseDirs } = phaseLocatorMod;
 const { planningDir } = planningWorkspaceMod;
 const CAPABILITY_ID = 'refactor-trigger';
 // Default CoreModule implementation. `_core` seam overrides this entirely
@@ -148,7 +148,7 @@ function requirePhaseArg(args, complexity, usage) {
  * REFACTOR_GIT_UNAVAILABLE, for this case.
  */
 function resolvePhaseDirForArg(cwd, phaseArg) {
-    const search = findPhaseInternal(cwd, phaseArg);
+    const search = findPhaseInternal(cwd, phaseArg, undefined, phaseDirectoryOptions(cwd));
     if (!search || search.found !== true)
         return null;
     return { phaseDir: search.directory, padded: search.phase_number };

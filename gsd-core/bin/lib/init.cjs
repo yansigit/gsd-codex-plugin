@@ -15,6 +15,7 @@ const node_os_1 = __importDefault(require("node:os"));
 const shell_command_projection_cjs_1 = require("./shell-command-projection.cjs");
 const clock_cjs_1 = require("./clock.cjs");
 const pattern_cjs_1 = require("./pattern.cjs");
+const phase_entry_grammar_cjs_1 = require("./phase-entry-grammar.cjs");
 const markdown_sectionizer_cjs_1 = require("./markdown-sectionizer.cjs");
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- io.cjs is an export= CommonJS module
 const io = require("./io.cjs");
@@ -33,6 +34,8 @@ const roadmapParser = require("./roadmap-parser.cjs");
 const coreUtils = require("./core-utils.cjs");
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- phase-id.cjs is an export= CommonJS module
 const phaseId = require("./phase-id.cjs");
+// eslint-disable-next-line @typescript-eslint/no-require-imports -- phase-id-display.cjs is an export= CommonJS module
+const phaseIdDisplayMod = require("./phase-id-display.cjs");
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- worktree-safety.cjs is an export= CommonJS module
 const worktreeSafety = require("./worktree-safety.cjs");
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- planning-workspace.cjs is an export= CommonJS module
@@ -93,10 +96,11 @@ const { harvestPriorVerifyCommands } = verifyCommandGrounding;
 const { output, error, ERROR_REASON, formatDiagnosticToken } = io;
 const { loadConfig, loadConfigResolved } = configLoader;
 const { resolveModelInternal, resolveGranularityInternal, assertValidGranularityOverride } = modelResolver;
-const { findPhaseInternal, listMilestonePhaseDirs, listAllPhaseDirs } = phaseLocator;
+const { phaseDirectoryOptions, findPhaseInternal, listMilestonePhaseDirs, listAllPhaseDirs, } = phaseLocator;
 const { getRoadmapPhaseInternal, getMilestoneInfo, stripShippedMilestones, extractCurrentMilestone, } = roadmapParser;
 const { pathExistsInternal, generateSlugInternal, toPosixPath } = coreUtils;
-const { comparePhaseNum, normalizePhaseName, stripProjectCodePrefix, PHASE_NUMBER_TOKEN_SOURCE, PHASE_DEP_REF_SOURCE, isForeignPrefixedPhaseQuery, isSentinelPhaseId, extractPhaseToken, scopeToPhase, renderPhaseBranchName, parsePhaseId, renderPhaseId, phaseHeadingPrefixSrcFor, PHASE_HEADING_BASELINE, buildPhaseHeadingScanRegex, } = phaseId;
+const { comparePhaseNum, phaseDirectoryName, customPhaseQuery, customDirectoryOwner, phaseScanTokenSource, phaseKeyFromToken, phaseDirectoryContext, normalizePhaseName, stripProjectCodePrefix, PHASE_NUMBER_TOKEN_SOURCE, PHASE_DEP_REF_SOURCE, extractPhaseDependencyTokens, isForeignPrefixedPhaseQuery, isSentinelPhaseId, extractPhaseToken, scopeToPhase, renderPhaseBranchName, parsePhaseId, renderPhaseId, bracketQualifiedKey, phaseHeadingPrefixSrcFor, parsePhaseChecklistLine, PHASE_HEADING_BASELINE, buildPhaseHeadingScanRegex, } = phaseId;
+const { phaseToken } = phaseIdDisplayMod;
 const { pruneOrphanedWorktrees } = worktreeSafety;
 const { planningPaths, planningDir, planningRoot, todosDir, listAvailableWorkstreams, peekActiveWorkstream, resolveEnvWorkstream, diagnoseUnresolvedActiveWorkstream, describeUnresolvedWorkstreamReason, findContextMdIn, findPhaseSpecIn, resolvePhaseIdConvention, worktreesOptedOut, } = planningWorkspace;
 const { extractFrontmatter, frontmatterBlock } = frontmatterMod;
@@ -134,8 +138,8 @@ function roadmapPhaseMatchesExactPrefix(roadmapPhase, phase) {
 // #2104: shared helpers that wrap findPhaseInternal / getRoadmapPhaseInternal
 // with the #2056 foreign-prefix guard, so every init command gets the same
 // protection without duplicating the guard logic at each call site.
-function guardedFindPhase(cwd, phase, projectCode) {
-    let phaseInfo = findPhaseInternal(cwd, phase);
+function guardedFindPhase(cwd, phase, projectCode, phaseNaming) {
+    let phaseInfo = findPhaseInternal(cwd, phase, undefined, phaseDirectoryOptions(cwd, { phase_naming: phaseNaming, project_code: projectCode }));
     if (isForeignPrefixedPhaseQuery(phase, projectCode) && !phaseInfoMatchesExactPrefix(phaseInfo, phase)) {
         phaseInfo = null;
     }
@@ -902,7 +906,7 @@ function cmdInitExecutePhase(cwd, phase, raw, options = {}) {
         error('phase required for init execute-phase');
     }
     const config = loadConfig(cwd);
-    let phaseInfo = guardedFindPhase(cwd, phase, config.project_code);
+    let phaseInfo = guardedFindPhase(cwd, phase, config.project_code, config.phase_naming);
     // #3216: getMilestoneInfo now returns a ScopedResult — `.value` carries the
     // MilestoneInfo (or null on any non-COMPLETE scope). NOT display-only: when
     // `branching_strategy === 'milestone'`, `milestone['version']`/`['name']`
@@ -1077,7 +1081,7 @@ function cmdInitPlanPhase(cwd, phase, raw, options = {}) {
     }
     const config = loadConfig(cwd);
     // #2056/#2104: foreign-prefixed queries must not collapse to numeric phases.
-    let phaseInfo = guardedFindPhase(cwd, phase, config.project_code);
+    let phaseInfo = guardedFindPhase(cwd, phase, config.project_code, config.phase_naming);
     const roadmapPhase = guardedGetRoadmapPhase(cwd, phase, config.project_code);
     phaseInfo = applyRoadmapFallback(phaseInfo, roadmapPhase, (rp) => {
         const phaseName = rp['phase_name'];
@@ -1111,12 +1115,14 @@ function cmdInitPlanPhase(cwd, phase, raw, options = {}) {
     const phaseNamePlan = resolvePhaseDisplayName(phaseInfo, roadmapPhase);
     const rawProjectCodePlan = config.project_code || '';
     let expectedPhaseDirPlan = null;
-    if (!phaseDirPlan && phaseNumberPlan && phaseNamePlan) {
+    const namingContextPlan = phaseDirectoryContext(config);
+    const customNamingPlan = customPhaseQuery(phase, namingContextPlan) !== null;
+    if ((!phaseDirPlan || customNamingPlan) && phaseNumberPlan && phaseNamePlan) {
         const paddedNum = normalizePhaseName(phaseNumberPlan);
-        const slug = (generateSlugInternal(phaseNamePlan) || '').substring(0, 60);
+        const expectedName = roadmapPhase?.['phase_name'] || phaseNamePlan;
+        const slug = (generateSlugInternal(expectedName) || '').substring(0, 60);
         if (slug) {
-            const prefix = rawProjectCodePlan ? `${rawProjectCodePlan}-` : '';
-            const dirName = `${prefix}${paddedNum}-${slug}`;
+            const dirName = phaseDirectoryName(customPhaseQuery(phaseNumberPlan, namingContextPlan) ? phaseNumberPlan : paddedNum, slug, rawProjectCodePlan);
             // #2376: absolute — see comment on phase_dir below.
             expectedPhaseDirPlan = toPosixPath(node_path_1.default.join(planningPaths(cwd).phases, dirName));
         }
@@ -1707,7 +1713,7 @@ function cmdInitVerifyWork(cwd, phase, raw) {
     }
     const config = loadConfig(cwd);
     const _slashRuntime = (0, runtime_slash_cjs_1.resolveRuntime)(cwd);
-    let phaseInfo = guardedFindPhase(cwd, phase, config.project_code);
+    let phaseInfo = guardedFindPhase(cwd, phase, config.project_code, config.phase_naming);
     const roadmapPhase = guardedGetRoadmapPhase(cwd, phase, config.project_code);
     phaseInfo = applyRoadmapFallback(phaseInfo, roadmapPhase, (rp) => {
         const phaseName = rp['phase_name'];
@@ -1814,7 +1820,7 @@ function cmdInitVerifyWork(cwd, phase, raw) {
  */
 function cmdInitCodeReview(cwd, phase, raw, options = {}) {
     const config = loadConfig(cwd);
-    let phaseInfo = guardedFindPhase(cwd, phase, config.project_code);
+    let phaseInfo = guardedFindPhase(cwd, phase, config.project_code, config.phase_naming);
     const roadmapPhase = guardedGetRoadmapPhase(cwd, phase, config.project_code);
     phaseInfo = applyRoadmapFallback(phaseInfo, roadmapPhase, (rp) => {
         const rpName = rp['phase_name'];
@@ -1880,7 +1886,7 @@ function cmdInitCodeReview(cwd, phase, raw, options = {}) {
  */
 function cmdInitReview(cwd, phase, raw, options = {}) {
     const config = loadConfig(cwd);
-    let phaseInfo = guardedFindPhase(cwd, phase, config.project_code);
+    let phaseInfo = guardedFindPhase(cwd, phase, config.project_code, config.phase_naming);
     const roadmapPhase = guardedGetRoadmapPhase(cwd, phase, config.project_code);
     phaseInfo = applyRoadmapFallback(phaseInfo, roadmapPhase, (rp) => ({
         found: true,
@@ -1939,7 +1945,7 @@ function cmdInitReview(cwd, phase, raw, options = {}) {
  */
 function cmdInitDiscussPhaseAssumptions(cwd, phase, raw, options = {}) {
     const config = loadConfig(cwd);
-    let phaseInfo = guardedFindPhase(cwd, phase, config.project_code);
+    let phaseInfo = guardedFindPhase(cwd, phase, config.project_code, config.phase_naming);
     const roadmapPhase = guardedGetRoadmapPhase(cwd, phase, config.project_code);
     phaseInfo = applyRoadmapFallback(phaseInfo, roadmapPhase, (rp) => {
         const rpName = rp['phase_name'];
@@ -1995,7 +2001,7 @@ function cmdInitDiscussPhaseAssumptions(cwd, phase, raw, options = {}) {
 }
 function cmdInitPhaseOp(cwd, phase, raw) {
     const config = loadConfig(cwd);
-    let phaseInfo = guardedFindPhase(cwd, phase, config.project_code);
+    let phaseInfo = guardedFindPhase(cwd, phase, config.project_code, config.phase_naming);
     // #2237: surface ambiguous phase-directory collisions instead of silently
     // taking the first match when unrelated projects share a .planning/phases/ tree.
     if (phaseInfo?.['ambiguous_matches']) {
@@ -2598,37 +2604,37 @@ function cmdInitManager(cwd, raw) {
     }
     const rawContent = node_fs_1.default.readFileSync(paths.roadmap, 'utf-8');
     const content = extractCurrentMilestone(rawContent, cwd);
+    const directoryContext = phaseDirectoryOptions(cwd, config, rawContent);
     // #3185 (ADR-3180 Decision 1): "which phase directories belong to the
     // CURRENT milestone" is the scoped question listMilestonePhaseDirs owns —
     // routed through it instead of a hand-rolled readdirSync + a separate
     // getMilestonePhaseFilter window check (which also never excluded
     // sentinels, unlike the owner).
     const _checkboxStates = new Map();
-    // #4982: anchored (`^`, `m`) so the phase label must be the FIRST thing
-    // after the checkbox (tolerating only an optional `**` bold marker) —
-    // the prior unanchored `\s*.*` let the greedy `.*` bind to the LAST
-    // "Phase N" mentioned anywhere in the line's prose instead of the line's
-    // own phase. First-match-wins (`if (!_checkboxStates.has(...))` below)
+    // #4982: parsePhaseChecklistLine is line-anchored, so the phase label must
+    // be the FIRST thing after the checkbox (tolerating only an optional `**`
+    // bold marker), and a later "Phase N" in the line's prose cannot bind the
+    // checkbox. First-match-wins (`if (!_checkboxStates.has(...))` below)
     // additionally guards against a later anchored line (e.g. a per-plan
     // sub-entry self-titled "Phase N ...") overwriting an already-recorded
-    // phase's own (first) checkbox — anchoring alone does not fully close
-    // that "last-match-wins" composition defect.
-    const _cbPattern = new RegExp(`^[ \\t]*-[ \\t]*\\[(x| )\\][ \\t]*(?:\\*\\*)?${phaseHeadingPrefix}(${PHASE_NUMBER_TOKEN_SOURCE})[:\\s]`, 'gim');
-    let _cbMatch;
-    while ((_cbMatch = _cbPattern.exec(content)) !== null) {
-        const phaseGroup = capturesBracketId ? 3 : 2;
-        const _cbKey = _cbMatch[phaseGroup];
-        if (!_checkboxStates.has(_cbKey)) {
-            _checkboxStates.set(_cbKey, _cbMatch[1].toLowerCase() === 'x');
+    // phase's own (first) checkbox; anchoring alone does not fully close that
+    // "last-match-wins" composition defect.
+    for (const line of content.split(/\r?\n/)) {
+        const checkbox = parsePhaseChecklistLine(line, phaseIdConvention, directoryContext);
+        if (checkbox && !_checkboxStates.has(checkbox.phaseToken)) {
+            _checkboxStates.set(checkbox.phaseToken, checkbox.checked);
         }
     }
     // #1729: `(?:\s*\([^)\n]{0,200}\))?` tolerates a pre-colon ( ) tag (literal mirror of OPTIONAL_PHASE_TAG_SOURCE).
-    const phasePattern = new RegExp(`#{2,4}\\s*${phaseHeadingPrefix}(${PHASE_NUMBER_TOKEN_SOURCE})(?:\\s*\\([^)\\n]{0,200}\\))?\\s*:\\s*([^\\n]+)`, 'gi');
+    const phasePattern = new RegExp(`#{2,4}\\s*${phaseHeadingPrefix}(${phaseScanTokenSource(directoryContext)})(?:\\s*\\([^)\\n]{0,200}\\))?\\s*:\\s*([^\\n]+)`, 'gi');
     const phases = [];
+    const bracketIdsByPhaseNumber = new Map();
     let match;
     while ((match = phasePattern.exec(content)) !== null) {
         const bracketId = capturesBracketId ? match[1] : undefined;
         const phaseNum = capturesBracketId ? match[2] : match[1];
+        if (bracketId)
+            bracketIdsByPhaseNumber.set(phaseNum, bracketId);
         const phaseName = (capturesBracketId ? match[3] : match[2])
             .replace(/\(INSERTED\)/i, '')
             .trim();
@@ -2644,7 +2650,7 @@ function cmdInitManager(cwd, raw) {
         }
         const sectionStart = match.index;
         const restOfContent = content.slice(sectionStart);
-        const nextHeader = restOfContent.match(new RegExp(`\\n#{2,4}\\s+${phaseHeadingPrefixNoCapture}\\d[\\d.]*`, 'i'));
+        const nextHeader = restOfContent.match(new RegExp(`\\n#{2,4}\\s+${phaseHeadingPrefixNoCapture}${phaseScanTokenSource(directoryContext)}`, 'i'));
         const sectionEnd = nextHeader
             ? sectionStart + nextHeader.index
             : content.length;
@@ -2674,7 +2680,7 @@ function cmdInitManager(cwd, raw) {
             // of reporting no_directory/phase_complete:false. Five other init
             // commands already route through this same primitive; this was the
             // holdout private copy (#4793-family declared-owner drift).
-            const located = findPhaseInternal(cwd, phaseNum, phaseIdConvention);
+            const located = findPhaseInternal(cwd, phaseNum, phaseIdConvention, directoryContext);
             const dirMatch = located && located['found']
                 ? node_path_1.default.posix.basename(String(located['directory']))
                 : null;
@@ -2785,15 +2791,83 @@ function cmdInitManager(cwd, raw) {
         .filter((p) => p['phase_complete'] === true)
         .map((p) => normalizePhaseNumber(p['number'])));
     const phaseMap = new Map(phases.map((p) => [normalizePhaseNumber(p['number']), p]));
-    const _allCompletedPattern = new RegExp(`-\\s*\\[x\\]\\s*.*${phaseHeadingPrefixNoCapture}(${PHASE_NUMBER_TOKEN_SOURCE})[:\\s]`, 'gi');
-    let _allMatch;
-    while ((_allMatch = _allCompletedPattern.exec(rawContent)) !== null) {
-        const phaseNum = normalizePhaseNumber(_allMatch[1]);
-        const phase = phaseMap.get(phaseNum);
-        if (!phase || phase['phase_complete'] === true) {
-            completedNums.add(phaseNum);
+    const bracketIdentityKey = (value) => {
+        try {
+            const id = parsePhaseId(value);
+            const subphase = id.subphase ? `.${id.subphase}` : '';
+            return bracketQualifiedKey(`${id.project}.${id.milestone}-${id.phase}${subphase}`, 'bracket');
+        }
+        catch {
+            return null;
+        }
+    };
+    const phaseByBracketIdentity = new Map();
+    const bracketIdentityByPhaseNumber = new Map();
+    const completedBracketIdentities = new Set();
+    if (phaseIdConvention === 'bracket') {
+        for (const phase of phases) {
+            const phaseNumber = phase['number'];
+            const bracketId = bracketIdsByPhaseNumber.get(phaseNumber);
+            const canonicalPhaseToken = phaseToken(phaseNumber);
+            // #4304: key each heading on the reader's canonical
+            // token, not on a strict parse of its rendered display. An accepted
+            // unpadded heading (`### [CK.02] 1:`) gets no display_id, because
+            // parsePhaseId rejects `CK.02-1`, so it had no identity at all and a
+            // checked `[CK.02] 01` row completed it while phase_complete was false.
+            // phaseToken pads the number to `01`, and `CK.02-01` is the form
+            // parsePhaseId accepts; canonical headings key exactly as before.
+            const key = bracketId && canonicalPhaseToken
+                ? bracketIdentityKey(`${bracketId}-${canonicalPhaseToken}`)
+                : null;
+            if (!key)
+                continue;
+            bracketIdentityByPhaseNumber.set(normalizePhaseNumber(phaseNumber), key);
+            phaseByBracketIdentity.set(key, phase);
+            if (phase['phase_complete'] === true)
+                completedBracketIdentities.add(key);
         }
     }
+    if (phaseIdConvention === 'bracket') {
+        // A checked historical row satisfies only its own qualified identity. In
+        // particular, `[CK.01] 01` must not complete bare/current `[CK.02] 01`.
+        for (const line of rawContent.split(/\r?\n/)) {
+            const checkbox = parsePhaseChecklistLine(line, phaseIdConvention);
+            if (!checkbox?.checked || !checkbox.bracketId)
+                continue;
+            const identity = `[${checkbox.bracketId}] ${checkbox.phaseToken}`;
+            const key = bracketIdentityKey(identity);
+            if (!key)
+                continue;
+            const current = phaseMap.get(normalizePhaseNumber(checkbox.phaseToken));
+            const currentKey = current
+                ? bracketIdentityByPhaseNumber.get(normalizePhaseNumber(current['number'])) ?? null
+                : null;
+            if (!current || currentKey !== key || current['phase_complete'] === true) {
+                completedBracketIdentities.add(key);
+            }
+        }
+    }
+    else {
+        // Preserve the historical greedy non-bracket fallback byte-for-byte.
+        const _allCompletedPattern = (0, phase_entry_grammar_cjs_1.phaseEntryRegExp)(`.*${phaseHeadingPrefixNoCapture}(${PHASE_NUMBER_TOKEN_SOURCE})[:\\s]`, 'gi');
+        let _allMatch;
+        while ((_allMatch = _allCompletedPattern.exec(rawContent)) !== null) {
+            if (!(0, phase_entry_grammar_cjs_1.isPhaseEntryChecked)(_allMatch[0]))
+                continue;
+            const phaseNum = normalizePhaseNumber(_allMatch[1]);
+            const phase = phaseMap.get(phaseNum);
+            if (!phase || phase['phase_complete'] === true) {
+                completedNums.add(phaseNum);
+            }
+        }
+    }
+    const currentDependencyNumber = (dependency) => {
+        const identity = bracketIdentityKey(dependency);
+        if (!identity)
+            return normalizePhaseNumber(dependency);
+        const current = phaseByBracketIdentity.get(identity);
+        return current ? normalizePhaseNumber(current['number']) : null;
+    };
     function reaches(from, to, visited = new Set()) {
         const normalizedFrom = normalizePhaseNumber(from);
         const normalizedTo = normalizePhaseNumber(to);
@@ -2803,15 +2877,18 @@ function cmdInitManager(cwd, raw) {
         const p = phaseMap.get(normalizedFrom);
         if (!p || !p['dep_phases'] || p['dep_phases'].length === 0)
             return false;
-        if (p['dep_phases'].some((dep) => normalizePhaseNumber(dep) === normalizedTo)) {
+        if (p['dep_phases'].some((dep) => currentDependencyNumber(dep) === normalizedTo)) {
             return true;
         }
-        return p['dep_phases'].some((dep) => reaches(dep, to, visited));
+        return p['dep_phases'].some((dep) => {
+            const dependencyNumber = currentDependencyNumber(dep);
+            return dependencyNumber === null ? false : reaches(dependencyNumber, to, visited);
+        });
     }
     function hasDepRelationship(numA, numB) {
         return reaches(numA, numB) || reaches(numB, numA);
     }
-    // #4764: a phase reference in depends_on prose is a PHASE-SHAPED token in
+    // #4764/#4304: a phase reference in depends_on prose is a PHASE-SHAPED token in
     // context — directly following "Phase"/"Phases" — never a bare digit run.
     // The previous whole-field scrape matched the token grammar against every
     // digit run, so calendar dates ("2026-09-14" → 2026, 09, 14), git shas
@@ -2824,9 +2901,27 @@ function cmdInitManager(cwd, raw) {
     // "Phase 1-3") — silently dropping a REAL dependency would clear
     // deps_satisfied prematurely, the dangerous direction. Negation prose
     // ("dropped the dependency on Phase 654") is NOT detected: the issue's own
-    // minimum keeps such tokens.
-    const depPhaseRefRe = new RegExp(`${PHASE_DEP_REF_SOURCE}`, 'gi');
-    const depTokenRe = new RegExp(`${PHASE_NUMBER_TOKEN_SOURCE}`, 'gi');
+    // minimum keeps such tokens. Bracket repositories route through the same
+    // phase-id owner so `[CK.02] 01` retains its complete qualified identity;
+    // bare `01` still resolves against the active milestone. This prevents a
+    // checked historical `[CK.01] 01` from satisfying incomplete `[CK.02] 01`.
+    // Non-bracket extraction remains this manager surface's exact #4764 code
+    // path below, including its case-insensitive token regex. Planning-inspect's
+    // old token regex was case-sensitive, so forcing both through one widened
+    // helper changed its `Phase 1a` bytes from `1` to `1a`.
+    const legacyManagerDependencyTokens = (prose) => {
+        const depPhaseRefRe = new RegExp(`${PHASE_DEP_REF_SOURCE}`, 'gi');
+        const depTokenRe = new RegExp(`${PHASE_NUMBER_TOKEN_SOURCE}`, 'gi');
+        const tokens = [];
+        let refMatch;
+        while ((refMatch = depPhaseRefRe.exec(prose)) !== null) {
+            let tokenMatch;
+            depTokenRe.lastIndex = 0;
+            while ((tokenMatch = depTokenRe.exec(refMatch[1])) !== null)
+                tokens.push(tokenMatch[0]);
+        }
+        return tokens;
+    };
     for (const phase of phases) {
         if (!phase['depends_on'] ||
             /^none$/i.test(phase['depends_on'].trim())) {
@@ -2835,24 +2930,39 @@ function cmdInitManager(cwd, raw) {
         else {
             const prose = phase['depends_on'];
             const ownNumber = normalizePhaseNumber(phase['number']);
+            const ownIdentity = typeof phase['display_id'] === 'string'
+                ? bracketIdentityKey(phase['display_id'])
+                : null;
             const depNums = [];
             const seen = new Set();
-            let refMatch;
-            depPhaseRefRe.lastIndex = 0;
-            while ((refMatch = depPhaseRefRe.exec(prose)) !== null) {
-                let tok;
-                depTokenRe.lastIndex = 0;
-                while ((tok = depTokenRe.exec(refMatch[1])) !== null) {
-                    const normalized = normalizePhaseNumber(tok[0]);
-                    if (normalized === ownNumber)
-                        continue; // #4764: never the row's own phase
-                    if (seen.has(normalized))
+            const dependencyTokens = phaseIdConvention === 'bracket'
+                ? extractPhaseDependencyTokens(prose, phaseIdConvention)
+                : legacyManagerDependencyTokens(prose);
+            for (const token of dependencyTokens) {
+                const identity = bracketIdentityKey(token);
+                if (identity) {
+                    if (identity === ownIdentity)
                         continue;
-                    seen.add(normalized);
-                    depNums.push(tok[0]);
+                    if (seen.has(identity))
+                        continue;
+                    seen.add(identity);
+                    depNums.push(token);
+                    continue;
                 }
+                const normalized = normalizePhaseNumber(token);
+                if (normalized === ownNumber)
+                    continue; // #4764: never the row's own phase
+                if (seen.has(normalized))
+                    continue;
+                seen.add(normalized);
+                depNums.push(token);
             }
-            phase['deps_satisfied'] = depNums.every((n) => completedNums.has(normalizePhaseNumber(n)));
+            phase['deps_satisfied'] = depNums.every((dependency) => {
+                const identity = bracketIdentityKey(dependency);
+                return identity
+                    ? completedBracketIdentities.has(identity)
+                    : completedNums.has(normalizePhaseNumber(dependency));
+            });
             phase['dep_phases'] = depNums;
         }
     }
@@ -3316,6 +3426,7 @@ function cmdInitProgress(cwd, raw, options = {}) {
             `Available workstreams: ${_availableWorkstreams.join(', ')}`, ERROR_REASON.WORKSTREAM_MODE_NONE_ACTIVE);
     }
     const phasesDir = node_path_1.default.join(planningDir(cwd), 'phases');
+    const directoryContext = phaseDirectoryOptions(cwd, config);
     const phases = [];
     let currentPhase = null;
     let nextPhase = null;
@@ -3328,7 +3439,7 @@ function cmdInitProgress(cwd, raw, options = {}) {
         // #1729: `(?:\s*\([^)\n]{0,200}\))?` tolerates a pre-colon ( ) tag, owned by
         // buildPhaseHeadingScanRegex (phase-id.cts) so this scan also recognizes
         // bracket-convention headings instead of hand-rolling a literal `Phase\s+`.
-        const { regex: headingPattern, phaseNumGroup: hNumGroup, phaseNameGroup: hNameGroup } = buildPhaseHeadingScanRegex(PHASE_HEADING_BASELINE.ANY_BRACKET, progressConvention);
+        const { regex: headingPattern, phaseNumGroup: hNumGroup, phaseNameGroup: hNameGroup } = buildPhaseHeadingScanRegex(PHASE_HEADING_BASELINE.ANY_BRACKET, progressConvention, directoryContext);
         let hm;
         while ((hm = headingPattern.exec(roadmapContent)) !== null) {
             roadmapPhaseNums.add(hm[hNumGroup]);
@@ -3361,12 +3472,12 @@ function cmdInitProgress(cwd, raw, options = {}) {
         // matched (by absorbing the bracket text). This does NOT migrate the site
         // onto phaseHeadingPrefixSrcFor / the bracket convention — that stays
         // out of scope per the comment above (#4984 revert, pinned census).
-        const cbPattern = new RegExp(`^[ \\t]*-[ \\t]*\\[(x| )\\][ \\t]*(?:\\*\\*)?(?:\\[[^\\]\\n]{0,200}\\]\\s*)?Phase\\s+(${PHASE_NUMBER_TOKEN_SOURCE})[:\\s]`, 'gim');
+        const cbPattern = (0, phase_entry_grammar_cjs_1.phaseEntryRegExp)(`(?:\\[[^\\]\\n]{0,200}\\]\\s*)?Phase\\s+(${phaseScanTokenSource(directoryContext)})[:\\s]`, 'gim', { state: 'captured' });
         let cbm;
         while ((cbm = cbPattern.exec(roadmapContent)) !== null) {
             const cbKey = cbm[2];
             if (!roadmapCheckboxStates.has(cbKey)) {
-                roadmapCheckboxStates.set(cbKey, cbm[1].toLowerCase() === 'x');
+                roadmapCheckboxStates.set(cbKey, (0, phase_entry_grammar_cjs_1.isBoxCharChecked)(cbm[1]));
             }
         }
     }
@@ -3383,10 +3494,12 @@ function cmdInitProgress(cwd, raw, options = {}) {
         // behavior-preserving).
         const dirs = listMilestonePhaseDirs(phasesDir, { cwd }).value;
         for (const dir of dirs) {
-            const dirMatch = dir.match(new RegExp(`^(${PHASE_NUMBER_TOKEN_SOURCE})-?(.*)`, 'i'));
-            const phaseNumber = dirMatch ? dirMatch[1] : dir;
-            const phaseName = dirMatch && dirMatch[2] ? dirMatch[2] : null;
-            seenPhaseNums.add(phaseNumber.replace(/^0+/, '') || '0');
+            const dirMatch = dir.match(new RegExp(`^(${phaseScanTokenSource(directoryContext)})-?(.*)`, 'i'));
+            const query = customPhaseQuery(dir, directoryContext);
+            const owner = query && customDirectoryOwner(dir, query);
+            const phaseNumber = owner ? owner.id : dirMatch ? dirMatch[1] : dir;
+            const phaseName = owner ? owner.slug : dirMatch && dirMatch[2] ? dirMatch[2] : null;
+            seenPhaseNums.add((phaseKeyFromToken(phaseNumber, directoryContext) ?? phaseNumber).toLowerCase());
             const phasePath = node_path_1.default.join(phasesDir, dir);
             const phaseFiles = node_fs_1.default.readdirSync(phasePath);
             // #5060: Phase Status Module — the single owner of "what state is
@@ -3431,7 +3544,7 @@ function cmdInitProgress(cwd, raw, options = {}) {
         /* otherwise intentionally empty */
     }
     for (const [num, name] of roadmapPhaseNames) {
-        const stripped = num.replace(/^0+/, '') || '0';
+        const stripped = (phaseKeyFromToken(num, directoryContext) ?? num).toLowerCase();
         if (!seenPhaseNums.has(stripped)) {
             const checkboxComplete = roadmapCheckboxStates.get(num) === true ||
                 roadmapCheckboxStates.get(stripped) === true;
@@ -3461,7 +3574,7 @@ function cmdInitProgress(cwd, raw, options = {}) {
             }
         }
     }
-    phases.sort((a, b) => comparePhaseNum(a['number'], b['number']));
+    phases.sort((a, b) => comparePhaseNum(a['number'], b['number'], directoryContext));
     // #3581: the frontier is ROADMAP ORDER, not artifact presence. The disk loop
     // above could claim nextPhase from a stray out-of-order artifact directory
     // (a phase-9 UAT evidence dir while roadmap phase 8 was pending and

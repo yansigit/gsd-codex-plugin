@@ -64,6 +64,7 @@ const node_fs_1 = __importDefault(require("node:fs"));
 // at load time and become un-mockable.
 const node_child_process_1 = __importDefault(require("node:child_process"));
 const pattern_cjs_1 = require("./pattern.cjs");
+const markdown_sectionizer_cjs_1 = require("./markdown-sectionizer.cjs");
 const frontmatter_fence_cjs_1 = require("./frontmatter-fence.cjs");
 const markdown_line_diff_cjs_1 = require("./markdown-line-diff.cjs");
 const runtime_name_policy_cjs_1 = require("./runtime-name-policy.cjs");
@@ -1059,7 +1060,6 @@ function probeTty(opts = {}) {
         return null;
     }
 }
-// ─── Platform file I/O ────────────────────────────────────────────────────────
 /**
  * How many leading lines of LF-only `text` are its closed YAML frontmatter block (opening
  * fence through closing fence), or 0 when there is none (an unterminated block is not
@@ -1079,7 +1079,7 @@ function leadingFrontmatterLineCount(text) {
 function withoutBom(line) {
     return line !== undefined && line.charCodeAt(0) === 0xFEFF ? line.slice(1) : (line ?? '');
 }
-function _normalizeMd(content, prior) {
+function _normalizeMd(content, prior, preserveFencedStructure = false) {
     if (!content || typeof content !== 'string')
         return content;
     let text = content.replace(/\r\n/g, '\n');
@@ -1111,6 +1111,7 @@ function _normalizeMd(content, prior) {
     };
     const fenceRegex = /^```/;
     const insideFence = new Array(lines.length);
+    const insideSharedFence = new Array(lines.length).fill(false);
     let fenceOpen = false;
     for (let i = 0; i < lines.length; i++) {
         if (i < frontmatterLines) {
@@ -1131,6 +1132,13 @@ function _normalizeMd(content, prior) {
             insideFence[i] = fenceOpen;
         }
     }
+    if (preserveFencedStructure) {
+        for (const block of (0, markdown_sectionizer_cjs_1.scanFencedBlocks)(lines)) {
+            const end = block.closeLineIdx === -1 ? lines.length : block.closeLineIdx;
+            for (let i = block.openLineIdx + 1; i < end; i++)
+                insideSharedFence[i] = true;
+        }
+    }
     for (let i = 0; i < lines.length; i++) {
         const line = lines[i];
         if (i < frontmatterLines) {
@@ -1141,6 +1149,8 @@ function _normalizeMd(content, prior) {
         const prevTrimmed = prev.trimEnd();
         const trimmed = line.trimEnd();
         const isFenceLine = fenceRegex.test(trimmed);
+        // Bracket writers preserve literal headings and lists inside fenced examples.
+        const normalizeStructuralLine = !preserveFencedStructure || !insideSharedFence[i];
         // A heading or fence line the write authored brings its own separation, even
         // where it replaced a prose line in place (#5165). One that replaced a heading
         // or fence (a rename, a renumber) inherits the spacing around it instead.
@@ -1153,7 +1163,7 @@ function _normalizeMd(content, prior) {
         // A blank-line run is collapsed only where the write made it (#5165).
         if (scope !== null && line === '' && result.length > 0 && result[result.length - 1] === '' && !keptBefore)
             continue;
-        if (/^#{1,6}\s/.test(trimmed) && i > 0 && prevTrimmed !== '' && prevTrimmed !== '---' && !keptBefore)
+        if (normalizeStructuralLine && /^#{1,6}\s/.test(trimmed) && i > 0 && prevTrimmed !== '' && prevTrimmed !== '---' && !keptBefore)
             blank();
         if (isFenceLine && i > 0 && prevTrimmed !== '' && !insideFence[i] && (i === 0 || !insideFence[i - 1] || isFenceLine) && !keptBefore) {
             if (i === 0 || !insideFence[i - 1])
@@ -1169,11 +1179,11 @@ function _normalizeMd(content, prior) {
         // from the after-heading rule below. The after-a-bullet rule at the end
         // of this loop is a different transition (list→prose) and is unaffected.
         result.push(line);
-        if (/^#{1,6}\s/.test(trimmed) && i < lines.length - 1 && (lines[i + 1] ?? '').trimEnd() !== '' && !keptAfter)
+        if (normalizeStructuralLine && /^#{1,6}\s/.test(trimmed) && i < lines.length - 1 && (lines[i + 1] ?? '').trimEnd() !== '' && !keptAfter)
             blank();
         if (/^```\s*$/.test(trimmed) && i > 0 && insideFence[i - 1] && i < lines.length - 1 && (lines[i + 1] ?? '').trimEnd() !== '' && !keptAfter)
             blank();
-        if (/^(\s*[-*+]\s|\s*\d+\.\s)/.test(line) && i < lines.length - 1 && !keptAfter) {
+        if (normalizeStructuralLine && /^(\s*[-*+]\s|\s*\d+\.\s)/.test(line) && i < lines.length - 1 && !keptAfter) {
             const next = lines[i + 1];
             if (next !== undefined && next.trimEnd() !== '' && !/^(\s*[-*+]\s|\s*\d+\.\s)/.test(next) && !/^\s/.test(next))
                 blank();
@@ -1194,7 +1204,7 @@ function normalizeContent(filePath, content, opts = {}) {
     const isMd = node_path_1.default.extname(filePath).toLowerCase() === '.md';
     let normalized;
     if (isMd) {
-        normalized = _normalizeMd(content, opts.prior);
+        normalized = _normalizeMd(content, opts.prior, opts.preserveFencedMarkdownStructure === true);
     }
     else {
         normalized = (content ?? '').replace(/\r\n/g, '\n').replace(/\n*$/, '\n');
@@ -1215,8 +1225,8 @@ function normalizeContent(filePath, content, opts = {}) {
  * post-write re-read of the actual on-disk bytes) instead of a raw `!==` —
  * do not simplify this back to a direct string comparison.
  */
-function contentChangedAfterNormalize(filePath, before, after) {
-    return normalizeContent(filePath, after, { prior: before }).content !== normalizeContent(filePath, before, { prior: before }).content;
+function contentChangedAfterNormalize(filePath, before, after, opts = {}) {
+    return normalizeContent(filePath, after, { ...opts, prior: before }).content !== normalizeContent(filePath, before, { ...opts, prior: before }).content;
 }
 // Rename errnos that are transient on Windows: a concurrent reader (or an AV
 // scanner / indexer) holding the target open makes renameSync fail briefly.
