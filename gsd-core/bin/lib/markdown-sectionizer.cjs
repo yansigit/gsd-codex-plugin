@@ -30,6 +30,8 @@ exports.maskFences = maskFences;
 exports.editOutsideFences = editOutsideFences;
 exports.replaceSection = replaceSection;
 exports.withSection = withSection;
+exports.headingSliceRange = headingSliceRange;
+exports.editHeadingSlice = editHeadingSlice;
 exports.deleteSection = deleteSection;
 exports.extractXmlTagBodies = extractXmlTagBodies;
 const pattern_cjs_1 = require("./pattern.cjs");
@@ -1034,6 +1036,29 @@ function withSection(content, target, edit, opts = {}) {
     if (typeof newBody !== 'string' || newBody === section.body)
         return content;
     return replaceSection(content, section, newBody);
+}
+/**
+ * Range of the slice that starts at `headings[index]` and runs to the next
+ * heading of level <= `maxLevel` (fence-aware: `headings` comes from
+ * `tokenizeHeadings`). Unlike `collectSection` it keeps the heading line and
+ * every trailing byte, so a caller that edits the slice can splice it back
+ * byte-exact (#5762).
+ */
+function headingSliceRange(content, headings, index, maxLevel = 2) {
+    const next = headings.slice(index + 1).find((h) => h.level <= maxLevel);
+    return { start: headings[index].offset, end: next ? next.offset : content.length };
+}
+/**
+ * Run `edit` on `content.slice(range.start, end)` and splice the result back,
+ * where `end` excludes the single newline that precedes the next heading — the
+ * slice the pre-owner writers cut with `search(/\n#{1,2}[ \t]/)` — so a row
+ * inserted at the end of a table keeps the blank line before that heading.
+ */
+function editHeadingSlice(content, range, edit) {
+    const end = range.end < content.length && range.end > range.start && content[range.end - 1] === '\n'
+        ? range.end - 1
+        : range.end;
+    return content.slice(0, range.start) + edit(content.slice(range.start, end)) + content.slice(end);
 }
 // ─── deleteSection ────────────────────────────────────────────────────────────
 /**

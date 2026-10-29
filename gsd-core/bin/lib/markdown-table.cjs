@@ -25,6 +25,7 @@ exports.escapeCell = escapeCell;
 exports.appendQuickTaskRow = appendQuickTaskRow;
 exports.migrateQuickTasksTable = migrateQuickTasksTable;
 exports.resetQuickTaskRows = resetQuickTaskRows;
+exports.updateTraceabilityCell = updateTraceabilityCell;
 const markdown_sectionizer_cjs_1 = require("./markdown-sectionizer.cjs");
 // ─── Schema registry ──────────────────────────────────────────────────────────
 /**
@@ -977,6 +978,28 @@ function resetQuickTaskRows(stateContent) {
     const newBody = newLines.join(eol);
     const content = (0, markdown_sectionizer_cjs_1.replaceSection)(stateContent, section, newBody);
     return { ok: true, value: { content, cleared, variant: match.label } };
+}
+/**
+ * `updateTableCell` scoped to REQUIREMENTS.md's `## Traceability` (or
+ * `## Traceability Status`) section (#2245 F1, #5762): `updateTableCell` binds
+ * to the first table it finds, and the shipped template puts an `## Out of
+ * Scope` table (`Feature | Reason`, no `Status` column) before Traceability, so
+ * an unscoped call never reaches the real rows. The ONE copy of this slice
+ * (it used to live in both milestone.cts and phase.cts); the heading rule is
+ * the Progress owner's — first level-2 heading outside fenced code, running to
+ * the next level-1/2 heading. No such heading: the whole text, as before.
+ */
+function updateTraceabilityCell(text, match, column, newValue) {
+    const headings = (0, markdown_sectionizer_cjs_1.tokenizeHeadings)(text);
+    const index = headings.findIndex((h) => h.level === 2 && /^Traceability(?:[ \t]+Status)?\b/i.test(h.text));
+    if (index === -1)
+        return updateTableCell(text, match, column, newValue);
+    let result = { ok: false, reason: 'no matching row' };
+    const edited = (0, markdown_sectionizer_cjs_1.editHeadingSlice)(text, (0, markdown_sectionizer_cjs_1.headingSliceRange)(text, headings, index, 2), (scoped) => {
+        result = updateTableCell(scoped, match, column, newValue);
+        return result.ok ? result.value : scoped;
+    });
+    return result.ok ? { ok: true, value: edited } : result;
 }
 // Consumers: require('../gsd-core/bin/lib/markdown-table.cjs')
 // Named CJS exports are the canonical surface (ADR-457 .cts → .cjs build-at-publish).
