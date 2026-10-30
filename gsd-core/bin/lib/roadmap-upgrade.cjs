@@ -13,6 +13,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 const node_fs_1 = __importDefault(require("node:fs"));
 const node_path_1 = __importDefault(require("node:path"));
 const shell_command_projection_cjs_1 = require("./shell-command-projection.cjs");
+const phase_entry_grammar_cjs_1 = require("./phase-entry-grammar.cjs");
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const planningWorkspace = require("./planning-workspace.cjs");
 // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -1397,10 +1398,11 @@ function computeBracketPlan(cwd) {
     // bullet stayed legacy after an otherwise-done migration, so the
     // bracket-mode milestone id set carried the stale legacy token alongside
     // the bracket ones.
-    const CHECKLIST_BULLET_PREFIX_SRC = '[-*]\\s*\\[[ x]\\]\\s*\\*{0,2}';
+    // #5764: the prefix is the phase-entry grammar's (line-anchored, indent included).
+    const CHECKLIST_BULLET_PREFIX_SRC = (0, phase_entry_grammar_cjs_1.phaseEntryPrefixSrc)();
     const CHECKLIST_PHASE_INTRO_SRC = phaseHeadingPrefixSrcFor(PHASE_HEADING_BASELINE.LABEL_ONLY, undefined, true);
-    const mnnChecklistRe = new RegExp(`^(\\s*${CHECKLIST_BULLET_PREFIX_SRC})${CHECKLIST_PHASE_INTRO_SRC}(${MNN_SOURCE_TOKEN_SOURCE})(${OPTIONAL_PHASE_TAG_SOURCE})`, 'i');
-    const legacyChecklistRe = new RegExp(`^(\\s*${CHECKLIST_BULLET_PREFIX_SRC})${CHECKLIST_PHASE_INTRO_SRC}(${PHASE_NUMBER_TOKEN_SOURCE})(${OPTIONAL_PHASE_TAG_SOURCE})`, 'i');
+    const mnnChecklistRe = new RegExp(`(${CHECKLIST_BULLET_PREFIX_SRC})${CHECKLIST_PHASE_INTRO_SRC}(${MNN_SOURCE_TOKEN_SOURCE})(${OPTIONAL_PHASE_TAG_SOURCE})`, 'i');
+    const legacyChecklistRe = new RegExp(`(${CHECKLIST_BULLET_PREFIX_SRC})${CHECKLIST_PHASE_INTRO_SRC}(${PHASE_NUMBER_TOKEN_SOURCE})(${OPTIONAL_PHASE_TAG_SOURCE})`, 'i');
     // #4144 round 8 I1: `legacyChecklistRe` above requires nothing at all
     // after the number/tag — deliberately, since Tier 1 (reader-recognized,
     // `isReaderRecognizedBullet` below) must match exactly what the readers'
@@ -1752,7 +1754,8 @@ function computeMigrationPlan(cwd, options = {}) {
         if (roadmapEdits.some(e => e.lineIndex === i))
             continue;
         // Match checklist items: "- [ ] **Phase N:**" or "- [x] Phase N:"  (also decimal)
-        const checklistMatch = line.match(new RegExp(`^(\\s*-\\s*\\[[ x]\\]\\s*\\*{0,2}Phase\\s+)(${PHASE_NUMBER_TOKEN_SOURCE})(\\s*[:\\s*])`, 'i'));
+        // The entry prefix (marker, box, bold token) is the phase-entry grammar's (#5764).
+        const checklistMatch = line.match(new RegExp(`(${(0, phase_entry_grammar_cjs_1.phaseEntryPrefixSrc)()}Phase[ \\t]+)(${PHASE_NUMBER_TOKEN_SOURCE})(\\s*[:\\s*])`, 'i'));
         if (checklistMatch) {
             const legacyNum = checklistMatch[2];
             const cIntPart = parseInt(legacyNum, 10);
@@ -1778,7 +1781,7 @@ function computeMigrationPlan(cwd, options = {}) {
                     newId = found.newId;
             }
             if (newId) {
-                const newLine = line.replace(new RegExp(`^(\\s*-\\s*\\[[ x]\\]\\s*\\*{0,2}Phase\\s+)${PHASE_NUMBER_TOKEN_SOURCE}(\\s*[:\\s*])`, 'i'), `$1${newId}$2`);
+                const newLine = line.replace(new RegExp(`(${(0, phase_entry_grammar_cjs_1.phaseEntryPrefixSrc)()}Phase[ \\t]+)${PHASE_NUMBER_TOKEN_SOURCE}(\\s*[:\\s*])`, 'i'), `$1${newId}$2`);
                 if (newLine !== line) {
                     roadmapEdits.push({ lineIndex: i, from: line, to: newLine });
                 }

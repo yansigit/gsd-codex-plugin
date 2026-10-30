@@ -51,6 +51,7 @@ const { planningPaths, planningRoot, resolvePhaseIdConvention, resolveEnvWorkstr
 // PROSE, not quoted literals.
 const markdown_sectionizer_cjs_1 = require("./markdown-sectionizer.cjs");
 const shell_command_projection_cjs_1 = require("./shell-command-projection.cjs");
+const phase_entry_grammar_cjs_1 = require("./phase-entry-grammar.cjs");
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const frontmatterMod = require("./frontmatter.cjs");
 const { extractFrontmatter, stripFrontmatter } = frontmatterMod;
@@ -605,7 +606,9 @@ function buildRoadmapPhaseCheckboxesField(roadmapPath, convention, directoryCont
     // vanish from the exclusion set and every unstarted bracket phase gains a
     // W006. NON-capturing (`capturing` defaults false), so the phase token stays
     // group 2 and the legacy repo compiles a byte-identical source.
-    const checkboxRe = new RegExp(`-\\s*\\[([xX ])\\].*?${phaseHeadingPrefixSrcFor(PHASE_HEADING_BASELINE.LABEL_ONLY, convention)}0*(${convention === 'bracket' ? PHASE_NUMBER_TOKEN_SOURCE : phaseIdMod.phaseScanTokenSource(directoryContext)})${OPTIONAL_PHASE_TAG_SOURCE}[:\\s]`, 'gi');
+    // The entry prefix (marker, box, bold token) is the phase-entry grammar's (#5764),
+    // the same one `buildNotStartedPhaseVariants` composes; group 1 is the box.
+    const checkboxRe = (0, phase_entry_grammar_cjs_1.phaseEntryRegExp)(`${phaseHeadingPrefixSrcFor(PHASE_HEADING_BASELINE.LABEL_ONLY, convention)}0*(${convention === 'bracket' ? PHASE_NUMBER_TOKEN_SOURCE : phaseIdMod.phaseScanTokenSource(directoryContext)})${OPTIONAL_PHASE_TAG_SOURCE}[:\\s]`, 'gi', { state: 'captured' });
     const value = {};
     let m;
     while ((m = checkboxRe.exec(content)) !== null) {

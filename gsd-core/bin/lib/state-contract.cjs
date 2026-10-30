@@ -80,6 +80,7 @@ const node_fs_1 = __importDefault(require("node:fs"));
 // documented `state.cjs -> state-contract.cjs -> smart-entry.cjs -> state.cjs`
 // require cycle the file header warns about.
 const phase_status_cjs_1 = require("./phase-status.cjs");
+const phase_entry_grammar_cjs_1 = require("./phase-entry-grammar.cjs");
 // ─── Public wire vocabulary ────────────────────────────────────────────────
 exports.STATE_CONTRACT_VERSION = '1.0.0';
 exports.STATE_CONTRACT_FLAVOR = 'core';
@@ -189,9 +190,11 @@ function phasesFromProgressTable(table, convention) {
 }
 // ─── phases: `## Phases` checkbox fallback ─────────────────────────────────
 // `- [x] **Phase 1: Foundation**` / `- [ ] **Phase 2.1: Hardening**`.
-const PHASE_BULLET_RE = /^[ \t]*[-*][ \t]+\[([ xX])\][ \t]+\*\*Phase[ \t]+(\d+(?:\.\d+)*)[ \t]*:?[ \t]*([^*\n]*)\*\*/gm;
+// The entry prefix (marker, box, bold token) is the phase-entry grammar's (#5764): capture
+// group 1 is the box character, 2 the number, 3 the name.
+const PHASE_BULLET_RE = (0, phase_entry_grammar_cjs_1.phaseEntryRegExp)(`Phase[ \\t]+(\\d+(?:\\.\\d+)*)[ \\t]*:?[ \\t]*([^*\\n]*)${phase_entry_grammar_cjs_1.PHASE_ENTRY_BOLD_CLOSE_SRC}`, 'g', { state: 'captured', bold: 'required' });
 // #5626: the same bullet under `milestone-prefixed`: the number capture takes one optional `-NN` segment.
-const PHASE_BULLET_MILESTONE_RE = /^[ \t]*[-*][ \t]+\[([ xX])\][ \t]+\*\*Phase[ \t]+(\d+(?:-\d+)?(?:\.\d+)*)[ \t]*:?[ \t]*([^*\n]*)\*\*/gm;
+const PHASE_BULLET_MILESTONE_RE = (0, phase_entry_grammar_cjs_1.phaseEntryRegExp)(`Phase[ \\t]+(\\d+(?:-\\d+)?(?:\\.\\d+)*)[ \\t]*:?[ \\t]*([^*\\n]*)${phase_entry_grammar_cjs_1.PHASE_ENTRY_BOLD_CLOSE_SRC}`, 'g', { state: 'captured', bold: 'required' });
 /**
  * STATE.md's current phase, via the same frontmatter-then-body chain
  * `cmdStateCompletePhase` uses (`stateFieldValue` owns the #1760 fallback

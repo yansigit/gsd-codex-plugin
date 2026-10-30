@@ -22,6 +22,11 @@
  *     fall through to the rest of the document (#2012 decoy avoidance).
  *   - A document with no Progress heading is scanned whole (a headingless
  *     milestone slice, #1445, keeps resolving).
+ *   - Two readers had a wider pre-owner reach and ask for it by name, so the
+ *     rule stays single (#5692: no behavior change for existing ROADMAP.md
+ *     files): `levels: [1, 2]` for the archive-span probe, which always took a
+ *     level-1 `# Progress`, and `sectionMiss: 'document'` for the workstream
+ *     inventory, which always read a table outside a table-less section.
  *   - The milestone slice (#5165): when the caller names a milestone and the
  *     table carries a `Milestone` column, only that milestone's rows.
  *
@@ -76,21 +81,21 @@ function milestoneVersionOf(value) {
     return text === '' ? null : text;
 }
 /**
- * The Progress section of `content`: the first level-2 heading outside fenced
- * code whose text starts with the word `Progress`, up to the next level-1/2
- * heading. Null when the document has no such heading.
+ * The Progress section of `content`: the first level-2 heading (`levels` widens
+ * this) outside fenced code whose text starts with the word `Progress`, up to
+ * the next level-1/2 heading. Null when the document has no such heading.
  */
 function findProgressSection(content, options = {}) {
     const headings = (0, markdown_sectionizer_cjs_1.tokenizeHeadings)(content);
-    const { active, exclude } = options;
-    const isProgress = (h) => h.level === 2 && isProgressHeadingTitle(h.text) && !(exclude && exclude(h.offset));
+    const { active, exclude, levels = [2] } = options;
+    const isProgress = (h) => levels.includes(h.level) && isProgressHeadingTitle(h.text) && !(exclude && exclude(h.offset));
     // #5553: with an active-milestone range, the first Progress heading INSIDE it wins over an
     // earlier one (a shipped plain section's own table); with none in range, the first overall.
     const inActive = active ? headings.findIndex((h) => isProgress(h) && h.offset >= active.start && h.offset < active.end) : -1;
     const index = inActive !== -1 ? inActive : headings.findIndex(isProgress);
     if (index === -1)
         return null;
-    return (0, markdown_sectionizer_cjs_1.headingSliceRange)(content, headings, index, 2);
+    return (0, markdown_sectionizer_cjs_1.headingSliceRange)(content, headings, index, headings[index].level);
 }
 /**
  * The WRITE side of the same rule (#5762): run `edit` on the Progress section
@@ -112,9 +117,12 @@ function editRoadmapProgress(content, edit, options = {}) {
 function locateRoadmapProgress(content, options = {}) {
     const section = findProgressSection(content);
     const scoped = section ? content.slice(section.start, section.end) : content;
+    // `sectionMiss: 'document'` widens each column set's probe from the section to the whole
+    // document, set by set, so an earlier set found anywhere still beats a later set in the section.
+    const widen = section !== null && options.sectionMiss === 'document';
     let table = null;
     for (const columns of options.columns ?? [CANONICAL_COLUMNS]) {
-        table = (0, markdown_table_cjs_1.findTableWithColumns)(scoped, [...columns]);
+        table = (0, markdown_table_cjs_1.findTableWithColumns)(scoped, [...columns]) ?? (widen ? (0, markdown_table_cjs_1.findTableWithColumns)(content, [...columns]) : null);
         if (table)
             break;
     }

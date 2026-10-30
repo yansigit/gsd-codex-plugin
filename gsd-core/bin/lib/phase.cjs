@@ -2754,7 +2754,11 @@ function updateRoadmapAfterPhaseRemoval(roadmapPath, targetPhase, isDecimal, rem
         // its tracking table.
         const phaseHeadingRe = new RegExp(`^Phase\\s+${padTolerant}${OPTIONAL_PHASE_TAG_SOURCE}\\s*:`, 'i');
         content = (0, markdown_sectionizer_cjs_1.deleteSection)(content, (h) => h.level >= 2 && h.level <= 4 && phaseHeadingRe.test(h.text));
-        content = content.replace(new RegExp(`\\n?-\\s*\\[[ x]\\]\\s*.*Phase\\s+${padTolerant}${OPTIONAL_PHASE_TAG_SOURCE}[:\\s][^\\n]*`, 'gi'), '');
+        content = content.replace(
+        // The entry prefix is the phase-entry grammar's (#5764): line-anchored, so a
+        // mid-line mention of the phase is not deleted. `decorated` keeps the tolerance this
+        // delete always had for an entry the readers skip (`- [x] ~~**Phase 2: X**~~`, an emoji).
+        new RegExp(`\\n?${(0, phase_entry_grammar_cjs_1.phaseEntryPrefixSrc)({ decorated: true })}Phase[ \\t]+${padTolerant}${OPTIONAL_PHASE_TAG_SOURCE}[:\\s][^\\n]*`, 'gim'), '');
         // ROW-DELETION (not a cell update) — removes the WHOLE Progress-table row
         // for a removed phase via deleteTableRow (ADR-2143 §7 row-removal sibling
         // of updateTableCell). Scoped to the `## Progress` section — mirroring
@@ -2817,7 +2821,10 @@ function updateRoadmapAfterPhaseRemoval(roadmapPath, targetPhase, isDecimal, rem
             // "Phase 12A:") is written back byte-for-byte unchanged, identical to
             // the pre-migration outcome of the whole regex simply not matching it.
             content = content.replace(new RegExp(`(#{2,4}\\s*${phaseHeadingPrefixSrcFor(PHASE_HEADING_BASELINE.LABEL_ONLY)})(${PHASE_NUMBER_TOKEN_SOURCE})(${OPTIONAL_PHASE_TAG_SOURCE}\\s*:)`, 'gi'), (_match, prefix, num, suffix) => `${prefix}${stableIdentity(num) ? num : decrementRoadmapPhaseToken(num, removedInt)}${suffix}`);
-            content = content.replace(/(-\s*\[[ x]\]\s*.*?Phase\s+)(\d+)(\s*:|\s+)/gi, (_match, prefix, num, suffix) => `${prefix}${stableIdentity(num) ? num : decrementRoadmapPhaseNumber(num, removedInt)}${suffix}`);
+            content = content.replace(
+            // `decorated`, as the delete above: a struck-through or emoji entry is renumbered too,
+            // or two entries would share one number after the remove.
+            new RegExp(`(${(0, phase_entry_grammar_cjs_1.phaseEntryPrefixSrc)({ decorated: true })}Phase[ \\t]+)(\\d+)([ \\t]*:|[ \\t]+|(?=\\r?$))`, 'gim'), (_match, prefix, num, suffix) => `${prefix}${stableIdentity(num) ? num : decrementRoadmapPhaseNumber(num, removedInt)}${suffix}`);
             // ORDINAL-RENUMBER — CELL EDIT (not row-deletion) — migrated onto
             // updateTableCell (ADR-2143 §7, sibling of the deleteTableRow scoping
             // directly above). The prior whole-document regex
@@ -5863,9 +5870,12 @@ function cmdPhaseComplete(cwd, phaseNum, raw) {
                 // bug because a GSD-authored ROADMAP.md milestone checklist never puts
                 // its own `- [ ] Phase N: …` entries inside a fenced code block, but it
                 // is a real (and correct) behavioural difference on pathological input.
-                const checkboxPattern = new RegExp(`^[ \\t]*(-\\s*\\[)[ ](\\]\\s*(?:\\*\\*)?\\s*Phase\\s+${phaseEscaped}${OPTIONAL_PHASE_TAG_SOURCE}[:\\s][^\\r\\n]*)`, 'i');
+                // The phase-entry grammar's split regexp (#5764): group 1 is everything through the
+                // opening `[` (indent included, so a flip keeps the entry's indent), group 2 the rest.
+                const entryTailSrc = `Phase[ \\t]+${phaseEscaped}${OPTIONAL_PHASE_TAG_SOURCE}[:\\s][^\\r\\n]*`;
+                const checkboxPattern = (0, phase_entry_grammar_cjs_1.phaseEntrySplitRegExp)(entryTailSrc, 'i', { state: 'unchecked' });
                 // #5165: pre-mutation read of the same checklist line, checked this time.
-                const checkedBoxPattern = new RegExp(`^[ \\t]*(-\\s*\\[)[xX](\\]\\s*(?:\\*\\*)?\\s*Phase\\s+${phaseEscaped}${OPTIONAL_PHASE_TAG_SOURCE}[:\\s][^\\n]*)`);
+                const checkedBoxPattern = (0, phase_entry_grammar_cjs_1.phaseEntrySplitRegExp)(entryTailSrc, '', { state: 'checked' });
                 const originalMilestoneScope = extractCurrentMilestone(originalRoadmapContent, cwd);
                 phaseWasAlreadyComplete = originalMilestoneScope
                     .split('\n')

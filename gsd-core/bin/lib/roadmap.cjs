@@ -29,7 +29,9 @@ const planningScopeMod = require("./planning-scope.cjs");
 const { SCOPE } = planningScopeMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const roadmapParserModule = require("./roadmap-parser.cjs");
-const { stripShippedMilestones, extractCurrentMilestone, extractCurrentMilestoneScoped, checklistBulletExtent, withPhaseSection, listMilestoneHeadings, scanMilestonePhaseIds, collectTablePhaseRows, hasPhaseListingTableHeader } = roadmapParserModule;
+const { stripShippedMilestones, extractCurrentMilestone, extractCurrentMilestoneScoped, checklistBulletExtent, phaseChecklistBullet: phaseChecklistBulletFor, withPhaseSection, listMilestoneHeadings, scanMilestonePhaseIds, collectTablePhaseRows, hasPhaseListingTableHeader } = roadmapParserModule;
+/** Every phase-list entry line, any phase: the rows between two of them belong to the first. */
+const ANY_PHASE_ENTRY_LINE = (0, phase_entry_grammar_cjs_1.phaseEntryRegExp)('Phase[ \\t][^\\r\\n]*$', 'gi');
 const markdown_sectionizer_cjs_1 = require("./markdown-sectionizer.cjs");
 const markdown_table_cjs_1 = require("./markdown-table.cjs");
 const phase_lifecycle_cjs_1 = require("./phase-lifecycle.cjs");
@@ -1211,9 +1213,11 @@ function cmdRoadmapUpdatePlanProgress(cwd, phaseNum, raw) {
         // same narrowing #4965 made for `roadmap analyze`'s checklist reader.
         // The lookahead only PEEKS (its `\s` may see a newline but consumes none):
         // the label must be followed by `:`, whitespace or the end of the line, so
-        // `Phase 2.1` / `Phase 20` are not `Phase 2`. Capture group 1 is the opening
-        // `- [`, group 2 the rest of the line after the box.
-        const phaseChecklistBullet = (anyState) => new RegExp(`^([ \\t]*-[ \\t]*\\[)${anyState ? '[ x]' : ' '}(\\][ \\t]*(?:\\*\\*)?[ \\t]*Phase[ \\t]+${phasePattern}${OPTIONAL_PHASE_TAG_SOURCE}(?=[:\\s]|$)[^\\r\\n]*)`, 'im');
+        // `Phase 2.1` / `Phase 20` are not `Phase 2`. Capture group 1 is everything through
+        // the opening `[`, group 2 the rest of the line from the closing `]`. The grammar (marker,
+        // box, bold token) is the phase-entry grammar's, shared with every reader
+        // and writer through roadmap-parser's `phaseChecklistBullet` (#5764).
+        const phaseChecklistBullet = (anyState) => phaseChecklistBulletFor(phasePattern, anyState);
         // Checklist target: when the phase is complete, its own checklist bullet
         // (`- [ ] **Phase N: …**`) IS a writable phase row — the completion
         // checkbox stamp below updates it. Same grammar as that writer, widened
@@ -1553,7 +1557,7 @@ function cmdRoadmapUpdatePlanProgress(cwd, phaseNum, raw) {
                 if (/^Phase\b/i.test(h.text.replace(/^\[[^\]]*\]\s*/, '')))
                     spans.push([h.offset, heads[i + 1]?.offset ?? text.length]);
             });
-            for (const b of text.matchAll(/^([ \t]*)-[ \t]*\[[ xX]\][ \t]*(?:\*\*[ \t]*)?Phase[ \t][^\n]*$/gim))
+            for (const b of text.matchAll(ANY_PHASE_ENTRY_LINE))
                 spans.push([b.index, checklistBulletExtent(text, b).end]);
             let out = text;
             for (const [a, z] of spans)
@@ -1584,7 +1588,7 @@ function cmdRoadmapUpdatePlanProgress(cwd, phaseNum, raw) {
             // First row outside every phase bullet's rows: one nested under a sibling's bullet is that sibling's.
             let ticked = text;
             let from = 0;
-            for (const b of text.matchAll(/^([ \t]*)-[ \t]*\[[ xX]\][ \t]*(?:\*\*[ \t]*)?Phase[ \t][^\n]*$/gim)) {
+            for (const b of text.matchAll(ANY_PHASE_ENTRY_LINE)) {
                 const { start, end } = checklistBulletExtent(text, b);
                 const seg = text.slice(from, start);
                 const t = coreUtils.tickAnchoredPlanRow(seg, planId);

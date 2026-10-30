@@ -1718,7 +1718,8 @@ function scanArchiveSpans(content, active) {
             continue;
         const inRange = overlapsActive(start, end) && !closedSummary(start);
         // A collapsed block of the active range that holds the Progress table stays editable, so the row moves with the plan ticks.
-        if (inRange && (0, roadmap_progress_cjs_1.findProgressSection)(scan.slice(start, end)) !== null) {
+        // A level-1 `# Progress` has always counted here (#5692: no behavior change), hence `levels`.
+        if (inRange && (0, roadmap_progress_cjs_1.findProgressSection)(scan.slice(start, end), { levels: [1, 2] }) !== null) {
             kept.push({ start, end });
             continue;
         }
@@ -2751,15 +2752,16 @@ function editCurrentMilestone(content, cwd, edit) {
  * The checklist bullet of the phase whose number matches `phasePattern`
  * (`- [ ] **Phase N: …**`), as the one grammar shared by the Plans-count /
  * completion stamp and the plan-row ticks. `anyState` also matches a checked box.
- * Group 1 is the opening `- [`, group 2 the rest of the line after the box.
- * `(?:\*\*[ \t]*)?` rather than `[ \t]*` then `**` then `[ \t]*`, which would
- * backtrack quadratically on a long blank run.
+ * Group 1 is everything through the opening `[` (indent and marker included),
+ * group 2 the rest of the line from the closing `]`. The prefix (marker, box, bold token) is the phase-entry grammar's (#5764); the
+ * tail stops before `\r` so a stamp appended to group 2 lands on the entry's
+ * line, before its CRLF.
  */
 function phaseChecklistBullet(phasePattern, anyState) {
-    return new RegExp(`^([ \\t]*-[ \\t]*\\[)${anyState ? '[ x]' : ' '}(\\][ \\t]*(?:\\*\\*[ \\t]*)?Phase[ \\t]+${phasePattern}${OPTIONAL_PHASE_TAG_SOURCE}(?=[:\\s]|$)[^\\n]*)`, 'im');
+    return (0, phase_entry_grammar_cjs_1.phaseEntrySplitRegExp)(`Phase[ \\t]+${phasePattern}${OPTIONAL_PHASE_TAG_SOURCE}(?=[:\\s]|$)[^\\r\\n]*`, 'i', { state: anyState ? 'any' : 'unchecked' });
 }
 /** A checklist bullet of ANY phase: ends the rows nested under the previous one. */
-const ANY_PHASE_BULLET = /^[ \t]*-[ \t]*\[[ xX]\][ \t]*(?:\*\*[ \t]*)?Phase[ \t]/i;
+const ANY_PHASE_BULLET = (0, phase_entry_grammar_cjs_1.phaseEntryRegExp)('Phase[ \\t]', 'i');
 /**
  * [start,end) of the rows nested under a phase's checklist bullet: from the
  * line after `bullet` (a match of `phaseChecklistBullet` in `text`) up to a
@@ -2767,7 +2769,10 @@ const ANY_PHASE_BULLET = /^[ \t]*-[ \t]*\[[ xX]\][ \t]*(?:\*\*[ \t]*)?Phase[ \t]
  * bullet is the last line with no trailing newline.
  */
 function checklistBulletExtent(text, bullet) {
-    const depth = bullet[1].search(/\S/);
+    // The bullet's own indent, read from its line: a caller's capture group 1 may
+    // be the indent alone (which has no non-space and used to give -1, so a
+    // shallower line never ended the extent) or everything through the `[`.
+    const depth = text.slice(bullet.index).search(/\S/);
     const start = text.indexOf('\n', bullet.index) + 1;
     let end = start;
     while (start > 0 && end < text.length) {
