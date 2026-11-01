@@ -37,6 +37,7 @@ exports.projectCodexHookTomlCommand = projectCodexHookTomlCommand;
 exports.escapePowerShellSingleQuoted = escapePowerShellSingleQuoted;
 exports.escapePosixDoubleQuoted = escapePosixDoubleQuoted;
 exports.escapeSingleQuotedShellLiteral = escapeSingleQuotedShellLiteral;
+exports.shellSingleQuote = shellSingleQuote;
 exports.projectPathExportLine = projectPathExportLine;
 exports.renderShellActionLines = renderShellActionLines;
 exports.projectPathActionProjection = projectPathActionProjection;
@@ -458,6 +459,18 @@ function escapePosixDoubleQuoted(value) {
 }
 function escapeSingleQuotedShellLiteral(value) {
     return String(value).replace(/'/g, "'\\''");
+}
+/**
+ * #1460 / #4039: POSIX single-quote an arbitrary string as ONE shell token. A path such as a
+ * hook script's absolute install location commonly sits under a home directory containing
+ * spaces or other metacharacters (e.g. "/Users/Bob Smith/.claude/..."); written unquoted it
+ * would word-split and, with a hostile prefix, could inject. Wrapping in single quotes — with
+ * each embedded `'` escaped as `'\''` by escapeSingleQuotedShellLiteral — makes the whole value a
+ * single token no metacharacter inside it can break. This is the one implementation of that rule;
+ * do not re-implement it in a caller.
+ */
+function shellSingleQuote(value) {
+    return "'" + escapeSingleQuotedShellLiteral(value) + "'";
 }
 /**
  * The `export PATH="<dir>:$PATH"` line every persistence lane appends, plus the escaped directory

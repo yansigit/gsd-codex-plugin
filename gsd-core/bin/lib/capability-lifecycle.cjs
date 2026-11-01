@@ -34,7 +34,7 @@ const consentMod = require('./capability-consent.cjs');
 const projectRootMod = require('./project-root.cjs');
 // #1459 finding 4: the SHARED hardened lock primitive (single source of truth for lifecycle + consent).
 const lockMod = require('./capability-lock.cjs');
-const { platformWriteSync, retryRenameSync } = require('./shell-command-projection.cjs');
+const { platformWriteSync, retryRenameSync, shellSingleQuote } = require('./shell-command-projection.cjs');
 // #1463: numeric major.minor.patch comparison for the outdated check (the SAME compare the resolver
 // and capability list use). -1 (a<b), 0 (equal), 1 (a>b).
 const semverMod = require('./semver-compare.cjs');
@@ -307,17 +307,6 @@ function isSafeHookScriptPath(script) {
     if (PYCACHE_SUFFIX_RE.test(node_path_1.default.basename(script)))
         return false;
     return true;
-}
-/**
- * #1460 (R) HIGH: POSIX single-quote an arbitrary string for safe inclusion in a shell command.
- * The emitted hook `command` is the ABSOLUTE confined script path, which begins with the
- * (non-manifest) install-prefix — commonly a home dir containing spaces/special chars (e.g.
- * "/Users/Bob Smith/.claude/..."). Written unquoted it would word-split (and, with a hostile
- * prefix, could inject). Wrapping in single quotes — with each embedded `'` escaped as `'\''` —
- * makes the whole path a single shell token that no metacharacter inside it can break.
- */
-function shellSingleQuote(value) {
-    return "'" + value.replace(/'/g, "'\\''") + "'";
 }
 /**
  * #1634: build the emitted hook `command` for an ABSOLUTE confined script path. For `.js`-family

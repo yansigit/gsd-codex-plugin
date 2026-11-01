@@ -29,8 +29,9 @@
  *
  * The bounded source-review prompt built here is METADATA ONLY — repository root, canonical
  * file paths, review depth, base SHA, and four fixed prohibitions. It never embeds file
- * contents. If the assembled prompt exceeds a lane's resolved budget, that lane's dispatch
- * hard-fails before `invoke` runs for it — no silent truncation of the file list.
+ * contents. If the assembled prompt exceeds a lane's resolved prompt cap (an explicit cap or the
+ * default derived from its context window, #4559), that lane's dispatch hard-fails with reason
+ * `prompt_exceeds_context` before `invoke` runs for it — no silent truncation of the file list.
  */
 var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
@@ -125,9 +126,8 @@ function validatePaths(repoRoot, paths) {
     }
     return { ok: true };
 }
-// `resolveLaneBudget` (review-lane-invocation.cjs) resolves the number; `null` and a resolved
-// `0` both mean unbounded (#2797) — the caller's overflow check must test both `!== null` and
-// `!== 0`. See the call site below.
+// `resolveLaneCap` (review-lane-invocation.cjs) resolves the cap; `null` and a resolved `0` both
+// mean unbounded (#2797), and `checkPromptAgainstCap` owns that test. See the call site below.
 /**
  * One-line depth definition for an external reviewer lane, condensed from `<depth_levels>` in
  * `agents/gsd-code-reviewer.md` (#4209 review: a bare `quick`/`standard`/`deep` label means
@@ -296,13 +296,15 @@ async function dispatchReviewerLanes(input, deps) {
             anyFailed = true;
             continue;
         }
-        const budget = (0, review_lane_invocation_cjs_1.resolveLaneBudget)(lane, configGet);
-        if (budget !== null && budget !== 0 && estimatedTokens > budget) {
+        // #4559: refuse-not-trim, through the same check `review-lane invoke` uses.
+        const refused = (0, review_lane_invocation_cjs_1.refuseIfOverCap)({ lane, estimatedTokens, configGet });
+        if (refused) {
             results.push({
                 slug,
                 ok: false,
-                reason: 'budget_exceeded',
-                detail: `estimated ${estimatedTokens} tokens exceeds resolved budget ${budget} for lane '${slug}'`,
+                reason: refused.reason,
+                detail: refused.detail,
+                refusal: refused.refusal,
             });
             anyFailed = true;
             continue;
