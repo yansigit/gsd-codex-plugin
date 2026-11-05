@@ -25,7 +25,7 @@ const { readSubdirectories } = coreUtilsMod;
 const planScan = require("./plan-scan.cjs");
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const planningWorkspace = require("./planning-workspace.cjs");
-const { planningPaths, planningRoot, getActiveWorkstream } = planningWorkspace;
+const { planningPaths, planningRoot, getActiveWorkstream, resolvePhaseIdConvention } = planningWorkspace;
 const state_document_cjs_1 = require("./state-document.cjs");
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- frontmatter.cjs is an export= CommonJS module
 const frontmatterMod = require("./frontmatter.cjs");
@@ -101,7 +101,7 @@ function countRoadmapPhases(roadmapPath, fallbackCount, cwd, ws, versionOverride
  * `phaseKeyFromDir` uses for directories, so a `| 01. … |` row and a `1-slug`
  * directory cannot land in different key spaces (the padding-asymmetry defect).
  */
-function parseRoadmapProgressRows(content, directoryContext) {
+function parseRoadmapProgressRows(content, directoryContext, convention) {
     // Milestone-ATTRIBUTING shape first. Both shapes carry `Plans Complete`, so
     // probing that column first would pick a flat table appearing earlier in the
     // document over a milestone-grouped one later — every row would come back
@@ -116,7 +116,7 @@ function parseRoadmapProgressRows(content, directoryContext) {
     });
     const rows = [];
     for (const row of tableRows) {
-        const key = phaseKeyFromProse(row['Phase'], directoryContext);
+        const key = phaseKeyFromProse(row['Phase'], directoryContext, convention);
         if (key === null)
             continue;
         const cell = (row['Milestone'] ?? '').trim();
@@ -439,7 +439,7 @@ function inspectWorkstream(cwd, name, options = {}) {
     // `phaseKeyFromProse`, both from the phase-id owner module) so the two sides
     // of the rollup cannot disagree.
     const currentVersion = readCurrentMilestoneVersion(p.state, p.roadmap);
-    const progressRows = parseRoadmapProgressRows(roadmap, directoryContext);
+    const progressRows = parseRoadmapProgressRows(roadmap, directoryContext, resolvePhaseIdConvention(cwd, name));
     // Phase keys the ROADMAP attributes to the current milestone. A row whose
     // Milestone cell is blank or malformed is INCLUDED rather than dropped: a
     // phase we cannot attribute must still be visible to the rollup. Dropping it

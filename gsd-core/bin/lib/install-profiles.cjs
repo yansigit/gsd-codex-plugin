@@ -35,7 +35,7 @@ const external_descriptor_trust_cjs_1 = require("./external-descriptor-trust.cjs
 const capabilityLedger = require("./capability-ledger.cjs");
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const conversionModule = require("./runtime-artifact-conversion.cjs");
-const { applyAgentPathRewrites: _applyAgentPathRewrites, processAttribution: _processAttribution, normalizeAgentBodyForRuntime: _normalizeAgentBodyForRuntime, readGsdCommandNames: _readGsdCommandNames, deriveAgentName: _deriveAgentName, applyAgentFrontmatterExtensions: _applyAgentFrontmatterExtensions, appendAgentTools: _appendAgentTools, } = conversionModule;
+const { applyAgentPathRewrites: _applyAgentPathRewrites, processAttribution: _processAttribution, normalizeAgentBodyForRuntime: _normalizeAgentBodyForRuntime, readGsdCommandNames: _readGsdCommandNames, deriveAgentName: _deriveAgentName, applyAgentFrontmatterExtensions: _applyAgentFrontmatterExtensions, appendAgentTools: _appendAgentTools, _shieldAgentConverterPrefix, } = conversionModule;
 // #2995 (epic #1671 Phase 6.4): agent bodies join the fragment model. Markers are
 // stripped at emit BEFORE any path rewrite or converter runs, so a `.claude/` ->
 // `.windsurf/` regex can never reach inside a marker attribute and corrupt it —
@@ -1011,7 +1011,9 @@ function stageAgentsForRuntimeWithConverter(srcAgentsDir, resolvedProfile, conve
                 // Step 3: validated canonical grants, before host conversion.
                 content = _appendAgentTools(content, grants);
                 // Step 4: converter (runtime-specific frontmatter/body transform)
-                content = converter(content, isGlobal, { agentName });
+                // #5715: the converter runs after the prefix pass above; shield the emitted prefix
+                // from it, except where the runtime declares no path rewrite (nothing was emitted).
+                content = _shieldAgentConverterPrefix(content, agentCtx.runtime, agentCtx.pathPrefix, (shielded) => converter(shielded, isGlobal, { agentName, pathPrefix: agentCtx.pathPrefix }));
                 // Step 5: frontmatter extensions (effort/disallowedTools; no-op unless
                 // the runtime declares hostBehaviors.agentFrontmatterExtensions)
                 content = _applyAgentFrontmatterExtensions(content, { runtime: agentCtx.runtime, agentName, targetDir: agentCtx.targetDir });

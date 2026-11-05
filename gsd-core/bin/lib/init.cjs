@@ -99,7 +99,7 @@ const { resolveModelInternal, resolveGranularityInternal, assertValidGranularity
 const { phaseDirectoryOptions, findPhaseInternal, listMilestonePhaseDirs, listAllPhaseDirs, } = phaseLocator;
 const { getRoadmapPhaseInternal, getMilestoneInfo, stripShippedMilestones, extractCurrentMilestone, } = roadmapParser;
 const { pathExistsInternal, generateSlugInternal, toPosixPath } = coreUtils;
-const { comparePhaseNum, phaseDirectoryName, customPhaseQuery, customDirectoryOwner, phaseScanTokenSource, phaseKeyFromToken, phaseDirectoryContext, normalizePhaseName, stripProjectCodePrefix, PHASE_NUMBER_TOKEN_SOURCE, PHASE_DEP_REF_SOURCE, extractPhaseDependencyTokens, isForeignPrefixedPhaseQuery, isSentinelPhaseId, extractPhaseToken, scopeToPhase, renderPhaseBranchName, parsePhaseId, renderPhaseId, bracketQualifiedKey, phaseHeadingPrefixSrcFor, parsePhaseChecklistLine, PHASE_HEADING_BASELINE, buildPhaseHeadingScanRegex, } = phaseId;
+const { comparePhaseNum, phaseDirectoryName, customPhaseQuery, customDirectoryOwner, phaseScanTokenSource, phaseNumberTokenSource, phaseKeyFromToken, phaseDirectoryContext, normalizePhaseName, stripProjectCodePrefix, PHASE_NUMBER_TOKEN_SOURCE, PHASE_DEP_REF_SOURCE, extractPhaseDependencyTokens, isForeignPrefixedPhaseQuery, isSentinelPhaseId, extractPhaseToken, scopeToPhase, renderPhaseBranchName, parsePhaseId, renderPhaseId, bracketQualifiedKey, phaseHeadingPrefixSrcFor, parsePhaseChecklistLine, PHASE_HEADING_BASELINE, buildPhaseHeadingScanRegex, } = phaseId;
 const { phaseToken } = phaseIdDisplayMod;
 const { pruneOrphanedWorktrees } = worktreeSafety;
 const { planningPaths, planningDir, planningRoot, todosDir, listAvailableWorkstreams, peekActiveWorkstream, resolveEnvWorkstream, diagnoseUnresolvedActiveWorkstream, describeUnresolvedWorkstreamReason, findContextMdIn, findPhaseSpecIn, resolvePhaseIdConvention, worktreesOptedOut, } = planningWorkspace;
@@ -2626,7 +2626,7 @@ function cmdInitManager(cwd, raw) {
         }
     }
     // #1729: `(?:\s*\([^)\n]{0,200}\))?` tolerates a pre-colon ( ) tag (literal mirror of OPTIONAL_PHASE_TAG_SOURCE).
-    const phasePattern = new RegExp(`#{2,4}\\s*${phaseHeadingPrefix}(${phaseScanTokenSource(directoryContext)})(?:\\s*\\([^)\\n]{0,200}\\))?\\s*:\\s*([^\\n]+)`, 'gi');
+    const phasePattern = new RegExp(`#{2,4}\\s*${phaseHeadingPrefix}(${phaseScanTokenSource(directoryContext, phaseIdConvention)})(?:\\s*\\([^)\\n]{0,200}\\))?\\s*:\\s*([^\\n]+)`, 'gi');
     const phases = [];
     const bracketIdsByPhaseNumber = new Map();
     let match;
@@ -2650,7 +2650,7 @@ function cmdInitManager(cwd, raw) {
         }
         const sectionStart = match.index;
         const restOfContent = content.slice(sectionStart);
-        const nextHeader = restOfContent.match(new RegExp(`\\n#{2,4}\\s+${phaseHeadingPrefixNoCapture}${phaseScanTokenSource(directoryContext)}`, 'i'));
+        const nextHeader = restOfContent.match(new RegExp(`\\n#{2,4}\\s+${phaseHeadingPrefixNoCapture}${phaseScanTokenSource(directoryContext, phaseIdConvention)}`, 'i'));
         const sectionEnd = nextHeader
             ? sectionStart + nextHeader.index
             : content.length;
@@ -2849,7 +2849,7 @@ function cmdInitManager(cwd, raw) {
     }
     else {
         // Preserve the historical greedy non-bracket fallback byte-for-byte.
-        const _allCompletedPattern = (0, phase_entry_grammar_cjs_1.phaseEntryRegExp)(`.*${phaseHeadingPrefixNoCapture}(${PHASE_NUMBER_TOKEN_SOURCE})[:\\s]`, 'gi');
+        const _allCompletedPattern = (0, phase_entry_grammar_cjs_1.phaseEntryRegExp)(`.*${phaseHeadingPrefixNoCapture}(${phaseNumberTokenSource(phaseIdConvention)})[:\\s]`, 'gi');
         let _allMatch;
         while ((_allMatch = _allCompletedPattern.exec(rawContent)) !== null) {
             if (!(0, phase_entry_grammar_cjs_1.isPhaseEntryChecked)(_allMatch[0]))
@@ -3433,9 +3433,9 @@ function cmdInitProgress(cwd, raw, options = {}) {
     const roadmapPhaseNums = new Set();
     const roadmapPhaseNames = new Map();
     const roadmapCheckboxStates = new Map();
+    const progressConvention = resolvePhaseIdConvention(cwd);
     try {
         const roadmapContent = extractCurrentMilestone(node_fs_1.default.readFileSync(node_path_1.default.join(planningDir(cwd), 'ROADMAP.md'), 'utf-8'), cwd);
-        const progressConvention = resolvePhaseIdConvention(cwd);
         // #1729: `(?:\s*\([^)\n]{0,200}\))?` tolerates a pre-colon ( ) tag, owned by
         // buildPhaseHeadingScanRegex (phase-id.cts) so this scan also recognizes
         // bracket-convention headings instead of hand-rolling a literal `Phase\s+`.
@@ -3472,7 +3472,7 @@ function cmdInitProgress(cwd, raw, options = {}) {
         // matched (by absorbing the bracket text). This does NOT migrate the site
         // onto phaseHeadingPrefixSrcFor / the bracket convention — that stays
         // out of scope per the comment above (#4984 revert, pinned census).
-        const cbPattern = (0, phase_entry_grammar_cjs_1.phaseEntryRegExp)(`(?:\\[[^\\]\\n]{0,200}\\]\\s*)?Phase\\s+(${phaseScanTokenSource(directoryContext)})[:\\s]`, 'gim', { state: 'captured' });
+        const cbPattern = (0, phase_entry_grammar_cjs_1.phaseEntryRegExp)(`(?:\\[[^\\]\\n]{0,200}\\]\\s*)?Phase\\s+(${phaseScanTokenSource(directoryContext, progressConvention)})[:\\s]`, 'gim', { state: 'captured' });
         let cbm;
         while ((cbm = cbPattern.exec(roadmapContent)) !== null) {
             const cbKey = cbm[2];
@@ -3494,7 +3494,7 @@ function cmdInitProgress(cwd, raw, options = {}) {
         // behavior-preserving).
         const dirs = listMilestonePhaseDirs(phasesDir, { cwd }).value;
         for (const dir of dirs) {
-            const dirMatch = dir.match(new RegExp(`^(${phaseScanTokenSource(directoryContext)})-?(.*)`, 'i'));
+            const dirMatch = dir.match(new RegExp(`^(${phaseScanTokenSource(directoryContext, progressConvention)})-?(.*)`, 'i'));
             const query = customPhaseQuery(dir, directoryContext);
             const owner = query && customDirectoryOwner(dir, query);
             const phaseNumber = owner ? owner.id : dirMatch ? dirMatch[1] : dir;

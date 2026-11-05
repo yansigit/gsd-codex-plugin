@@ -565,6 +565,12 @@ function convertedAgentsKind(destSubpath, prefix, converterName, configDir, sour
                 // (content) ignore the extra positional arg. Mirrors skillsKind's scope
                 // threading (#1173).
                 converter = (content) => rawConverter(content, (0, install_scope_cjs_1.isGlobalScope)(scope));
+                if (converterName === 'convertClaudeAgentToTraeAgent') {
+                    // #5715: the Trae agent converter needs the prefix the path-rewrite step
+                    // already emitted, so it can leave it alone.
+                    const traeConverter = rawConverter;
+                    converter = (content, _isGlobal, meta) => traeConverter(content, (0, install_scope_cjs_1.isGlobalScope)(scope), meta);
+                }
             }
             // ADR-1235 §1: when agentCtx is provided (by createRuntimeArtifactInstallPlan
             // for descriptor-driven runtimes), thread it through so stageAgentsForRuntimeWithConverter

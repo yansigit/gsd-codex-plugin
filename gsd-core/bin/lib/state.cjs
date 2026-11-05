@@ -29,7 +29,7 @@ const configLoaderMod = require("./config-loader.cjs");
 const { loadConfig } = configLoaderMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const phaseIdMod = require("./phase-id.cjs");
-const { parsePhaseFromProse, PHASE_NUMBER_TOKEN_SOURCE, phaseKeyFromToken, phaseKeyFromDir, phaseHeadingPrefixSrcFor, PHASE_HEADING_BASELINE, isSentinelPhaseId, scopeToPhase, 
+const { parsePhaseFromProse, phaseNumberTokenSource, phaseKeyFromToken, phaseKeyFromDir, phaseHeadingPrefixSrcFor, PHASE_HEADING_BASELINE, isSentinelPhaseId, scopeToPhase, 
 // #2761 M3: owns the bracket milestone intro and canonical pad2 spelling.
 bracketMilestoneIntroSrcFor, } = phaseIdMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -6386,7 +6386,7 @@ function cmdStateSync(cwd, options, raw) {
         if (completion.value.complete)
             diskCompletedPhases++;
         // Track the highest phase with incomplete plans (or any plans)
-        const phaseMatch = dir.match(new RegExp(`^(${PHASE_NUMBER_TOKEN_SOURCE})`, 'i'));
+        const phaseMatch = dir.match(new RegExp(`^(${phaseNumberTokenSource(syncConvention)})`, 'i'));
         if (phaseMatch && plans > 0) {
             if (summaries < plans) {
                 // Incomplete phase — this is likely the current one

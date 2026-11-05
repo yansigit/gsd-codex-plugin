@@ -24,8 +24,10 @@ exports.cmdWorktreeSetBaseRef = cmdWorktreeSetBaseRef;
 exports.classifyGitHead = classifyGitHead;
 exports.observeHarnessForkFromHead = observeHarnessForkFromHead;
 exports.evaluateWorktreeBaseDegrade = evaluateWorktreeBaseDegrade;
+const node_crypto_1 = __importDefault(require("node:crypto"));
 const node_fs_1 = __importDefault(require("node:fs"));
 const node_path_1 = __importDefault(require("node:path"));
+const gsd_tool_dir_cjs_1 = require("./gsd-tool-dir.cjs");
 const shell_command_projection_cjs_1 = require("./shell-command-projection.cjs");
 const runtime_homes_cjs_1 = require("./runtime-homes.cjs");
 // ─── Internal helpers ─────────────────────────────────────────────────────────
@@ -572,12 +574,40 @@ function observeHarnessForkFromHead(deps) {
         }
     });
     const stateWrite = deps.stateWrite ?? ((file, content) => {
+        let tmpPath = null;
         try {
-            node_fs_1.default.mkdirSync(node_path_1.default.dirname(file), { recursive: true });
-            node_fs_1.default.writeFileSync(file, content, 'utf8');
+            // #5757: the shared owner refuses a symlinked/escaping .gsd and keeps the
+            // directory git-ignored; the write is an exclusive random tmp + rename so
+            // a planted cache-file symlink is replaced, never followed.
+            const dir = (0, gsd_tool_dir_cjs_1.ensureToolOwnedGsdDir)(cwd, {
+                marker: '# gsd-core harness fork probe',
+                rules: ['/harness-fork-probe.json', '/harness-fork-probe.json.tmp-*', '/.gitignore'],
+            });
+            const target = node_path_1.default.join(dir, node_path_1.default.basename(file));
+            // `tmpPath` is assigned only once the exclusive create succeeded, so an
+            // EEXIST never unlinks an entry this process did not create.
+            const candidateTmp = `${target}.tmp-${process.pid}-${node_crypto_1.default.randomBytes(6).toString('hex')}`;
+            const tmpFd = node_fs_1.default.openSync(candidateTmp, 'wx');
+            tmpPath = candidateTmp;
+            try {
+                node_fs_1.default.writeFileSync(tmpFd, content, 'utf8');
+            }
+            finally {
+                node_fs_1.default.closeSync(tmpFd);
+            }
+            (0, shell_command_projection_cjs_1.retryRenameSync)(tmpPath, target);
+            tmpPath = null;
         }
         catch {
             // A cache write must never break the check that produced the verdict.
+        }
+        finally {
+            if (tmpPath) {
+                try {
+                    node_fs_1.default.unlinkSync(tmpPath);
+                }
+                catch { /* best-effort cleanup */ }
+            }
         }
     });
     // 1. Cache — trusted only while the orchestrator HEAD is unchanged.

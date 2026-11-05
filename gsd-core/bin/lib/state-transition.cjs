@@ -42,7 +42,7 @@ const roadmap_progress_cjs_1 = require("./roadmap-progress.cjs");
 const pattern_cjs_1 = require("./pattern.cjs");
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- phase-id.cjs is an export= CommonJS module
 const phaseIdMod = require("./phase-id.cjs");
-const { comparePhaseNum } = phaseIdMod;
+const { comparePhaseNum, parsePhaseFromProse } = phaseIdMod;
 // #4129: the completion-ratio kernel for the resync-arm ratchet's percent
 // (planning-scope's SCOPE — state-document's own dependency, no cycle here:
 // state-document never imports this module).
@@ -1724,8 +1724,10 @@ function nextPhaseWording(disk) {
  * position; the caller combines this with "the phase is already complete in
  * ROADMAP.md" so a first-time out-of-order completion (#2028) still
  * transitions. An unparseable or absent current phase is "not past".
+ * #5676: under `milestone-prefixed` the id is the whole `M-NN` (`3-02`, not `3`); that read goes
+ * through `parsePhaseFromProse` (the #5626 grammar owner), so the two cannot drift.
  */
-function isStatePastPhase(content, phaseNum, sourcePath) {
+function isStatePastPhase(content, phaseNum, sourcePath, convention) {
     const fm = extractFrontmatter(content, sourcePath);
     const fromFm = fm['current_phase'];
     let raw = typeof fromFm === 'string' || typeof fromFm === 'number' ? String(fromFm) : null;
@@ -1734,10 +1736,15 @@ function isStatePastPhase(content, phaseNum, sourcePath) {
         raw = (0, state_document_cjs_1.stateExtractField)(body, 'Current Phase') || (0, state_document_cjs_1.stateExtractField)(body, 'Phase') || null;
     }
     // `Phase 4` / `phase 4 of 9` name phase 4 as surely as `4 of 9` does.
-    const m = raw === null ? null : /^\s*(?:phase\s+)?(\d+(?:\.\d+)*)/i.exec(raw);
-    if (!m)
+    let id = null;
+    if (raw !== null) {
+        id = convention === 'milestone-prefixed'
+            ? parsePhaseFromProse(raw, 'milestone-prefixed').phase
+            : (/^\s*(?:phase\s+)?(\d+(?:\.\d+)*)/i.exec(raw)?.[1] ?? null);
+    }
+    if (id === null)
         return false;
-    return comparePhaseNum(m[1], String(phaseNum)) > 0;
+    return comparePhaseNum(id, String(phaseNum)) > 0;
 }
 /**
  * Apply a `completePhase` transition to STATE.md content.

@@ -14,6 +14,7 @@ const node_path_1 = __importDefault(require("node:path"));
 const text_lines_cjs_1 = require("./text-lines.cjs");
 const shell_command_projection_cjs_1 = require("./shell-command-projection.cjs");
 const pattern_cjs_1 = require("./pattern.cjs");
+const install_manifest_record_cjs_1 = require("./install-manifest-record.cjs");
 const frontmatter_fence_cjs_1 = require("./frontmatter-fence.cjs");
 const security_cjs_1 = require("./security.cjs");
 // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -835,6 +836,7 @@ function cmdEffortSync(cwd, raw, opts) {
     // cmdEffortSyncCodex and cmdEffortSyncOpencode, so a fault mid-write can
     // never leave an agent file truncated or empty.
     let fileFailureCount = 0;
+    const rewrittenFiles = [];
     for (const file of files) {
         const agentName = file.replace(/\.md$/, '');
         const filePath = node_path_1.default.join(agentsDir, file);
@@ -852,6 +854,8 @@ function cmdEffortSync(cwd, raw, opts) {
             fileFailureCount++;
             continue;
         }
+        // #5683: hash BEFORE any rewrite — only a GSD-owned file gets re-recorded.
+        const preHash = (0, install_manifest_record_cjs_1.tryFileHash)(filePath);
         // Resolve using install-time logic: home defaults merged with project config.
         const universalEffort = resolveInstallTimeEffort(effortCfg, agentName);
         // #3533 (10d): 'inherit' means the key must NOT exist. An absent key is
@@ -915,6 +919,7 @@ function cmdEffortSync(cwd, raw, opts) {
                     }
                     catch { /* non-fatal: proceed with default tmp-file mode */ }
                     (0, shell_command_projection_cjs_1.retryRenameSync)(tmpPathInherit, filePath);
+                    rewrittenFiles.push({ path: filePath, preHash });
                 }
                 catch {
                     try {
@@ -992,6 +997,7 @@ function cmdEffortSync(cwd, raw, opts) {
                 }
                 catch { /* non-fatal: proceed with default tmp-file mode */ }
                 (0, shell_command_projection_cjs_1.retryRenameSync)(tmpPathSet, filePath);
+                rewrittenFiles.push({ path: filePath, preHash });
             }
             catch {
                 try {
@@ -1006,6 +1012,9 @@ function cmdEffortSync(cwd, raw, opts) {
         changes.push({ agent: agentName, from: currentEffort, to: newEffortValue });
         synced++;
     }
+    // #5683: keep the install manifest in step with the agents just rewritten.
+    if (!dryRun)
+        (0, install_manifest_record_cjs_1.recordManifestFileHashes)(node_path_1.default.dirname(agentsDir), rewrittenFiles);
     output({ synced, skipped, changes, dry_run: dryRun, agents_dir: agentsDir }, raw, fileFailureCount > 0 ? 'failed' : synced > 0 ? 'changed' : 'ok');
 }
 /**
@@ -1048,6 +1057,7 @@ function cmdEffortSyncCodex(raw, dryRun, configDir) {
     const refused = [];
     const writeFailures = [];
     const readFailures = [];
+    const rewrittenFiles = [];
     let synced = 0;
     let skipped = 0;
     for (const file of files) {
@@ -1066,6 +1076,7 @@ function cmdEffortSyncCodex(raw, dryRun, configDir) {
             readFailures.push({ agent: agentName, file: filePath, error: err instanceof Error ? err.message : String(err) });
             continue;
         }
+        const preHash = (0, install_manifest_record_cjs_1.tryFileHash)(filePath); // #5683
         const parsed = (0, codex_agent_toml_cjs_1.parseCodexAgentToml)(content);
         if (!parsed.ok) {
             // Never partially rewritten (40-design.md, ADR-2313 reader/writer
@@ -1134,6 +1145,7 @@ function cmdEffortSyncCodex(raw, dryRun, configDir) {
                 }
                 catch { /* non-fatal: proceed with default tmp-file mode */ }
                 (0, shell_command_projection_cjs_1.retryRenameSync)(tmpPath, filePath);
+                rewrittenFiles.push({ path: filePath, preHash });
             }
             catch (err) {
                 // Reported, not thrown — the remaining agents still get processed.
@@ -1150,6 +1162,8 @@ function cmdEffortSyncCodex(raw, dryRun, configDir) {
         changes.push(...pendingChanges);
         synced++;
     }
+    if (!dryRun)
+        (0, install_manifest_record_cjs_1.recordManifestFileHashes)(node_path_1.default.dirname(agentsDir), rewrittenFiles);
     output({ synced, skipped, changes, dry_run: dryRun, agents_dir: agentsDir, refused, write_failures: writeFailures, read_failures: readFailures }, raw, writeFailures.length > 0 || readFailures.length > 0 ? 'failed' : synced > 0 ? 'changed' : 'ok');
 }
 /**
@@ -1198,6 +1212,7 @@ function cmdEffortSyncOpencode(cwd, raw, dryRun, configDir) {
     const changes = [];
     const writeFailures = [];
     const readFailures = [];
+    const rewrittenFiles = [];
     let synced = 0;
     let skipped = 0;
     for (const file of files) {
@@ -1216,6 +1231,7 @@ function cmdEffortSyncOpencode(cwd, raw, dryRun, configDir) {
             readFailures.push({ agent: agentName, file: filePath, error: err instanceof Error ? err.message : String(err) });
             continue;
         }
+        const preHash = (0, install_manifest_record_cjs_1.tryFileHash)(filePath); // #5683
         // `target === null` covers both "no effort configured" (inherit) and "a
         // level OpenCode does not accept" — both must produce NO `variant:` key,
         // exactly what install writes.
@@ -1312,6 +1328,7 @@ function cmdEffortSyncOpencode(cwd, raw, dryRun, configDir) {
                 }
                 catch { /* non-fatal: proceed with default tmp-file mode */ }
                 (0, shell_command_projection_cjs_1.retryRenameSync)(tmpPath, filePath);
+                rewrittenFiles.push({ path: filePath, preHash });
             }
             catch (err) {
                 try {
@@ -1340,6 +1357,8 @@ function cmdEffortSyncOpencode(cwd, raw, dryRun, configDir) {
     // Making the exit code reflect failure would be a CLI-contract change
     // affecting all three cmdEffortSync* branches (claude, codex, opencode) and
     // is out of scope for this fix.
+    if (!dryRun)
+        (0, install_manifest_record_cjs_1.recordManifestFileHashes)(node_path_1.default.dirname(agentsDir), rewrittenFiles);
     output({ synced, skipped, changes, dry_run: dryRun, agents_dir: agentsDir, write_failures: writeFailures, read_failures: readFailures }, raw, writeFailures.length > 0 || readFailures.length > 0 ? 'failed' : synced > 0 ? 'changed' : 'ok');
 }
 /**

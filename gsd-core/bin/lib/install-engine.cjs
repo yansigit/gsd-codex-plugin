@@ -229,11 +229,8 @@ const USER_OWNED_ARTIFACTS = ['USER-PROFILE.md'];
  * with the computed pathPrefix for the install.
  */
 function applyOpencodeFamilyPathPrefix(content, runtime, pathPrefix) {
-    content = content.replace(/~\/\.claude\//g, pathPrefix);
-    content = content.replace(/\$HOME\/\.claude\//g, pathPrefix);
-    content = content.replace(/\.\/\.claude\//g, `./${getDirName(runtime)}/`);
-    content = content.replace(/~\/\.opencode\//g, pathPrefix);
-    content = content.replace(/~\/\.kilo\//g, pathPrefix);
+    // #5715: one pass with literal replacement (see rewriteOpencodeFamilyConfigDirForms).
+    content = runtimeArtifactConversion._rewriteOpencodeFamilyConfigDirForms(content, pathPrefix, getDirName(runtime));
     // #5637: the typed-text capture heredoc ends at a terminator the typed text cannot know.
     return (0, args_terminator_cjs_1.stampInstalledContent)(content);
 }
@@ -1653,7 +1650,8 @@ function installOpencodeFamilySkills(runtime, targetDir, rawCommandsDir, pathPre
         let content = installFs().readFileSync(node_path_1.default.join(rawDir, entry.name), 'utf8');
         content = applyOpencodeFamilyPathPrefix(content, runtime, pathPrefix);
         content = processAttribution(content, resolveAttribution(runtime));
-        content = converter(content, skillName);
+        // #5715: the converter runs after the prefix pass; shield the emitted prefix from it.
+        content = runtimeArtifactConversion._shieldEmittedPrefix(content, pathPrefix, (c) => converter(c, skillName));
         const skillDir = node_path_1.default.join(dest, skillName);
         installFs().mkdirSync(skillDir, { recursive: true });
         installFs().writeFileSync(node_path_1.default.join(skillDir, 'SKILL.md'), content);
@@ -1881,9 +1879,11 @@ function installOpencodeFamilyCommands(runtime, destDir, srcDir, pathPrefix, res
             // already satisfies the fold-to-descriptor requirement. Only the SKILLS
             // converter site above (installOpencodeFamilySkills) has a real
             // `converter` string to key on via SKILLS_CONVERTER_REGISTRY.
-            content = hostBehaviorsFor(runtime).frontmatterDialect === 'kilo'
-                ? runtimeArtifactConversion.convertClaudeToKiloFrontmatter(content)
-                : runtimeArtifactConversion.convertClaudeToOpencodeFrontmatter(content);
+            // #5715: the converter runs after the prefix pass; shield the emitted prefix from it.
+            const frontmatterConverter = hostBehaviorsFor(runtime).frontmatterDialect === 'kilo'
+                ? (c) => runtimeArtifactConversion.convertClaudeToKiloFrontmatter(c)
+                : (c) => runtimeArtifactConversion.convertClaudeToOpencodeFrontmatter(c);
+            content = runtimeArtifactConversion._shieldEmittedPrefix(content, pathPrefix, frontmatterConverter);
             installFs().writeFileSync(node_path_1.default.join(destDir, destName), content);
         }
     }
