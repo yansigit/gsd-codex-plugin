@@ -9,6 +9,14 @@ exports.ReportFormat = {
     Tap: 'tap', Junit: 'junit', SwiftTesting: 'swift-testing', Unittest: 'unittest', GoTest: 'go-test', Unknown: 'unknown',
 };
 exports.TestStatus = { Passed: 'passed', Failed: 'failed', Skipped: 'skipped', Todo: 'todo' };
+/**
+ * A name that is a JS/TS test source file, as opposed to a Java class or method. Limited to the
+ * extensions vitest, jest and node:test load: a wider list (`go`, `rs`, `py`, ...) would flag a
+ * Surefire class-level entry whose FQN ends in that segment (`com.acme.go`, #4724).
+ */
+const TEST_FILE_NAME = /\.[cm]?[jt]sx?$/;
+/** jest-junit's classNameTemplate for a suite that produced no results (utils/buildJsonResults.js). */
+const JEST_SUITE_FAILED_TO_RUN = 'Test suite failed to run';
 function parseTap(output) {
     const report = { format: exports.ReportFormat.Tap, valid: true, tests: [], issues: [] };
     const parser = new tap_parser_cjs_1.Parser({ strict: true });
@@ -62,12 +70,18 @@ function parseTap(output) {
             skipped ||= Boolean(parent.closingTestPoint?.skip);
             todo ||= Boolean(parent.closingTestPoint?.todo);
         }
+        // node:test reports a file that exits non-zero without a failing subtest as `not ok N - <file>`
+        // with `error: 'test failed'` / `code: 'ERR_TEST_FAILURE'` (#5721): it asserted nothing.
+        const diag = result.diag;
+        const fileFailure = !result.ok && diag?.['error'] === 'test failed' && diag['code'] === 'ERR_TEST_FAILURE'
+            && TEST_FILE_NAME.test(result.name);
         report.tests.push({
             name: result.name,
             identities: [...new Set([result.name, result.fullname])],
             group: null,
             groupIdentities: [],
             status: skipped ? exports.TestStatus.Skipped : todo ? exports.TestStatus.Todo : result.ok ? exports.TestStatus.Passed : exports.TestStatus.Failed,
+            ...(fileFailure ? { loadFailure: true } : {}),
         });
     }
     if (!completed)
@@ -111,6 +125,8 @@ function parseJunit(output) {
                 group: className || null,
                 groupIdentities: className ? [className, className.split('.').at(-1)] : [],
                 status: exports.TestStatus.Passed,
+                ...(className === JEST_SUITE_FAILED_TO_RUN || (name === className && TEST_FILE_NAME.test(name))
+                    ? { loadFailure: true } : {}),
             };
         }
         else if (current && parent === 'testcase') {

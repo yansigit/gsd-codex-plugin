@@ -49,6 +49,34 @@ function findProjectRoot(startDir) {
     }
     const fsRoot = node_path_1.default.parse(resolvedStart).root;
     const home = node_os_1.default.homedir();
+    let realHome = null;
+    // A relative `$HOME` (`HOME=.`) would resolve against the process cwd and
+    // make that directory count as `$HOME`; keep the spelled comparison for it.
+    if (node_path_1.default.isAbsolute(home)) {
+        try {
+            realHome = node_fs_1.default.realpathSync.native(home);
+        }
+        catch {
+            // no `$HOME` on disk: only the spelled comparison applies
+        }
+    }
+    // #5624: the `$HOME` stop holds however `$HOME` or the walked path is
+    // spelled. With `/home/me -> /data/me`, a cwd spelled `/data/me/...` (what
+    // `process.cwd()` reports) never has `/home/me` as a parent, so comparing
+    // spellings alone walked past `$HOME`. The isolation hooks resolve through
+    // this function too, so they keep the same boundary (#3050).
+    function isHome(d) {
+        if (d === home)
+            return true;
+        if (realHome === null)
+            return false;
+        try {
+            return node_fs_1.default.realpathSync.native(d) === realHome;
+        }
+        catch {
+            return false;
+        }
+    }
     // If startDir already contains .planning/, it IS the project root.
     try {
         const ownPlanningDir = resolvedStart + node_path_1.default.sep + '.planning';
@@ -59,6 +87,10 @@ function findProjectRoot(startDir) {
     catch {
         // fall through
     }
+    // #5624: started at `$HOME` itself, with no `.planning/` of its own, there is
+    // nothing to walk: every ancestor is above `$HOME`.
+    if (isHome(resolvedStart))
+        return startDir;
     // A `.planning` that is itself a symlink is a deliberate hop into a separate
     // tree (the documented "keep planning content out of the tracked repo"
     // convention: `.planning -> ~/.gsd-external-planning/<project>/`, its own git
@@ -135,7 +167,7 @@ function findProjectRoot(startDir) {
         const parent = node_path_1.default.dirname(dir);
         if (parent === dir)
             break;
-        if (parent === home)
+        if (isHome(parent))
             break;
         const parentPlanning = parent + node_path_1.default.sep + '.planning';
         let parentPlanningIsDir = false;
@@ -195,7 +227,7 @@ function findProjectRoot(startDir) {
                 // Lookahead: walk ancestors above `parent` to find a sub_repos claim.
                 let ancestor = node_path_1.default.dirname(parent);
                 let ancestorDepth = 0;
-                while (ancestor !== fsRoot && ancestor !== home && ancestorDepth < FIND_PROJECT_ROOT_MAX_DEPTH) {
+                while (ancestor !== fsRoot && !isHome(ancestor) && ancestorDepth < FIND_PROJECT_ROOT_MAX_DEPTH) {
                     const ancestorPlanning = ancestor + node_path_1.default.sep + '.planning';
                     try {
                         if (node_fs_1.default.existsSync(ancestorPlanning) && node_fs_1.default.statSync(ancestorPlanning).isDirectory()) {
@@ -262,7 +294,7 @@ function findProjectRoot(startDir) {
         catch {
             // ignore fs errors and continue walking
         }
-        if (parent2 === home)
+        if (isHome(parent2))
             break;
         dir2 = parent2;
         depth2 += 1;
