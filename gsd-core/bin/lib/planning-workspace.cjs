@@ -19,6 +19,9 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 const node_fs_1 = __importDefault(require("node:fs"));
 const node_path_1 = __importDefault(require("node:path"));
 const shell_command_projection_cjs_1 = require("./shell-command-projection.cjs");
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const configFileReadMod = require("./config-file-read.cjs");
+const { readConfigFileBounded } = configFileReadMod;
 const clock_cjs_1 = require("./clock.cjs");
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const planningScopeMod = require("./planning-scope.cjs");
@@ -154,7 +157,12 @@ const CONFIG_VALUE_ABSENT = Object.freeze({ present: false, value: undefined });
 function ownConfigValue(configPath, keyPath) {
     let node;
     try {
-        node = JSON.parse(String(node_fs_1.default.readFileSync(configPath, 'utf8')));
+        // Bounded read (#5759): null (absent) and any throw (FIFO, device, directory, oversized,
+        // errno) both mean this file sets nothing — never a block.
+        const raw = readConfigFileBounded(configPath);
+        if (raw === null)
+            return CONFIG_VALUE_ABSENT;
+        node = JSON.parse(raw);
     }
     catch {
         return CONFIG_VALUE_ABSENT;
@@ -268,11 +276,12 @@ function worktreesOptedOut(cwd) {
  */
 function resolvePhaseIdConvention(cwd, ws) {
     const readFrom = (dir) => {
-        const configPath = node_path_1.default.join(dir, 'config.json');
-        if (!node_fs_1.default.existsSync(configPath))
-            return null;
         try {
-            const parsed = JSON.parse(node_fs_1.default.readFileSync(configPath, 'utf-8'));
+            // Bounded read (#5759): null is an absent file, a throw is an unreadable one; both mean "unset".
+            const raw = readConfigFileBounded(node_path_1.default.join(dir, 'config.json'));
+            if (raw === null)
+                return null;
+            const parsed = JSON.parse(raw);
             const value = parsed['phase_id_convention'];
             return typeof value === 'string' && value !== '' ? value : null;
         }
@@ -452,7 +461,8 @@ function withPlanningLock(cwd, fn, clock) {
                 // written atomically (writeFileSync …{flag:'wx'}) so there is no empty-body
                 // create window here — only the double-steal needs hardening.
                 try {
-                    const decisionStat = node_fs_1.default.statSync(lockPath);
+                    // Exact 64-bit (dev, ino): an NTFS file id does not fit a JS number (never serialized).
+                    const decisionId = node_fs_1.default.statSync(lockPath, { bigint: true });
                     // Snapshot the decision-time body too: (dev, ino) alone is defeated by inode
                     // REUSE (a racer's unlink+recreate can land on the same inode), so the body
                     // content binds the identity as well — mirrors capability-lock.cts's (dev,
@@ -469,7 +479,7 @@ function withPlanningLock(cwd, fn, clock) {
                         // Verified-live, but recover anyway once the lock crosses the absolute
                         // deadman ceiling — defeats a pid-reuse false-alive that would otherwise
                         // block forever (R4-FIX; mtime age is from lock creation, not this call).
-                        const age = clock.now() - decisionStat.mtimeMs;
+                        const age = clock.now() - Number(decisionId.mtimeMs);
                         stealable = age > deadmanCeilingMs;
                     }
                     if (stealable) {
@@ -480,7 +490,7 @@ function withPlanningLock(cwd, fn, clock) {
                         // NOT delete the replacement; back off and re-evaluate.
                         let confirmStat;
                         try {
-                            confirmStat = node_fs_1.default.statSync(lockPath);
+                            confirmStat = node_fs_1.default.statSync(lockPath, { bigint: true });
                         }
                         catch {
                             continue; // vanished between decision and steal — retry the create.
@@ -492,8 +502,8 @@ function withPlanningLock(cwd, fn, clock) {
                         catch {
                             confirmBody = null;
                         }
-                        const sameInstance = typeof decisionStat.dev === 'number' && typeof decisionStat.ino === 'number' &&
-                            confirmStat.dev === decisionStat.dev && confirmStat.ino === decisionStat.ino &&
+                        const sameInstance = typeof decisionId.dev === 'bigint' && typeof decisionId.ino === 'bigint' &&
+                            confirmStat.dev === decisionId.dev && confirmStat.ino === decisionId.ino &&
                             decisionBody !== null && confirmBody === decisionBody;
                         if (!sameInstance) {
                             clock.sleep(100); // a racer won the steal + recreated — re-evaluate, don't delete it.

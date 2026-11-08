@@ -36,9 +36,12 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 const node_fs_1 = __importDefault(require("node:fs"));
 const node_path_1 = __importDefault(require("node:path"));
 const runtime_homes_cjs_1 = require("./runtime-homes.cjs");
+// eslint-disable-next-line @typescript-eslint/no-require-imports -- config-file-read.cjs is an export= CommonJS module
+const configFileReadMod = require("./config-file-read.cjs");
+const { unboundedConfigFileReason, printablePath, readConfigFileBounded } = configFileReadMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- install-fs-adapter.cjs is an export= CommonJS module
 const installFsAdapter = require("./install-fs-adapter.cjs");
-const { installFs } = installFsAdapter;
+const { installFs, isRealInstallFs } = installFsAdapter;
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- model-resolver.cjs is an export= CommonJS module
 const modelResolver = require("./model-resolver.cjs");
 const { EFFORT_SET: GSD_EFFORT_SET } = modelResolver;
@@ -54,19 +57,36 @@ const { mergeEffortTierDefaults } = modelCatalog;
 function _readGsdConfigFile(absPath, label) {
     if (!installFs().existsSync(absPath))
         return null;
+    // #5759: refuse a FIFO/device/socket or an oversized file BEFORE the adapter's blocking read
+    // (shared guard; a path that is not on the real fs is left to the adapter).
     let raw;
     try {
-        raw = installFs().readFileSync(absPath, 'utf-8');
+        if (isRealInstallFs()) {
+            // The real fs: the descriptor-bound reader (non-blocking open, fstat, cap).
+            const text = readConfigFileBounded(absPath);
+            if (text === null)
+                return null;
+            raw = text;
+        }
+        else {
+            // An injected adapter cannot give a descriptor: stat the real path first (best effort).
+            const unbounded = unboundedConfigFileReason(absPath);
+            if (unbounded !== null) {
+                process.stderr.write(`gsd: warning — could not read ${label} (${printablePath(absPath)}): ${unbounded}\n`);
+                return null;
+            }
+            raw = installFs().readFileSync(absPath, 'utf-8');
+        }
     }
     catch (err) {
-        process.stderr.write(`gsd: warning — could not read ${label} (${absPath}): ${err.message}\n`);
+        process.stderr.write(`gsd: warning — could not read ${label} (${printablePath(absPath)}): ${printablePath(err.message)}\n`);
         return null;
     }
     try {
         return JSON.parse(raw);
     }
     catch (err) {
-        process.stderr.write(`gsd: warning — invalid JSON in ${label} (${absPath}): ${err.message}\n`);
+        process.stderr.write(`gsd: warning — invalid JSON in ${label} (${printablePath(absPath)}): ${printablePath(err.message)}\n`);
         return null;
     }
 }

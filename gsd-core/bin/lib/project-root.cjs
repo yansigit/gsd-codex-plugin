@@ -24,6 +24,9 @@ exports.consentProjectRoot = consentProjectRoot;
 const node_fs_1 = __importDefault(require("node:fs"));
 const node_path_1 = __importDefault(require("node:path"));
 const node_os_1 = __importDefault(require("node:os"));
+// eslint-disable-next-line @typescript-eslint/no-require-imports -- config-file-read.cjs is an export= CommonJS module
+const configFileReadMod = require("./config-file-read.cjs");
+const { readConfigFileBounded } = configFileReadMod;
 const FIND_PROJECT_ROOT_MAX_DEPTH = 10;
 // #4894: an operator-supplied `--project-dir` IS the project root — the
 // dispatcher validates it and skips the ancestor walk-up for `cwd`, but code
@@ -181,7 +184,9 @@ function findProjectRoot(startDir) {
             const configPath = parentPlanning + node_path_1.default.sep + 'config.json';
             let matched = false;
             try {
-                const raw = node_fs_1.default.readFileSync(configPath, 'utf-8');
+                // Bounded read (#5759): a FIFO/device/oversized config throws and is skipped like a
+                // missing one. An absent file (null) becomes '' so JSON.parse throws into the same catch.
+                const raw = readConfigFileBounded(configPath) ?? '';
                 const config = JSON.parse(raw);
                 if (config && typeof config === 'object') {
                     const cfg = config;
@@ -232,7 +237,7 @@ function findProjectRoot(startDir) {
                     try {
                         if (node_fs_1.default.existsSync(ancestorPlanning) && node_fs_1.default.statSync(ancestorPlanning).isDirectory()) {
                             const ancestorConfig = ancestor + node_path_1.default.sep + '.planning' + node_path_1.default.sep + 'config.json';
-                            const rawA = node_fs_1.default.readFileSync(ancestorConfig, 'utf-8');
+                            const rawA = readConfigFileBounded(ancestorConfig) ?? ''; // #5759: bounded; '' makes JSON.parse throw into the catch
                             const cfgA = JSON.parse(rawA);
                             const subReposValueA = cfgA['sub_repos'] ??
                                 (cfgA['planning'] && typeof cfgA['planning'] === 'object'

@@ -259,4 +259,8 @@ function mkInstallTempDir(prefix) {
     installFs().mkdirSync(dir, { recursive: true });
     return dir;
 }
-module.exports = { installFs, withInstallFs, mkInstallTempDir };
+/** True when no fake adapter is active, i.e. installFs() is the real `node:fs` (#5759). */
+function isRealInstallFs() {
+    return current === REAL_ADAPTER;
+}
+module.exports = { installFs, withInstallFs, mkInstallTempDir, isRealInstallFs };

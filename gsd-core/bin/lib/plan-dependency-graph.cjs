@@ -85,10 +85,11 @@ function isHaltedStatus(status) {
  * @param summaryPath - absolute or relative path to a `*-SUMMARY.md` file.
  */
 function isSummaryFileHalted(summaryPath) {
+    const content = readSummaryFrontmatterPrefix(summaryPath);
+    if (content === null)
+        return false;
     try {
-        const content = node_fs_1.default.readFileSync(summaryPath, 'utf-8');
-        const fm = extractFrontmatter(content, summaryPath);
-        return isHaltedStatus(fm['status']);
+        return isHaltedStatus(extractFrontmatter(content, summaryPath)['status']);
     }
     catch {
         return false;
@@ -141,6 +142,46 @@ function isBlockedStatus(status) {
 // over every phase directory on hot paths (state sync, roadmap progress).
 const SUMMARY_FRONTMATTER_READ_CAP = 64 * 1024;
 /**
+ * #5789: the ONE reader behind both SUMMARY status predicates
+ * (`isSummaryFileHalted`, `isSummaryFileBlocked`), so they agree on which
+ * inputs are read. Opens O_NONBLOCK (never blocks on a FIFO; the flag is
+ * undefined on Windows, where FIFOs do not exist), decides the type on the
+ * opened fd (no stat-then-open swap window), refuses anything but a regular
+ * file (FIFO, /dev/zero via a symlink, socket, directory), and reads at most
+ * SUMMARY_FRONTMATTER_READ_CAP bytes from offset 0. Symlinks to regular files
+ * are still followed. Returns null on any error or non-regular input.
+ */
+function readSummaryFrontmatterPrefix(summaryPath) {
+    let fd;
+    try {
+        fd = node_fs_1.default.openSync(summaryPath, node_fs_1.default.constants.O_RDONLY | (node_fs_1.default.constants.O_NONBLOCK || 0));
+        if (!node_fs_1.default.fstatSync(fd).isFile())
+            return null;
+        const buf = Buffer.allocUnsafe(SUMMARY_FRONTMATTER_READ_CAP);
+        let total = 0;
+        while (total < SUMMARY_FRONTMATTER_READ_CAP) {
+            const n = node_fs_1.default.readSync(fd, buf, total, SUMMARY_FRONTMATTER_READ_CAP - total, total);
+            if (n === 0)
+                break;
+            total += n;
+        }
+        return buf.toString('utf8', 0, total);
+    }
+    catch {
+        return null;
+    }
+    finally {
+        if (fd !== undefined) {
+            try {
+                node_fs_1.default.closeSync(fd);
+            }
+            catch {
+                // close failure on a read-only fd is not actionable
+            }
+        }
+    }
+}
+/**
  * #3345: read a SUMMARY file's frontmatter `status` (bounded-prefix read) and
  * report whether it declares `status: blocked`. Returns false — never throws —
  * on a missing/unreadable/malformed/non-regular SUMMARY, so an unreadable file
@@ -153,27 +194,9 @@ const SUMMARY_FRONTMATTER_READ_CAP = 64 * 1024;
  * re-diverge on the blocked rule.
  */
 function isSummaryFileBlocked(summaryPath) {
-    let content;
-    try {
-        const st = node_fs_1.default.statSync(summaryPath); // follows symlinks → resolves to the target's real type
-        if (!st.isFile())
-            return false;
-        const length = Math.min(st.size, SUMMARY_FRONTMATTER_READ_CAP);
-        if (length === 0)
-            return false;
-        const fd = node_fs_1.default.openSync(summaryPath, 'r');
-        try {
-            const buf = Buffer.allocUnsafe(length);
-            const bytesRead = node_fs_1.default.readSync(fd, buf, 0, length, 0);
-            content = buf.toString('utf8', 0, bytesRead);
-        }
-        finally {
-            node_fs_1.default.closeSync(fd);
-        }
-    }
-    catch {
+    const content = readSummaryFrontmatterPrefix(summaryPath);
+    if (content === null || content.length === 0)
         return false;
-    }
     return isBlockedStatus(extractFrontmatter(content, summaryPath)['status']);
 }
 /**

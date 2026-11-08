@@ -48,7 +48,7 @@ const secrets_cjs_1 = require("./secrets.cjs");
 const scanPhasePlans = require("./plan-scan.cjs");
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- plan-document.cjs is an export= CommonJS module
 const planDocument = require("./plan-document.cjs");
-const state_document_cjs_1 = require("./state-document.cjs");
+const state_transition_cjs_1 = require("./state-transition.cjs");
 const runtime_slash_cjs_1 = require("./runtime-slash.cjs");
 const host_runtime_detection_cjs_1 = require("./host-runtime-detection.cjs");
 const security_cjs_1 = require("./security.cjs");
@@ -540,7 +540,10 @@ function detectHasPriorPhases(cwd, phaseInfo) {
  */
 function readConfigJsonBoolean(cwd, keyPath) {
     try {
-        const raw = node_fs_1.default.readFileSync(node_path_1.default.join(planningDir(cwd), 'config.json'), 'utf8');
+        // Bounded read (#5759): a FIFO/device/oversized config throws and degrades to false below.
+        const raw = configLoader.readConfigFileBounded(node_path_1.default.join(planningDir(cwd), 'config.json'));
+        if (raw === null)
+            return false;
         let cursor = JSON.parse(raw);
         for (const segment of keyPath) {
             if (cursor === null || typeof cursor !== 'object' || Array.isArray(cursor))
@@ -576,7 +579,10 @@ function readNonEmptyFileOrNull(filePath) {
  */
 function readConfigJsonValue(cwd, keyPath) {
     try {
-        const raw = node_fs_1.default.readFileSync(node_path_1.default.join(planningDir(cwd), 'config.json'), 'utf8');
+        // Bounded read (#5759): a FIFO/device/oversized config throws and degrades to undefined below.
+        const raw = configLoader.readConfigFileBounded(node_path_1.default.join(planningDir(cwd), 'config.json'));
+        if (raw === null)
+            return undefined;
         let cursor = JSON.parse(raw);
         for (const segment of keyPath) {
             if (cursor === null || typeof cursor !== 'object' || Array.isArray(cursor))
@@ -1058,8 +1064,7 @@ function cmdInitExecutePhase(cwd, phase, raw, options = {}) {
                 const stateWarnings = [];
                 if (phaseInfo?.['directory'] && node_fs_1.default.existsSync(node_path_1.default.join(cwd, phaseInfo['directory']))) {
                     const diskPlans = listPhasePlanFiles(node_path_1.default.join(cwd, phaseInfo['directory'])).length;
-                    const totalPlansRaw = (0, state_document_cjs_1.stateExtractField)(stateContent, 'Total Plans in Phase');
-                    const totalPlansInPhase = totalPlansRaw ? parseInt(totalPlansRaw, 10) : null;
+                    const totalPlansInPhase = (0, state_transition_cjs_1.readRecordedPlanTotal)(stateContent);
                     if (totalPlansInPhase !== null && diskPlans !== totalPlansInPhase) {
                         stateWarnings.push(`Plan count mismatch: STATE.md says ${totalPlansInPhase}, disk has ${diskPlans}`);
                     }
@@ -1286,8 +1291,7 @@ function cmdInitPlanPhase(cwd, phase, raw, options = {}) {
             if (stateContent !== null) {
                 const stateWarnings = [];
                 result['state_validation_ran'] = true;
-                const totalPlansRaw = (0, state_document_cjs_1.stateExtractField)(stateContent, 'Total Plans in Phase');
-                const totalPlansInPhase = totalPlansRaw ? parseInt(totalPlansRaw, 10) : null;
+                const totalPlansInPhase = (0, state_transition_cjs_1.readRecordedPlanTotal)(stateContent);
                 if (totalPlansInPhase !== null &&
                     phaseInfo &&
                     totalPlansInPhase !==

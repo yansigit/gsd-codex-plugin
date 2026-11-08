@@ -94,7 +94,11 @@ function defaultBudget() {
 function readSmartZoneBudget(cwd) {
     try {
         const configPath = node_path_1.default.join(planningDir(cwd), 'config.json');
-        const parsed = JSON.parse(node_fs_1.default.readFileSync(configPath, 'utf-8'));
+        // Bounded read (#5759): null (absent) and any throw (FIFO, device, oversized) keep the default.
+        const raw = configLoader.readConfigFileBounded(configPath);
+        if (raw === null)
+            return defaultBudget();
+        const parsed = JSON.parse(raw);
         if (parsed !== null && typeof parsed === 'object') {
             const workflow = parsed['workflow'];
             if (workflow !== null && typeof workflow === 'object') {

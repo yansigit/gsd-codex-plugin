@@ -47,7 +47,7 @@ const { planningDir, planningRoot, resolveEnvWorkstream, resolvePhaseIdConventio
 // Naming readers and writers share the loader's scoped-key precedence and defaults.
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const configLoaderModule = require("./config-loader.cjs");
-const { CONFIG_DEFAULTS, _deepMergeConfig, _getConfigValue, loadConfig } = configLoaderModule;
+const { CONFIG_DEFAULTS, _deepMergeConfig, _getConfigValue, loadConfig, readConfigFileBounded } = configLoaderModule;
 const runtime_homes_cjs_1 = require("./runtime-homes.cjs");
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const frontmatterModule = require("./frontmatter.cjs");
@@ -253,7 +253,12 @@ function phaseDirectoryOptions(cwd, config, roadmap, ws) {
     if (naming === undefined) {
         const readConfig = (file) => {
             try {
-                const value = JSON.parse(node_fs_1.default.readFileSync(file, 'utf8'));
+                // Bounded read (#5759): null is an absent file (no configError); a FIFO/device/oversized
+                // file throws and is reported through configError like any other unreadable config.
+                const raw = readConfigFileBounded(file);
+                if (raw === null)
+                    return null;
+                const value = JSON.parse(raw);
                 if (value && typeof value === 'object' && !Array.isArray(value))
                     return value;
                 configError = { path: file, message: 'configuration must be a JSON object' };
@@ -305,7 +310,7 @@ function phaseDirectoryOptions(cwd, config, roadmap, ws) {
                 // Windows may omit these flags: lstat/fstat still require a regular file,
                 // but the open is not atomically no-follow there. Adopt Windows no-follow
                 // flags here if Node exposes them; no caller should weaken these checks.
-                identityFd = node_fs_1.default.openSync(markerPath, node_fs_1.default.constants.O_RDONLY | node_fs_1.default.constants.O_NONBLOCK | node_fs_1.default.constants.O_NOFOLLOW);
+                identityFd = node_fs_1.default.openSync(markerPath, node_fs_1.default.constants.O_RDONLY | node_fs_1.default.constants.O_NONBLOCK | node_fs_1.default.constants.O_NOFOLLOW | (node_fs_1.default.constants.O_NOCTTY ?? 0));
                 const opened = node_fs_1.default.fstatSync(identityFd);
                 if (!opened.isFile() || opened.size > 1024)
                     continue;

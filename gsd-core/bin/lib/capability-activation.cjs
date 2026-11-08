@@ -8,11 +8,13 @@
 var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
-const node_fs_1 = __importDefault(require("node:fs"));
 const node_path_1 = __importDefault(require("node:path"));
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const planningWorkspaceMod = require("./planning-workspace.cjs");
 const { planningDir, planningRoot } = planningWorkspaceMod;
+// eslint-disable-next-line @typescript-eslint/no-require-imports -- config-file-read.cjs is an export= CommonJS module
+const configFileReadMod = require("./config-file-read.cjs");
+const { readConfigFileBounded } = configFileReadMod;
 function _getNestedConfigValue(config, dotKey) {
     const segments = dotKey.split('.');
     let current = config;
@@ -34,7 +36,11 @@ function _getNestedConfigValue(config, dotKey) {
 const _warnedRawConfigPaths = new Set();
 function _readRawConfigKey(filePath, dotKey, quiet = false) {
     try {
-        const raw = node_fs_1.default.readFileSync(filePath, 'utf8');
+        // Bounded read (#5759): null is an absent file; a FIFO/device/oversized one throws to the
+        // catch below, which reports the key as not found.
+        const raw = readConfigFileBounded(filePath);
+        if (raw === null)
+            return { found: false, value: undefined };
         let parsed;
         try {
             parsed = JSON.parse(raw);

@@ -14,6 +14,9 @@ const node_fs_1 = __importDefault(require("node:fs"));
 const node_path_1 = __importDefault(require("node:path"));
 const shell_command_projection_cjs_1 = require("./shell-command-projection.cjs");
 const phase_entry_grammar_cjs_1 = require("./phase-entry-grammar.cjs");
+// eslint-disable-next-line @typescript-eslint/no-require-imports -- config-file-read.cjs is an export= CommonJS module
+const configFileReadMod = require("./config-file-read.cjs");
+const { readConfigFileBounded } = configFileReadMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const planningWorkspace = require("./planning-workspace.cjs");
 // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -882,7 +885,10 @@ function computeBracketPlan(cwd) {
     };
     let configData = {};
     try {
-        configData = JSON.parse(node_fs_1.default.readFileSync(configPath, 'utf8'));
+        // Bounded read (#5759): a FIFO/device/oversized config is treated like an absent one.
+        const rawConfig = readConfigFileBounded(configPath);
+        if (rawConfig !== null)
+            configData = JSON.parse(rawConfig);
     }
     catch { /* config may not exist */ }
     const projectCode = typeof configData['project_code'] === 'string' && configData['project_code'].length > 0
@@ -1621,7 +1627,10 @@ function computeMigrationPlan(cwd, options = {}) {
     // ── Check config for existing convention ─────────────────────────────────
     let configData = {};
     try {
-        configData = JSON.parse(node_fs_1.default.readFileSync(configPath, 'utf8'));
+        // Bounded read (#5759): a FIFO/device/oversized config is treated like an absent one.
+        const rawConfig = readConfigFileBounded(configPath);
+        if (rawConfig !== null)
+            configData = JSON.parse(rawConfig);
     }
     catch { /* config may not exist */ }
     if (configData['phase_id_convention'] === 'milestone-prefixed') {
@@ -2110,9 +2119,19 @@ function applyMigration(cwd, plan, options = {}) {
         if (plan.phases.length > 0 || plan.roadmapEdits.length > 0) {
             let configData = {};
             try {
-                configData = JSON.parse(node_fs_1.default.readFileSync(configPath, 'utf8'));
+                // Bounded read (#5759): the stamp below is written to configPath, so a FIFO/device/
+                // oversized config is refused (and rolled back) rather than read or written blindly.
+                const rawConfig = readConfigFileBounded(configPath);
+                if (rawConfig !== null)
+                    configData = JSON.parse(rawConfig);
             }
-            catch { /* config may not exist yet */ }
+            catch (err) {
+                const code = err.code;
+                if (code === 'ENXIO' || code === 'EISDIR' || code === 'EFBIG') {
+                    throw new Error(`config.json cannot be updated: it is not a regular file within the size limit (${code})`);
+                }
+                /* config may not exist yet, or may not parse */
+            }
             configData['phase_id_convention'] = plan.targetConvention ?? 'milestone-prefixed';
             snapshotFile(configPath);
             try {

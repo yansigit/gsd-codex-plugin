@@ -17,7 +17,8 @@
  *   - ./unusable-input.cjs   (warnUnusableInput, UNUSABLE_REASON — #3760)
  *   - ./config-schema.cjs    (VALID_CONFIG_KEYS, DYNAMIC_KEY_PATTERNS)
  *   - ./planning-workspace.cjs (planningDir, planningRoot)
- *   - ./shell-command-projection.cjs (execGit, platformWriteSync, platformReadSync)
+ *   - ./shell-command-projection.cjs (execGit, platformWriteSync)
+ *   - ./config-file-read.cjs (CONFIG_MAX_BYTES, readConfigFileBounded — bounded regular-file read, #5759)
  *   - ./core-utils.cjs       (detectSubRepos)
  *   - ./model-catalog.cjs    (KNOWN_RUNTIMES, KNOWN_PROVIDERS, ADAPTIVE_TIER_VALUES)
  */
@@ -27,6 +28,9 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 const node_fs_1 = __importDefault(require("node:fs"));
 const node_path_1 = __importDefault(require("node:path"));
 const shell_command_projection_cjs_1 = require("./shell-command-projection.cjs");
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const configFileReadMod = require("./config-file-read.cjs");
+const { CONFIG_MAX_BYTES, readConfigFileBounded, printablePath } = configFileReadMod;
 // #4717: runtime-identity fill — env rung + per-install marker rung.
 const runtime_slash_cjs_1 = require("./runtime-slash.cjs");
 const runtime_homes_cjs_1 = require("./runtime-homes.cjs");
@@ -533,15 +537,19 @@ const CONFIG_REASON = Object.freeze({
     /** The file exists but could not be read (EACCES/EIO/…) — NOT applied. */
     CONFIG_UNREADABLE: 'config_unreadable',
 });
+// CONFIG_MAX_BYTES and readConfigFileBounded live in ./config-file-read.cjs (#5759), the leaf
+// every config.json reader shares; they are re-exported below for existing importers.
 /**
  * Read + JSON-parse a config file, keeping *absent* distinguishable from
- * *unusable*. `platformReadSync` returns null on ENOENT and re-throws every
- * other errno, which is the seam that makes this separable at all.
+ * *unusable*. `readConfigFileBounded` returns null on ENOENT and throws an error
+ * carrying `.code` for every other condition — a FIFO/device (ENXIO), a directory
+ * (EISDIR), an oversized file (EFBIG) or an errno — which is the seam that makes
+ * this separable at all.
  */
 function _readConfigFile(filePath) {
     let raw;
     try {
-        raw = (0, shell_command_projection_cjs_1.platformReadSync)(filePath);
+        raw = readConfigFileBounded(filePath);
     }
     catch (err) {
         const code = err.code ?? 'EUNKNOWN';
@@ -573,14 +581,7 @@ function _readConfigFile(filePath) {
  * genuine second failure in a different file.
  */
 const _warnedUnusableConfig = new Set();
-/**
- * The wiring clause (ADR-1411 amendment). `reason` lives on `ConfigResolution`,
- * but `loadConfig` — the wrapper roughly fifty call sites use — returns
- * `.config` alone and would never surface it. Without this diagnostic the field
- * is unreachable to almost every consumer, and the user whose config was
- * silently discarded still gets no signal. That was the whole defect in #1880.
- */
-function _warnUnusableConfig(fault) {
+function _warnUnusableConfig(fault, fallback = 'defaults') {
     // The NUL separators are load-bearing: without them `path`+`reason`+`code` is bare
     // concatenation and two distinct faults can key alike. They are written as escapes rather
     // than literal 0x00 bytes because a literal NUL makes the whole file binary to file(1) and
@@ -594,7 +595,10 @@ function _warnUnusableConfig(fault) {
     const what = fault.reason === CONFIG_REASON.CONFIG_UNPARSEABLE
         ? 'is not valid JSON'
         : `could not be read (${fault.code})`;
-    process.stderr.write(`gsd-tools: warning: ${fault.path} ${what} — its settings were NOT applied; using defaults instead\n`);
+    const instead = fallback === 'root' ? '; using the root config instead'
+        : fallback === 'defaults' ? '; using defaults instead'
+            : '';
+    process.stderr.write(`gsd-tools: warning: ${printablePath(fault.path)} ${what} — its settings were NOT applied${instead}\n`);
 }
 /**
  * loadConfigResolved — provenance-aware config loading (#1415, ADR-1411 P2).
@@ -677,7 +681,8 @@ function loadConfigResolvedInternal(cwd, options = {}) {
             const rootRead = _readConfigFile(rootConfigPath);
             if (rootRead.kind === 'fault') {
                 configFault = rootRead.fault;
-                _warnUnusableConfig(rootRead.fault);
+                // The workstream config below may still apply, so no replacement is claimed.
+                _warnUnusableConfig(rootRead.fault, null);
             }
             if (rootRead.kind !== 'ok')
                 throw new Error('root config absent or unusable');
@@ -730,7 +735,8 @@ function loadConfigResolvedInternal(cwd, options = {}) {
             // The workstream/root config that ACTUALLY governs this resolution is
             // unusable. This outranks any earlier root-config fault for reporting.
             configFault = read.fault;
-            _warnUnusableConfig(read.fault);
+            // With a workstream active and a usable root config, the root config is what applies.
+            _warnUnusableConfig(read.fault, ws && rootParsed ? 'root' : 'defaults');
         }
         if (read.kind !== 'ok')
             throw new Error('config absent or unusable');
@@ -1135,6 +1141,8 @@ module.exports = {
     loadConfig,
     loadConfigResolved,
     CONFIG_REASON,
+    CONFIG_MAX_BYTES,
+    readConfigFileBounded,
     _warnedUnusableConfig,
     isGitIgnored,
     CONFIG_DEFAULTS,

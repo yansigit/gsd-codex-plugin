@@ -14,6 +14,9 @@ const node_fs_1 = __importDefault(require("node:fs"));
 const node_path_1 = __importDefault(require("node:path"));
 const shell_command_projection_cjs_1 = require("./shell-command-projection.cjs");
 const runtime_slash_cjs_1 = require("./runtime-slash.cjs");
+// eslint-disable-next-line @typescript-eslint/no-require-imports -- config-file-read.cjs is an export= CommonJS module
+const configFileReadMod = require("./config-file-read.cjs");
+const { readConfigFileBounded } = configFileReadMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const capabilityStateMod = require("./capability-state.cjs");
 const { isCapabilityActive } = capabilityStateMod;
@@ -170,6 +173,20 @@ function safeReadJson(filePath) {
         if (!node_fs_1.default.existsSync(filePath))
             return null;
         return JSON.parse(node_fs_1.default.readFileSync(filePath, 'utf8'));
+    }
+    catch {
+        return null;
+    }
+}
+/**
+ * Safely read and parse `<planningDir>/config.json` as a bounded regular file (#5759). Returns
+ * null on a missing, non-regular (FIFO/device), oversized, unreadable or malformed file — never
+ * blocks. Not `safeReadJson`: that reader is for graph artifacts and opens blocking.
+ */
+function safeReadConfigJson(planningDir) {
+    try {
+        const raw = readConfigFileBounded(node_path_1.default.join(planningDir, 'config.json'));
+        return raw === null ? null : JSON.parse(raw);
     }
     catch {
         return null;
@@ -390,7 +407,7 @@ const SNAPSHOT_FILENAME = '.last-build-snapshot.json';
  * default `<planningDir>/graphs/graph.json` when unset/blank/non-string.
  */
 function resolveGraphLocation(cwd, planningDir) {
-    const config = safeReadJson(node_path_1.default.join(planningDir, 'config.json'));
+    const config = safeReadConfigJson(planningDir);
     const graphify = (config && config['graphify']);
     const configuredValue = graphify && graphify['graph_path'];
     if (typeof configuredValue === 'string' && configuredValue.trim().length > 0) {
@@ -564,7 +581,7 @@ function graphifyBuild(cwd) {
     const graphsDir = node_path_1.default.join(planningDir, 'graphs');
     node_fs_1.default.mkdirSync(graphsDir, { recursive: true });
     // Read build timeout from config -- default 300s per D-02
-    const config = safeReadJson(node_path_1.default.join(planningDir, 'config.json')) || {};
+    const config = safeReadConfigJson(planningDir) || {};
     const graphifyConfig = config.graphify;
     const timeoutSec = (graphifyConfig && graphifyConfig.build_timeout) || 300;
     return {

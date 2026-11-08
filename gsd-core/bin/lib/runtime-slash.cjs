@@ -40,6 +40,9 @@ exports.runtimeCommand = runtimeCommand;
 const node_fs_1 = __importDefault(require("node:fs"));
 const node_path_1 = __importDefault(require("node:path"));
 const runtime_name_policy_cjs_1 = require("./runtime-name-policy.cjs");
+// eslint-disable-next-line @typescript-eslint/no-require-imports -- config-file-read.cjs is an export= CommonJS module
+const configFileReadMod = require("./config-file-read.cjs");
+const { readConfigFileBounded } = configFileReadMod;
 function formatGsdSlash(commandName, runtime) {
     if (typeof commandName !== 'string')
         return commandName;
@@ -171,9 +174,11 @@ function readProjectConfig(projectDir) {
         return null;
     try {
         const configPath = node_path_1.default.join(projectDir, '.planning', 'config.json');
-        if (!node_fs_1.default.existsSync(configPath))
+        // Bounded read (#5759): null is an absent file; a FIFO/device/oversized one throws and degrades to null.
+        const raw = readConfigFileBounded(configPath);
+        if (raw === null)
             return null;
-        const parsed = JSON.parse(node_fs_1.default.readFileSync(configPath, 'utf-8'));
+        const parsed = JSON.parse(raw);
         return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;
     }
     catch {

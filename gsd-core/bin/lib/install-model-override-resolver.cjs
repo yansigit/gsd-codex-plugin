@@ -35,9 +35,33 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 const node_path_1 = __importDefault(require("node:path"));
 const node_os_1 = __importDefault(require("node:os"));
 const runtime_homes_cjs_1 = require("./runtime-homes.cjs");
+// eslint-disable-next-line @typescript-eslint/no-require-imports -- config-file-read.cjs is an export= CommonJS module
+const configFileReadMod = require("./config-file-read.cjs");
+const { unboundedConfigFileReason, printablePath, readConfigFileBounded } = configFileReadMod;
+/**
+ * Text of an install-time config file, or null (with a printable-path warning) when it is not a
+ * regular file within the cap or cannot be read. The real fs uses the descriptor-bound reader;
+ * an injected adapter gets the stat guard before its own read (#5759).
+ */
+function readInstallConfigText(absPath, label) {
+    try {
+        if (isRealInstallFs())
+            return readConfigFileBounded(absPath);
+        const unbounded = unboundedConfigFileReason(absPath);
+        if (unbounded !== null) {
+            process.stderr.write(`gsd: warning — could not read ${label} (${printablePath(absPath)}): ${unbounded}\n`);
+            return null;
+        }
+        return installFs().readFileSync(absPath, 'utf-8');
+    }
+    catch (err) {
+        process.stderr.write(`gsd: warning — could not read ${label} (${printablePath(absPath)}): ${printablePath(err.message)}\n`);
+        return null;
+    }
+}
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- install-fs-adapter.cjs is an export= CommonJS module
 const installFsAdapter = require("./install-fs-adapter.cjs");
-const { installFs } = installFsAdapter;
+const { installFs, isRealInstallFs } = installFsAdapter;
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- install-effort-resolver.cjs is an export= CommonJS module
 const installEffortResolver = require("./install-effort-resolver.cjs");
 const { _readGsdConfigFile, _findAncestorGsdConfigPath } = installEffortResolver;
@@ -62,7 +86,9 @@ function readGsdGlobalModelOverrides(options = {}) {
         const defaultsPath = node_path_1.default.join(home, '.gsd', 'defaults.json');
         if (!installFs().existsSync(defaultsPath))
             return null;
-        const raw = installFs().readFileSync(defaultsPath, 'utf-8');
+        const raw = readInstallConfigText(defaultsPath, 'global defaults'); // #5759: never block on a planted FIFO
+        if (raw === null)
+            return null;
         const parsed = JSON.parse(raw);
         const overrides = parsed.model_overrides;
         if (!overrides || typeof overrides !== 'object')
@@ -99,7 +125,11 @@ function readGsdEffectiveModelOverrides(targetDir = null, options = {}) {
         const candidate = _findAncestorGsdConfigPath(targetDir);
         if (candidate) {
             try {
-                const parsed = JSON.parse(installFs().readFileSync(candidate, 'utf-8'));
+                // #5759: refuse a FIFO/device/oversized project config before the adapter's blocking read.
+                const text = readInstallConfigText(candidate, 'project config');
+                if (text === null)
+                    throw new Error('unusable project config');
+                const parsed = JSON.parse(text);
                 if (parsed && typeof parsed === 'object' && parsed.model_overrides && typeof parsed.model_overrides === 'object') {
                     projectOverrides = parsed.model_overrides;
                 }
