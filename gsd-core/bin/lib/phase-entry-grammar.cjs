@@ -32,6 +32,7 @@ exports.phaseEntryRegExp = phaseEntryRegExp;
 exports.phaseEntrySplitRegExp = phaseEntrySplitRegExp;
 exports.isPhaseEntryChecked = isPhaseEntryChecked;
 exports.isBoxCharChecked = isBoxCharChecked;
+exports.stripInsertedMarker = stripInsertedMarker;
 const MARKER_SRC = '[-*]';
 // A list item has 1 to 4 spaces or tabs after its marker (CommonMark: none is not a list item,
 // five or more makes the rest an indented code block), so `-[ ] **Phase 1**` is not an entry.
@@ -116,4 +117,17 @@ function isPhaseEntryChecked(entryText) {
 /** Whether a captured box character (`captured` state option) is a tick. */
 function isBoxCharChecked(boxChar) {
     return boxChar.toLowerCase() === 'x';
+}
+/**
+ * #5824: `phase insert` writes `(INSERTED)` into the heading text as
+ * bookkeeping; it is not part of the phase's name. The single place that
+ * removes it: only a TRAILING `(INSERTED)` (case-insensitive) is dropped, then
+ * a trim — `phase insert` always appends it last, and a `(INSERTED)` inside the
+ * user's own text is kept. A name that is only the marker is returned as
+ * written rather than reduced to an empty name. Every phase-name reader goes
+ * through here so none can drift from the others.
+ */
+function stripInsertedMarker(name) {
+    const stripped = name.replace(/\s*\(INSERTED\)\s*$/i, '').trim();
+    return stripped === '' ? name.trim() : stripped;
 }

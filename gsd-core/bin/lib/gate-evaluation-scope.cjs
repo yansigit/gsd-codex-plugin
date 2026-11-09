@@ -50,6 +50,7 @@ const shell_command_projection_cjs_1 = require("./shell-command-projection.cjs")
 const gate_verdict_cjs_1 = require("./gate-verdict.cjs");
 const gate_phase_context_cjs_1 = require("./gate-phase-context.cjs");
 const pattern_cjs_1 = require("./pattern.cjs");
+const security_cjs_1 = require("./security.cjs");
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const planningWorkspaceMod = require("./planning-workspace.cjs");
 const { readScopedConfigValue } = planningWorkspaceMod;
@@ -65,6 +66,8 @@ exports.SCOPE_EXCLUSION_PATHSPECS = Object.freeze([
 const SHA_CHUNK = 400;
 const DEFAULT_MAX_COMMITS = 200;
 const MAX_PATHSPECS = 20;
+const MAX_SUB_REPOS = 64;
+const MAX_ID_LOOKUPS = 1024;
 // ─── SUMMARY `## Task Commits` extraction (port of the #4127 model) ───────────
 const TASK_COMMITS_HEADING = /^## Task Commits[ \t\r]*$/;
 const NEXT_HEADING = /^## /;
@@ -251,9 +254,20 @@ function gitSubcommand(args) {
         index += 2;
     return args[index] ?? '';
 }
-function makeGit(projectDir, runner) {
+/**
+ * git settings a `planning.sub_repos` workspace's own `.git/config` must not override: a configured
+ * repo is checkout content, so no setting that makes a read-only command run a program may apply
+ * (an fsmonitor command; `log.showSignature` with a `gpg.program` on a signed commit). Applied to
+ * every git call of the sub_repos path, root included; the single-repo path keeps its exact argv.
+ * Bounded by construction: at most MAX_SUB_REPOS + 1 repos, each a fixed number of calls, each
+ * bounded by the runner's timeout.
+ */
+const SUB_REPO_GIT_HARDENING = [
+    '-c', 'core.fsmonitor=false', '-c', 'log.showSignature=false', '-c', 'gpg.program=false',
+];
+function makeGit(projectDir, runner, leading = []) {
     return (args, cwd = projectDir) => {
-        const result = runner(args, { cwd });
+        const result = runner([...leading, ...args], { cwd });
         if (result.timedOut)
             throw new ScopeUnreadable('git-timeout');
         if (result.exitCode === 127)
@@ -310,8 +324,41 @@ function isAncestor(git, sha, of) {
 function commitIsAncestor(projectDir, sha, of, execGit) {
     if (!isSafeRefArgument(sha) || !isSafeRefArgument(of))
         return null;
+    const runner = execGit ?? shell_command_projection_cjs_1.execGit;
     try {
-        return isAncestor(makeGit(projectDir, execGit ?? shell_command_projection_cjs_1.execGit), sha, of);
+        const names = readSubRepoNames(projectDir);
+        if (names.length === 0)
+            return isAncestor(makeGit(projectDir, runner), sha, of);
+        // #5867: the commits of a `planning.sub_repos` workspace live in the sub-repos (and the
+        // workspace root, when it is a repo itself). A repo that does not hold the commit cannot answer
+        // (exit 128 -> unanswered). The first repo that holds both commits is authoritative (a clone's
+        // answer is the same).
+        let rootGit = null;
+        try {
+            const rootTop = makeGit(projectDir, runner, SUB_REPO_GIT_HARDENING)(['rev-parse', '--show-toplevel']);
+            if (realDir(rootTop) === realDir(projectDir))
+                rootGit = makeGit(projectDir, runner, SUB_REPO_GIT_HARDENING);
+        }
+        catch (error) {
+            if (!(error instanceof ScopeUnreadable && error.exitCode === 128))
+                throw error;
+        }
+        const gits = [
+            ...(rootGit === null ? [] : [rootGit]),
+            ...names.map((name) => makeGit(containedSubRepoDir(projectDir, name), runner, SUB_REPO_GIT_HARDENING)),
+        ];
+        for (const git of gits) {
+            try {
+                return isAncestor(git, sha, of);
+            }
+            catch (error) {
+                // Only "this repo does not hold the commit" (exit 128) is unanswered; a timeout or a missing
+                // git is not an answer and must not let another repo's "no" stand for it.
+                if (!(error instanceof ScopeUnreadable && error.exitCode === 128))
+                    throw error;
+            }
+        }
+        return null;
     }
     catch (error) {
         if (error instanceof ScopeUnreadable)
@@ -326,15 +373,327 @@ function emptyScope(unit) {
         changedFiles: [], files: [], missingOnDisk: [], outsideUnion: [], unreachable: [], rangeBase: null,
     };
 }
+// ─── planning.sub_repos (#5867) ───────────────────────────────────────────────
+/**
+ * The configured `planning.sub_repos` names (a legacy top-level `sub_repos` is honored when the
+ * nested key is absent, the order `detectSubRepos` and `loadConfig` apply). Empty when none are
+ * configured. Read with the scope-aware config reader (no `loadConfig`: it rewrites config.json and
+ * spawns git). A blank string is dropped like `detectSubRepos` drops it; any other non-string is
+ * `unresolvable`, never silently skipped, because a skipped repo narrows the scope.
+ */
+function readSubRepoNames(projectDir) {
+    const nested = readScopedConfigValue(projectDir, ['planning', 'sub_repos']);
+    const raw = nested.present ? nested.value : readScopedConfigValue(projectDir, ['sub_repos']).value;
+    if (!Array.isArray(raw))
+        return [];
+    // Each repo costs several bounded git spawns; refuse rather than amplify.
+    if (raw.length > MAX_SUB_REPOS)
+        throw new ScopeUnreadable('sub-repo-too-many');
+    const names = [];
+    raw.forEach((entry, index) => {
+        if (typeof entry !== 'string')
+            throw new ScopeUnreadable(`sub-repo-invalid:${index}`);
+        const trimmed = entry.trim().replace(/\\/g, '/');
+        if (trimmed === '')
+            return;
+        // Canonical spelling (`./x`, `a/../b`, `x/`): it prefixes the paths the scope reports.
+        const name = node_path_1.default.posix.normalize(trimmed).replace(/\/+$/, '');
+        if (name !== '.' && !names.includes(name))
+            names.push(name);
+    });
+    return names;
+}
+/** A sub-repo's directory, which must stay inside the project (realpath containment, symlinks included). */
+function containedSubRepoDir(projectDir, name) {
+    const contained = (0, security_cjs_1.tryWithinRoot)(name, projectDir, security_cjs_1.PathAcceptance.RelativeOnly);
+    if (contained === null)
+        throw new ScopeUnreadable(`sub-repo-escapes-root:${name}`);
+    return contained;
+}
+/** The real path of a directory git or the config named; one that cannot be resolved is unreadable. */
+function realDir(dir) {
+    try {
+        return node_fs_1.default.realpathSync.native(dir);
+    }
+    catch {
+        throw new ScopeUnreadable('sub-repo-realpath-failed');
+    }
+}
+/**
+ * Every repo a `planning.sub_repos` workspace's history lives in: the workspace root when it is
+ * itself a repo (its own toplevel), then each configured sub-repo. A configured sub-repo that
+ * cannot be read, or is not the root of its own repo (git would otherwise answer from a parent),
+ * makes the whole scope `unresolvable` and names the repo.
+ */
+function openSources(projectDir, names, runner, ref) {
+    const sources = [];
+    const seen = new Set();
+    const rootGit = makeGit(projectDir, runner, SUB_REPO_GIT_HARDENING);
+    try {
+        const top = rootGit(['rev-parse', '--show-toplevel']);
+        if (realDir(top) === realDir(projectDir)) {
+            seen.add(realDir(projectDir));
+            rootGit(['rev-parse', '--verify', '--quiet', `${ref}^{commit}`]);
+            sources.push({ prefix: '', git: rootGit, repoRoot: top });
+        }
+    }
+    catch (error) {
+        // Not a repo (128) or no such commit yet (1): the workspace root contributes nothing. A timeout
+        // or a missing git still rethrows.
+        if (!(error instanceof ScopeUnreadable && (error.exitCode === 128 || error.exitCode === 1)))
+            throw error;
+    }
+    const rootCovers = seen.has(realDir(projectDir));
+    for (const name of names) {
+        const dir = containedSubRepoDir(projectDir, name);
+        const stat = (0, gate_evidence_cjs_1.statEvidence)(dir);
+        if (stat.kind === 'unreadable')
+            throw new ScopeUnreadable(`sub-repo-unreadable:${name}:${stat.reason}`);
+        if (stat.kind === 'none' || !stat.value.isDirectory())
+            throw new ScopeUnreadable(`sub-repo-unreadable:${name}:not-a-directory`);
+        const git = makeGit(dir, runner, SUB_REPO_GIT_HARDENING);
+        let top;
+        try {
+            top = git(['rev-parse', '--show-toplevel']);
+        }
+        catch (error) {
+            if (error instanceof ScopeUnreadable)
+                throw new ScopeUnreadable(`sub-repo-unreadable:${name}:${error.reason}`, error.exitCode);
+            throw error;
+        }
+        if (realDir(top) !== realDir(dir)) {
+            // A plain folder of the workspace root's own repo is already covered by the root source; any
+            // other directory would make git answer from a parent repo it does not own.
+            if (rootCovers && realDir(top) === realDir(projectDir))
+                continue;
+            throw new ScopeUnreadable(`sub-repo-unreadable:${name}:not-a-repo-root`);
+        }
+        if (seen.has(realDir(dir)))
+            continue;
+        seen.add(realDir(dir));
+        try {
+            git(['rev-parse', '--verify', '--quiet', `${ref}^{commit}`]);
+        }
+        catch (error) {
+            // No such commit in this repo (an empty repo, or a ref only another repo has): it holds nothing
+            // to scope. A timeout or a missing git still rethrows.
+            if (error instanceof ScopeUnreadable && error.exitCode === 1)
+                continue;
+            if (error instanceof ScopeUnreadable)
+                throw new ScopeUnreadable(`sub-repo-unreadable:${name}:${error.reason}`, error.exitCode);
+            throw error;
+        }
+        sources.push({ prefix: name, git, repoRoot: top });
+    }
+    // No repo could answer for the ref: the same "could not look" the single-repo path gives.
+    if (sources.length === 0)
+        throw new ScopeUnreadable('git-failed:rev-parse', 1);
+    return sources;
+}
+const withPrefix = (prefix, file) => (prefix === '' ? file : `${prefix}/${file}`);
+/** Committer time (unix seconds) per sha, for ordering commits that come from different repos. */
+function commitTimes(git, shas) {
+    const times = new Map();
+    for (const group of chunk(shas, SHA_CHUNK)) {
+        for (const line of git(['log', '--no-walk=unsorted', '--format=%H%x1f%ct', ...group]).split('\n')) {
+            const [sha, time] = line.split('\x1f');
+            if (sha && time !== undefined && /^[0-9]+$/.test(time))
+                times.set(sha, Number(time));
+        }
+    }
+    return times;
+}
+function splitSince(options, sources) {
+    const split = { holders: new Set(), time: null };
+    const since = options.since;
+    if (since === undefined)
+        return split;
+    for (const source of sources) {
+        const sha = gitOrNo(source.git, ['rev-parse', '--verify', '--quiet', `${since}^{commit}`]);
+        if (sha === null)
+            continue;
+        split.holders.add(source);
+        split.time ??= commitTimes(source.git, [sha]).get(sha) ?? null;
+    }
+    if (split.holders.size === 0)
+        throw new ScopeUnreadable('since-not-found');
+    if (split.time === null)
+        throw new ScopeUnreadable('since-time-unreadable');
+    return split;
+}
+/** `options` for one source: a repo that does not hold the `since` commit is filtered by its time instead. */
+function optionsForSource(options, source, split) {
+    if (options.since === undefined || split.holders.has(source))
+        return options;
+    const { since: _since, ...rest } = options;
+    void _since;
+    return rest;
+}
+function withSourcePrefix(commit, prefix) {
+    return commit.files === undefined ? commit : { ...commit, files: commit.files.map((f) => withPrefix(prefix, f)) };
+}
+function resolveAcrossSources(projectDir, unit, options, sources, ref) {
+    if (unit.kind === 'phase')
+        return resolvePhaseAcrossSources(projectDir, unit, options, sources, ref);
+    const scope = emptyScope(unit);
+    const max = clampMaxCommits(options.maxCommits);
+    const split = splitSince(options, sources);
+    const found = sources.map((source) => {
+        const opts = optionsForSource(options, source, split);
+        const lookup = lookupSubjectCommits(projectDir, unit, emptyScope(unit), source.git, ref, opts);
+        const times = commitTimes(source.git, lookup.commits.map((c) => c.sha));
+        if (split.time !== null && !split.holders.has(source)) {
+            const boundary = split.time;
+            lookup.commits = lookup.commits.filter((c) => (times.get(c.sha) ?? 0) > boundary);
+        }
+        return { source, opts, lookup, times };
+    });
+    scope.source = unit.kind === 'plan' ? 'plan-subjects' : 'quick-subjects';
+    // Newest first across repos: a k-way merge that keeps each repo's own log order (a stable pick:
+    // ties go to the earlier source); one entry per sha.
+    const seenShas = new Set();
+    const queues = found.map((entry) => entry.lookup.commits.filter((commit) => {
+        if (seenShas.has(commit.sha))
+            return false;
+        seenShas.add(commit.sha);
+        return true;
+    }));
+    const kept = [];
+    const heads = queues.map(() => 0);
+    while (kept.length < max) {
+        let best = -1;
+        let bestTime = -1;
+        queues.forEach((queue, index) => {
+            const head = queue[heads[index] ?? 0];
+            if (head === undefined)
+                return;
+            const time = found[index]?.times.get(head.sha) ?? 0;
+            if (best === -1 || time > bestTime) {
+                best = index;
+                bestTime = time;
+            }
+        });
+        if (best === -1)
+            break;
+        const commit = queues[best]?.[heads[best] ?? 0];
+        if (commit === undefined)
+            break;
+        kept.push({ index: best, commit });
+        heads[best] = (heads[best] ?? 0) + 1;
+    }
+    const finished = found.map((entry, index) => {
+        const part = emptyScope(unit);
+        finishSubjectScope(part, entry.source.git, kept.filter((k) => k.index === index).map((k) => k.commit), entry.lookup.parentsOf, entry.opts, entry.source.repoRoot);
+        return part;
+    });
+    const byRepo = new Map();
+    finished.forEach((part, index) => {
+        const prefix = found[index]?.source.prefix ?? '';
+        for (const commit of part.commits)
+            byRepo.set(commit.sha, withSourcePrefix(commit, prefix));
+    });
+    scope.commits = kept.map((k) => byRepo.get(k.commit.sha) ?? k.commit);
+    const gather = (pick) => uniqueSorted(finished.flatMap((part, index) => pick(part).map((f) => withPrefix(found[index]?.source.prefix ?? '', f))));
+    scope.changedFiles = gather((part) => part.changedFiles);
+    scope.files = gather((part) => part.files);
+    scope.missingOnDisk = gather((part) => part.missingOnDisk);
+    if (scope.commits.length === 0)
+        scope.reason = 'no-matching-commits';
+    else if (options.commitsOnly !== true && scope.changedFiles.length === 0) {
+        scope.reason = finished.every((part) => part.commits.length === 0 || part.reason === 'merge-only') ? 'merge-only' : 'empty-after-exclusions';
+    }
+    return scope;
+}
+function resolvePhaseAcrossSources(projectDir, unit, options, sources, ref) {
+    const gathered = gatherPhase(projectDir, unit);
+    const primary = sources[0];
+    if (primary === undefined)
+        throw new ScopeUnreadable('no-sources');
+    // A task commit id belongs to the repo that holds it: an id only another repo has is not
+    // "unreachable" here. An id no repo holds goes to the primary source, which names it unreachable.
+    const ids = [...new Set(gathered.refs)];
+    // One lookup per id per repo: bound the aggregate, not just the repo count.
+    if (ids.length * sources.length > MAX_ID_LOOKUPS)
+        throw new ScopeUnreadable('sub-repo-too-many-lookups');
+    const holders = ids.map((id) => sources.filter((source) => {
+        try {
+            return gitOrNo(source.git, ['rev-parse', '--verify', '--quiet', `${id}^{commit}`]) !== null;
+        }
+        catch (error) {
+            // exit 128 = an ambiguous short id: that repo owns it, and names it unreachable below.
+            if (error instanceof ScopeUnreadable && error.exitCode === 128)
+                return true;
+            throw error;
+        }
+    }));
+    const assigned = new Map();
+    ids.forEach((id, i) => {
+        const owners = holders[i] ?? [];
+        for (const owner of owners.length > 0 ? owners : [primary])
+            assigned.set(owner, [...(assigned.get(owner) ?? []), id]);
+    });
+    const active = sources.filter((source) => assigned.has(source));
+    // The workspace root (when it is a repo) always takes part: it may hold the phase-start anchor a
+    // sub-repo cannot, so a phase whose task commits add nothing still degrades to its range.
+    const run = sources.filter((source) => assigned.has(source) || source.prefix === '');
+    if (run.length === 0)
+        run.push(primary);
+    const split = splitSince(options, sources);
+    const parts = run.map((source) => {
+        const part = emptyScope(unit);
+        const subset = { ...gathered, refs: assigned.get(source) ?? (active.length === 0 ? gathered.refs : []) };
+        const notAfter = split.time !== null && !split.holders.has(source) ? split.time : undefined;
+        resolvePhase(projectDir, unit, part, source.git, ref, optionsForSource(options, source, split), source.repoRoot, subset, source.prefix === '', true, notAfter);
+        return { source, part };
+    });
+    const merged = emptyScope(unit);
+    merged.unreachable = uniqueSorted(parts.flatMap(({ part }) => part.unreachable));
+    merged.rangeBase = parts.map(({ part }) => part.rangeBase).find((base) => base !== null) ?? null;
+    const taken = parts.filter(({ part }) => part.source === 'task-commits');
+    const degraded = parts.find(({ part }) => part.status === 'degraded');
+    const pick = taken.length > 0 ? taken : degraded ? [degraded] : [];
+    if (pick.length === 0) {
+        // Every repo was read and none has task commits for the phase, and a sub-repo has no phase-start
+        // anchor to widen to: a loud, empty `degraded` scope, never a pass-shaped empty one and never
+        // `unresolvable` (nothing was unreadable).
+        merged.status = 'degraded';
+        merged.source = 'phase-range';
+        merged.reason = `${parts[0]?.part.reason ?? 'no-task-commits'}:no-phase-start-anchor`;
+        return merged;
+    }
+    merged.status = taken.length > 0 ? 'resolved' : 'degraded';
+    merged.source = taken.length > 0 ? 'task-commits' : 'phase-range';
+    merged.reason = taken.length > 0 ? null : (parts.find(({ source, part }) => source.prefix !== '' && part.reason !== null)?.part.reason ?? degraded?.part.reason ?? null);
+    const seenShas = new Set();
+    for (const { source, part } of pick) {
+        for (const commit of part.commits) {
+            if (seenShas.has(commit.sha))
+                continue;
+            seenShas.add(commit.sha);
+            merged.commits.push(withSourcePrefix(commit, source.prefix));
+        }
+    }
+    const gather = (pickFiles) => uniqueSorted(pick.flatMap(({ source, part }) => pickFiles(part).map((f) => withPrefix(source.prefix, f))));
+    merged.changedFiles = gather((part) => part.changedFiles);
+    merged.files = gather((part) => part.files);
+    merged.missingOnDisk = gather((part) => part.missingOnDisk);
+    merged.outsideUnion = gather((part) => part.outsideUnion);
+    return merged;
+}
 function resolveEvaluationScope(projectDir, unit, options = {}) {
     const scope = emptyScope(unit);
-    const git = makeGit(projectDir, options.execGit ?? shell_command_projection_cjs_1.execGit);
+    const runner = options.execGit ?? shell_command_projection_cjs_1.execGit;
+    const git = makeGit(projectDir, runner);
     const ref = options.ref ?? 'HEAD';
     try {
         if (!isSafeRefArgument(ref))
             throw new ScopeUnreadable('unsafe-ref');
         if (options.since !== undefined && !isSafeRefArgument(options.since))
             throw new ScopeUnreadable('unsafe-since');
+        // #5867: a `planning.sub_repos` workspace keeps its history in the sub-repos, not at the root.
+        const subRepoNames = readSubRepoNames(projectDir);
+        if (subRepoNames.length > 0)
+            return resolveAcrossSources(projectDir, unit, options, openSources(projectDir, subRepoNames, runner, ref), ref);
         git(['rev-parse', '--verify', '--quiet', `${ref}^{commit}`]);
         const repoRoot = git(['rev-parse', '--show-toplevel']);
         if (unit.kind === 'phase')
@@ -574,7 +933,7 @@ function phaseRangeBase(git, phaseDir, ref) {
         return null;
     return gitOrNo(git, ['rev-parse', '--verify', '--quiet', `${first}^`]) ?? EMPTY_TREE;
 }
-function resolvePhase(projectDir, unit, scope, git, ref, options, repoRoot) {
+function gatherPhase(projectDir, unit) {
     let phaseDir = unit.phaseDir ?? '';
     if (unit.phaseDir === undefined) {
         const located = (0, gate_phase_context_cjs_1.resolvePhaseDir)(projectDir, unit.phase);
@@ -603,6 +962,17 @@ function resolvePhase(projectDir, unit, scope, git, ref, options, repoRoot) {
             throw new ScopeUnreadable(`summary-unreadable:${name}`);
         }
     }
+    return { phaseDir, refs, summaryCount };
+}
+/**
+ * `gathered` / `anchored` / `partial` serve a `planning.sub_repos` workspace (#5867): the ids are
+ * read once and each repo resolves only the ids it holds (`gathered`); only the workspace root can
+ * hold the phase directory's history, so a sub-repo has no phase-start anchor (`anchored` false); and
+ * a repo whose own ids add nothing returns an empty `none` scope instead of degrading (`partial`),
+ * because another repo may have the phase's files.
+ */
+function resolvePhase(projectDir, unit, scope, git, ref, options, repoRoot, gathered, anchored = true, partial = false, notAfter) {
+    const { phaseDir, refs, summaryCount } = gathered ?? gatherPhase(projectDir, unit);
     // Resolve each listed id to a full sha reachable from the ref (and, for wave scoping, newer than `since`).
     const shas = [];
     const unreachable = [];
@@ -626,10 +996,14 @@ function resolvePhase(projectDir, unit, scope, git, ref, options, repoRoot) {
             sinceDropped += 1;
             continue;
         }
+        if (notAfter !== undefined && (commitTimes(git, [full]).get(full) ?? 0) <= notAfter) {
+            sinceDropped += 1;
+            continue;
+        }
         shas.push(full);
     }
     scope.unreachable = unreachable.sort();
-    scope.rangeBase = options.since ?? phaseRangeBase(git, phaseDir, ref);
+    scope.rangeBase = options.since ?? (anchored ? phaseRangeBase(git, phaseDir, ref) : null);
     const union = new Set();
     const merges = [];
     const parentsOf = new Map();
@@ -672,8 +1046,13 @@ function resolvePhase(projectDir, unit, scope, git, ref, options, repoRoot) {
             : shas.length === 0 ? (sinceDropped > 0 ? 'no-task-commits-since' : 'no-reachable-task-commits')
                 : mergeOnly ? 'merge-only-task-commits'
                     : 'empty-after-exclusions';
-    if (!scope.rangeBase)
+    if (!scope.rangeBase) {
+        if (partial) {
+            scope.reason = reason;
+            return;
+        }
         throw new ScopeUnreadable(`${reason}:no-phase-start-anchor`);
+    }
     scope.status = 'degraded';
     scope.reason = reason;
     scope.source = 'phase-range';
@@ -681,7 +1060,8 @@ function resolvePhase(projectDir, unit, scope, git, ref, options, repoRoot) {
     scope.commits = parseLog(git(['log', `${scope.rangeBase}..${ref}`, logFormat(options.includeBody === true), '-n', String(max)]), options.includeBody === true);
     finalizeFiles(scope, repoRoot, rangeFiles(git, scope.rangeBase, ref));
 }
-function resolveBySubject(projectDir, unit, scope, git, ref, options, repoRoot) {
+/** The plan/quick unit's matching commits (newest first, subject-anchored, `since` applied). */
+function lookupSubjectCommits(projectDir, unit, scope, git, ref, options) {
     const withBody = options.includeBody === true;
     // Refuse rather than truncate: a silently dropped positive pathspec narrows the match.
     const pathspecs = options.pathspecs ?? [];
@@ -731,8 +1111,12 @@ function resolveBySubject(projectDir, unit, scope, git, ref, options, repoRoot) 
     const since = options.since;
     if (since !== undefined)
         commits = commits.filter((c) => !isAncestor(git, c.sha, since));
+    return { commits, parentsOf };
+}
+/** The scope (commits, file sets, reason) of the commits `lookupSubjectCommits` found. */
+function finishSubjectScope(scope, git, commits, parentsOf, options, repoRoot) {
     if (options.commitsOnly === true) {
-        scope.commits = commits;
+        scope.commits = [...commits];
         if (commits.length === 0)
             scope.reason = 'no-matching-commits';
         return;
@@ -760,6 +1144,10 @@ function resolveBySubject(projectDir, unit, scope, git, ref, options, repoRoot) 
         scope.reason = 'no-matching-commits';
     else if (scope.changedFiles.length === 0)
         scope.reason = mergeCount === result.length ? 'merge-only' : 'empty-after-exclusions';
+}
+function resolveBySubject(projectDir, unit, scope, git, ref, options, repoRoot) {
+    const { commits, parentsOf } = lookupSubjectCommits(projectDir, unit, scope, git, ref, options);
+    finishSubjectScope(scope, git, commits, parentsOf, options, repoRoot);
 }
 // ─── The `check evaluation-scope` verb ────────────────────────────────────────
 const VALUE_FLAGS = new Set(['--phase', '--phase-dir', '--plan', '--quick', '--since', '--ref', '--pathspec', '--committed-since', '--max-commits']);

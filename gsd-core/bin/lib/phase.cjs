@@ -51,6 +51,7 @@ const phaseIdDisplayMod = require("./phase-id-display.cjs");
 const { milestoneToken, phaseToken } = phaseIdDisplayMod;
 const phase_entry_grammar_cjs_1 = require("./phase-entry-grammar.cjs");
 const pattern_cjs_1 = require("./pattern.cjs");
+const markdown_table_cjs_1 = require("./markdown-table.cjs");
 const gate_exit_cjs_1 = require("./gate-exit.cjs");
 const gate_verdict_cjs_1 = require("./gate-verdict.cjs");
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- phase-locator.cjs is an export= CommonJS module
@@ -61,7 +62,7 @@ const planningScopeMod = require("./planning-scope.cjs");
 const { SCOPE } = planningScopeMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- roadmap-parser.cjs is an export= CommonJS module
 const roadmapParserMod = require("./roadmap-parser.cjs");
-const { stripShippedMilestones, extractCurrentMilestone, currentMilestoneRawRanges, withPhaseSection, editCurrentMilestone, findMilestoneScopeHeadingLines, getMilestoneInfo, 
+const { stripShippedMilestones, extractCurrentMilestone, extractCurrentMilestoneScoped, currentMilestoneRawRanges, withPhaseSection, editCurrentMilestone, findMilestoneScopeHeadingLines, getMilestoneInfo, 
 // #5679: the STATE.md milestone read getMilestoneInfo itself uses, and the
 // archive-aware owner of a ROADMAP offset.
 readStateMilestoneScalar, classifyMilestoneScalar, milestoneVersionAtOffset, blankCodeAndComments, scanMilestonePhaseIds, 
@@ -97,7 +98,7 @@ const planning_document_cjs_1 = require("./planning-document.cjs");
 const runtime_slash_cjs_1 = require("./runtime-slash.cjs");
 const clock_cjs_1 = require("./clock.cjs");
 const state_transition_cjs_1 = require("./state-transition.cjs");
-const markdown_table_cjs_1 = require("./markdown-table.cjs");
+const markdown_table_cjs_2 = require("./markdown-table.cjs");
 const markdown_sectionizer_cjs_1 = require("./markdown-sectionizer.cjs");
 const security_cjs_1 = require("./security.cjs");
 // #5060: the Phase Status Module owns the ROADMAP Status-cell token vocabulary.
@@ -1250,7 +1251,7 @@ function recordNewPhase(raw, cwd, id, description, after, label) {
         if (findPhaseTableHeader(scoped) === -1)
             return scoped;
         const cell = { Phase: `${id}. ${description}`, 'Plans Complete': '0/0', Status: 'Not started' };
-        const r = (0, markdown_table_cjs_1.insertTableRow)(scoped, (col) => cell[col]);
+        const r = (0, markdown_table_cjs_2.insertTableRow)(scoped, (col) => cell[col]);
         if (!r.ok)
             return scoped;
         wrote = true;
@@ -1641,6 +1642,54 @@ function assertBracketGeneratedIdentity(command, config, customId) {
             'Custom naming precedence under the bracket convention lands with #5067.');
     }
 }
+const STATE_MILESTONE_ECHO_LIMIT = 80;
+/**
+ * #5726: STATE.md's `milestone:` value is untrusted text. Cap it at
+ * `STATE_MILESTONE_ECHO_LIMIT` characters (ellipsis past the cap), then quote it
+ * with `JSON.stringify` (the `phase.cts` precedent for echoed user text), which
+ * escapes ESC/BEL/newlines; the characters JSON leaves raw but a terminal acts on
+ * are escaped too: DEL and C1 controls, zero-width and direction marks
+ * (U+200B-U+200F), line/paragraph separators and bidi embeddings/overrides
+ * (U+2028-U+202E), the invisible-format block (U+2060-U+206F, incl. bidi
+ * isolates), soft hyphen (U+00AD), Arabic letter mark (U+061C), Mongolian
+ * vowel separator (U+180E), interlinear annotations (U+FFF9-U+FFFB) and the
+ * BOM (U+FEFF).
+ */
+function echoStateMilestone(value) {
+    const chars = Array.from(value);
+    const capped = chars.length > STATE_MILESTONE_ECHO_LIMIT
+        ? `${chars.slice(0, STATE_MILESTONE_ECHO_LIMIT).join('')}…`
+        : value;
+    return JSON.stringify(capped).replace(/[\u007f-\u009f\u{ad}\u{61c}\u{180e}\u{200b}-\u{200f}\u{2028}-\u{202e}\u{2060}-\u{206f}\u{feff}\u{fff9}-\u{fffb}]/gu, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`);
+}
+/**
+ * #5726: the current-milestone window for a verb that WRITES to the ROADMAP.
+ * When STATE.md names a milestone that has no heading in a ROADMAP carrying
+ * versioned milestones, the window owner falls back to the whole unshipped
+ * roadmap (scope UNSCOPED, `unresolvedMilestone` set), and number allocation,
+ * the `Depends on` line and the insert target would run over every milestone.
+ * ADR-3180: that is a non-answer, refused where it is destructive. Refuses
+ * before any write, naming the milestone; every other scope (a real heading,
+ * a free-form legacy ROADMAP, no milestone field) returns the window unchanged.
+ * Read-only readers keep calling `extractCurrentMilestone` and keep degrading.
+ */
+function currentMilestoneWindowOrRefuse(rawContent, cwd, command) {
+    const { value, unresolvedMilestone, shippedMilestone } = extractCurrentMilestoneScoped(rawContent, cwd);
+    if (shippedMilestone) {
+        error(`${command}: STATE.md names milestone ${echoStateMilestone(shippedMilestone)}, which ROADMAP.md marks as already shipped, `
+            + 'so the current milestone window is a closed one. Refusing to number the phase or link its dependencies '
+            + 'against a shipped milestone. Start the next milestone (or correct the milestone field in STATE.md), then retry. '
+            + 'If the heading is not shipped and its title merely contains a status word (such as "Failed Payment Recovery"), '
+            + 'rename the milestone, or add an active marker to the heading, for example \u{1f6a7} or "(in progress)".');
+    }
+    if (unresolvedMilestone) {
+        error(`${command}: STATE.md names milestone ${echoStateMilestone(unresolvedMilestone)}, but ROADMAP.md has no milestone heading for it, `
+            + 'so the current milestone window cannot be resolved. Refusing to use the whole roadmap, which would number '
+            + 'the phase and link its dependencies against other milestones. Add the milestone heading to ROADMAP.md '
+            + 'or correct the milestone field in STATE.md, then retry.');
+    }
+    return value;
+}
 /**
  * #4304: refuse a bracket `phase add` / `add-batch` whose located milestone
  * window is a decoy. A non-milestone heading carrying the active version
@@ -1712,9 +1761,9 @@ function cmdPhaseAdd(cwd, description, raw, customId) {
     const bracketContext = convention === 'bracket' ? bracketWriteContext(cwd, config) : null;
     const { newPhaseId, dirName, roadmapEntry } = withPlanningLock(cwd, () => {
         const rawContent = node_fs_1.default.readFileSync(roadmapPath, 'utf-8');
+        const content = currentMilestoneWindowOrRefuse(rawContent, cwd, 'phase add');
         if (bracketContext)
             assertBracketAddWindowLocated(rawContent, cwd, bracketContext, 'phase add');
-        const content = extractCurrentMilestone(rawContent, cwd);
         let _newPhaseId;
         let _dirName = '';
         if (bracketContext) {
@@ -1821,9 +1870,9 @@ function cmdPhaseAddBatch(cwd, descriptions, raw) {
     const bracketContext = convention === 'bracket' ? bracketWriteContext(cwd, config) : null;
     const results = withPlanningLock(cwd, () => {
         let rawContent = node_fs_1.default.readFileSync(roadmapPath, 'utf-8');
+        const content = currentMilestoneWindowOrRefuse(rawContent, cwd, 'phase add-batch');
         if (bracketContext)
             assertBracketAddWindowLocated(rawContent, cwd, bracketContext, 'phase add-batch');
-        const content = extractCurrentMilestone(rawContent, cwd);
         let maxPhase = 0;
         if (bracketContext) {
             const used = collectBracketPhaseNumbers(content, node_path_1.default.join(planningDir(cwd), 'phases'), bracketContext);
@@ -2236,7 +2285,7 @@ function cmdPhaseInsert(cwd, afterPhase, description, raw, allocation = 'nested'
     const bracketContext = convention === 'bracket' ? bracketWriteContext(cwd, insertConfig) : null;
     const { decimalPhase, dirName, roadmapEntry } = withPlanningLock(cwd, () => {
         const rawContent = node_fs_1.default.readFileSync(roadmapPath, 'utf-8');
-        const content = extractCurrentMilestone(rawContent, cwd);
+        const content = currentMilestoneWindowOrRefuse(rawContent, cwd, 'phase insert');
         // #4304: canonicalize a bracket argument
         // through the SAME adapter `phase remove` uses
         // (canonicalizeBracketPhaseArgument) instead of the legacy
@@ -2837,7 +2886,7 @@ function updateRoadmapAfterPhaseRemoval(roadmapPath, targetPhase, isDecimal, rem
             return parseInt(leadingMatch[1], 10) === removedInt;
         };
         content = (0, roadmap_progress_cjs_1.editRoadmapProgress)(content, (progressSection) => {
-            const deleteResult = (0, markdown_table_cjs_1.deleteTableRow)(progressSection, matchRemovedProgressRow);
+            const deleteResult = (0, markdown_table_cjs_2.deleteTableRow)(progressSection, matchRemovedProgressRow);
             return deleteResult.ok ? deleteResult.value : progressSection;
         }, { headingless: 'skip' });
         if (!isDecimal && !customTarget) {
@@ -2917,7 +2966,7 @@ function updateRoadmapAfterPhaseRemoval(roadmapPath, targetPhase, isDecimal, rem
                 let matchedRowIndex = null;
                 for (;;) {
                     matchedRowIndex = null;
-                    const cellResult = (0, markdown_table_cjs_1.updateTableCell)(ordinalSection, (row, index) => {
+                    const cellResult = (0, markdown_table_cjs_2.updateTableCell)(ordinalSection, (row, index) => {
                         if (processedOrdinalRows.has(index))
                             return false;
                         const m = phaseCellShapeRe.exec(row['Phase'] ?? '');
@@ -2938,11 +2987,11 @@ function updateRoadmapAfterPhaseRemoval(roadmapPath, targetPhase, isDecimal, rem
                         const newContent = `${decremented}${m[2]}${current.slice(m[0].length)}`;
                         const targetLine = matchedRowIndex === null ? null : findDataRowLine(ordinalSection, matchedRowIndex);
                         const padMatch = targetLine
-                            ? new RegExp(`^[ \\t]*\\|(\\s*)${(0, pattern_cjs_1.escapeRegex)((0, markdown_table_cjs_1.escapeCell)(current))}(\\s*)\\|`).exec(targetLine)
+                            ? new RegExp(`^[ \\t]*\\|(\\s*)${(0, pattern_cjs_1.escapeRegex)((0, markdown_table_cjs_2.escapeCell)(current))}(\\s*)\\|`).exec(targetLine)
                             : null;
                         const leadPad = padMatch ? padMatch[1] : ' ';
                         const trailPad = padMatch ? padMatch[2] : ' ';
-                        return `${leadPad}${(0, markdown_table_cjs_1.escapeCell)(newContent)}${trailPad}`;
+                        return `${leadPad}${(0, markdown_table_cjs_2.escapeCell)(newContent)}${trailPad}`;
                     });
                     if (!cellResult.ok)
                         break;
@@ -3532,7 +3581,7 @@ function classifyBracketOwnedLine(line) {
     if (checklistId)
         return { kind: 'checklist', id: checklistId };
     if (/^[ \t]*\|/.test(line)) {
-        const firstCell = (0, markdown_table_cjs_1.splitTableRow)(line)[0]?.replace(/^\*\*(.*)\*\*$/, '$1') ?? '';
+        const firstCell = (0, markdown_table_cjs_2.splitTableRow)(line)[0]?.replace(/^\*\*(.*)\*\*$/, '$1') ?? '';
         const progressId = phaseIdFromOwnedLineMatch(BRACKET_CELL_ID_RE.exec(firstCell));
         if (progressId)
             return { kind: 'progress', id: progressId };
@@ -4894,7 +4943,7 @@ function phaseDisplayNameFromRoadmap(roadmapContent, phaseNum) {
     const heading = matchedHeading.text.match(headingPattern);
     if (!heading)
         return null;
-    const name = heading[1].replace(/\(INSERTED\)/i, '').trim();
+    const name = (0, phase_entry_grammar_cjs_1.stripInsertedMarker)(heading[1]);
     return name || null;
 }
 function phaseDisplayNameFromSlug(slug) {
@@ -6073,12 +6122,12 @@ function cmdPhaseComplete(cwd, phaseNum, raw) {
                     // (`editProgressTableSlice` -> `editRoadmapProgress`), the same one `roadmap update-plan-progress` uses.
                     s = editProgressTableSlice(s, (scoped) => {
                         let text = scoped;
-                        const plansResult = (0, markdown_table_cjs_1.updateTableCell)(text, rowMatch, 'Plans Complete', ` ${summaryCount}/${planCount} `);
+                        const plansResult = (0, markdown_table_cjs_2.updateTableCell)(text, rowMatch, 'Plans Complete', ` ${summaryCount}/${planCount} `);
                         if (plansResult.ok)
                             text = plansResult.value;
                         // #5165: a Status cell that already reads Complete is left untouched —
                         // re-padding it rewrote a cell the re-run had no business editing.
-                        const statusResult = (0, markdown_table_cjs_1.updateTableCell)(text, rowMatch, 'Status', (current) => (0, phase_status_cjs_1.parseRoadmapStatusCell)(current) === phase_status_cjs_1.WIRE_STATUS.COMPLETE
+                        const statusResult = (0, markdown_table_cjs_2.updateTableCell)(text, rowMatch, 'Status', (current) => (0, phase_status_cjs_1.parseRoadmapStatusCell)(current) === phase_status_cjs_1.WIRE_STATUS.COMPLETE
                             ? current
                             : ` ${(0, phase_status_cjs_1.toRoadmapStatusCell)(phase_status_cjs_1.PHASE_STATUS.COMPLETE).padEnd(11)} `);
                         if (statusResult.ok)
@@ -6090,7 +6139,7 @@ function cmdPhaseComplete(cwd, phaseNum, raw) {
                         // findTableWithColumns (which requires the WHOLE table to parse —
                         // a ragged SIBLING row elsewhere used to silently no-op this
                         // row's date stamp too).
-                        const completedResult = (0, markdown_table_cjs_1.updateTableCell)(text, rowMatch, 'Completed', (current) => dateShape.test(current.trim()) ? current : ` ${today} `);
+                        const completedResult = (0, markdown_table_cjs_2.updateTableCell)(text, rowMatch, 'Completed', (current) => dateShape.test(current.trim()) ? current : ` ${today} `);
                         if (completedResult.ok)
                             text = completedResult.value;
                         return text;
@@ -6228,7 +6277,7 @@ function cmdPhaseComplete(cwd, phaseNum, raw) {
                             // checkbox rollback below can distinguish "row existed and accepted" from
                             // "row existed and rejected".
                             let tableHit = false;
-                            const reqUpdate = (0, markdown_table_cjs_1.updateTraceabilityCell)(reqContent, reqRowMatch, 'Status', (current) => {
+                            const reqUpdate = (0, markdown_table_cjs_2.updateTraceabilityCell)(reqContent, reqRowMatch, 'Status', (current) => {
                                 // #2788: accept `Gaps Found` too so a phase stranded by revert-phase (the
                                 // gaps_found response) can complete without hand-editing the table.
                                 if (/^(?:pending|in progress|gaps found)$/i.test(current.trim())) {
@@ -6405,9 +6454,9 @@ function cmdPhaseComplete(cwd, phaseNum, raw) {
                     // which section (deferred or not) it lives under.
                     const reqIsRegisteredAnywhere = (id) => {
                         const reqEscaped = (0, pattern_cjs_1.escapeRegex)(id);
-                        // Surface 1 — checkbox, EITHER state (`[ ]` or `[x]`), case-
-                        // insensitive: existence check, not the write's space-only match.
-                        if (new RegExp(`-\\s*\\[[ xX]\\]\\s*\\*\\*${reqEscaped}\\*\\*`, 'i').test(reqContent)) {
+                        // Surface 1 — checkbox, ANY single mark (`[ ]`, `[x]`, `[~]`, …; #5844),
+                        // case-insensitive: existence check, not the write's space-only match.
+                        if (new RegExp(`-\\s*\\[[^\\]\\r\\n]\\]\\s*\\*\\*${reqEscaped}\\*\\*`, 'i').test(reqContent)) {
                             return true;
                         }
                         // Surface 2 — Traceability row exists at all (any Status value),
@@ -6415,7 +6464,10 @@ function cmdPhaseComplete(cwd, phaseNum, raw) {
                         // technique milestone.cts's `hasRow` uses (:210-214): a case-
                         // insensitive first-cell match, regardless of current Status.
                         const rowProbeMatch = (row) => (Object.values(row)[0] ?? '').trim().toLowerCase() === id.toLowerCase();
-                        return (0, markdown_table_cjs_1.updateTraceabilityCell)(reqContent, rowProbeMatch, 'Status', (current) => current).ok;
+                        // #5844: a table with no Status column fails the probe above with
+                        // `unknown column`, so row existence is also read directly.
+                        return (0, markdown_table_cjs_2.updateTraceabilityCell)(reqContent, rowProbeMatch, 'Status', (current) => current).ok
+                            || (0, markdown_table_cjs_1.traceabilityRowExists)(reqContent, id);
                     };
                     const ghostReqIds = citedReqIds.filter((id) => !isPlaceholderReqId(id) && !reqIsRegisteredAnywhere(id));
                     if (ghostReqIds.length > 0) {
@@ -6427,8 +6479,15 @@ function cmdPhaseComplete(cwd, phaseNum, raw) {
                     // IDs already reported above as ghosts to avoid a duplicate message
                     // for the same root cause.
                     const traceabilityWriteFailures = traceabilityWriteMisses.filter((id) => !ghostReqIds.includes(id));
-                    if (traceabilityWriteFailures.length > 0) {
-                        warnings.push(`REQUIREMENTS.md: Traceability row write skipped for REQ-ID(s) cited by ROADMAP (no matching row found): ${traceabilityWriteFailures.join(', ')}`);
+                    // #5844: a row that EXISTS but has no Status cell to write is not a
+                    // missing row — name the real cause instead of blaming the row.
+                    const noStatusCellIds = traceabilityWriteFailures.filter((id) => (0, markdown_table_cjs_1.traceabilityRowExists)(reqContent, id));
+                    const noRowIds = traceabilityWriteFailures.filter((id) => !noStatusCellIds.includes(id));
+                    if (noRowIds.length > 0) {
+                        warnings.push(`REQUIREMENTS.md: Traceability row write skipped for REQ-ID(s) cited by ROADMAP (no matching row found): ${noRowIds.join(', ')}`);
+                    }
+                    if (noStatusCellIds.length > 0) {
+                        warnings.push(`REQUIREMENTS.md: Traceability row write skipped for REQ-ID(s) cited by ROADMAP (row found but the table has no Status column to write): ${noStatusCellIds.join(', ')}`);
                     }
                     writes.push({ filePath: reqPath, before: originalReqContent, after: reqContent });
                     // #2316-3: `requirements_updated` must reflect whether REQUIREMENTS.md
@@ -6619,9 +6678,7 @@ function cmdPhaseComplete(cwd, phaseNum, raw) {
                         if (comparePhaseNum(pmNum, phaseNum, directoryContext) > 0
                             && (roadmapNextNum === null || comparePhaseNum(pmNum, roadmapNextNum, directoryContext) < 0)) {
                             roadmapNextNum = pmNum;
-                            roadmapNextName = pmName
-                                .replace(/\(INSERTED\)/i, '')
-                                .trim()
+                            roadmapNextName = (0, phase_entry_grammar_cjs_1.stripInsertedMarker)(pmName)
                                 .toLowerCase()
                                 .replace(/\s+/g, '-');
                         }
@@ -6701,7 +6758,7 @@ function cmdPhaseComplete(cwd, phaseNum, raw) {
                             if (lowestOutstanding === null || comparePhaseNum(cbm[2], lowestOutstanding.num, directoryContext) < 0) {
                                 lowestOutstanding = {
                                     num: cbm[2],
-                                    name: cbm[3].replace(/\(INSERTED\)/i, '').trim().toLowerCase().replace(/\s+/g, '-'),
+                                    name: (0, phase_entry_grammar_cjs_1.stripInsertedMarker)(cbm[3]).toLowerCase().replace(/\s+/g, '-'),
                                 };
                             }
                         }

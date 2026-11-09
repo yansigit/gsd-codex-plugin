@@ -14,13 +14,14 @@
  *
  * Subcommands:
  *   detect-backend [--runtime <id>] [--agent-sdk-version <ver>] [--no-nested-dispatch]
- *       Resolves whether the Workflow backend should activate. Both flags are
- *       OPTIONAL (#2590): `--runtime` falls back to the canonical
- *       `GSD_RUNTIME > config.runtime > 'claude'` chain, and
- *       `--agent-sdk-version` to `GSD_AGENT_SDK_VERSION` then the installed
- *       @anthropic-ai/claude-agent-sdk version. Reads the
- *       `claude_orchestration.*` keys from .planning/config.json. Emits
- *       { available, backend, reason }.
+ *       Resolves whether the Workflow backend should activate. `--runtime` is
+ *       OPTIONAL (#2590): it falls back to the canonical
+ *       `GSD_RUNTIME > config.runtime > 'claude'` chain. `--agent-sdk-version`
+ *       (and GSD_AGENT_SDK_VERSION) is accepted and ignored — deprecated, #4747.
+ *       Reads the `claude_orchestration.*` keys from .planning/config.json and
+ *       Claude Code's workflow kill switches: the CLAUDE_CODE_DISABLE_WORKFLOWS
+ *       env var and `disableWorkflows` / `enableWorkflows` in managed, project
+ *       local, project and user settings files. Emits { available, backend, reason }.
  *
  *   emit-workflow --waves <path> --run-id <id> [--phase-dir <dir>] [--budget <n>] [--executor-model <id>]
  *       Reads a wave/plan manifest JSON file and emits the generated Workflow
@@ -31,7 +32,7 @@
  *       (submodule-touching plans — #2772 / #2285 finding 1).
  *
  *   resolve-wave-dispatch --waves <path> --run-id <id> [--runtime <id>]
- *       [--agent-sdk-version <ver>] [--no-nested-dispatch] [--phase-dir <dir>]
+ *       [--agent-sdk-version <ignored, deprecated>] [--no-nested-dispatch] [--phase-dir <dir>]
  *       [--budget <n>] [--executor-model <id>]
  *       #2285 — the single composed seam a PRE-wave dispatch-backend selector
  *       (`execute:wave:pre`) uses: resolves detect-backend + emit-workflow in
@@ -44,6 +45,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 const node_fs_1 = __importDefault(require("node:fs"));
+const node_os_1 = __importDefault(require("node:os"));
 const node_path_1 = __importDefault(require("node:path"));
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const io = require("./io.cjs");
@@ -55,14 +57,16 @@ const configLoader = require("./config-loader.cjs");
 const runtimeSlash = require("./runtime-slash.cjs");
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- model-resolver.cjs is an export= CommonJS module
 const modelResolver = require("./model-resolver.cjs");
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const shellProjection = require("./shell-command-projection.cjs");
 const { output } = io;
 const { detectWorkflowBackend, emitWorkflowScript, resolveWaveDispatch } = core;
 const CAPABLE_HOST = { dispatch: { nested: true, background: true } };
 function usage(error) {
     error('Usage: gsd-tools claude-orchestration <detect-backend|emit-workflow|resolve-wave-dispatch> [...]\n' +
-        '  detect-backend [--runtime <id>] [--agent-sdk-version <ver>] [--no-nested-dispatch]\n' +
+        '  detect-backend [--runtime <id>] [--no-nested-dispatch]\n' +
         '  emit-workflow --waves <path> --run-id <id> [--phase-dir <dir>] [--budget <n>] [--executor-model <id>]\n' +
-        '  resolve-wave-dispatch --waves <path> --run-id <id> [--runtime <id>] [--agent-sdk-version <ver>] [--no-nested-dispatch] [--phase-dir <dir>] [--budget <n>] [--executor-model <id>]');
+        '  resolve-wave-dispatch --waves <path> --run-id <id> [--runtime <id>] [--no-nested-dispatch] [--phase-dir <dir>] [--budget <n>] [--executor-model <id>]');
 }
 function argValue(args, flag) {
     const i = args.indexOf(flag);
@@ -94,55 +98,120 @@ function resolveFlatClaudeOrchestrationConfig(cwd) {
     return flatConfig;
 }
 /**
- * Resolve the installed Agent SDK version (#2590).
- *
- * The `execute:wave:pre` fragment claimed the orchestrator "has no scriptable
- * way to introspect the live Agent SDK version" and told callers to omit the
- * flag — so gate 5 returned `agent_sdk_version_unknown` on every automated run
- * and the Workflow backend never activated, while `capability state` still
- * reported it `active: true`. That claim is true for BASH, but this router runs
- * in Node: the installed package's own package.json is authoritative and
- * requires no flag at all.
- *
- * Resolution is side-effect-free and fails closed to undefined (gate 5 then
- * declines, exactly as before) rather than guessing a version.
+ * Documented managed-settings directory per platform (#4747;
+ * code.claude.com/docs/en/managed-settings). Any non-darwin, non-win32 platform
+ * uses the Linux/WSL path.
  */
-const AGENT_SDK_PKG = node_path_1.default.join('@anthropic-ai', 'claude-agent-sdk', 'package.json');
-function resolveInstalledAgentSdkVersion(cwd) {
-    // Walk node_modules up the tree by hand rather than require.resolve: the SDK's
-    // `exports` map does not expose './package.json', so require.resolve throws
-    // ERR_PACKAGE_PATH_NOT_EXPORTED. Reading the file directly is exports-map
-    // independent and cannot execute package code.
-    for (const start of [cwd, __dirname]) {
-        let dir;
-        try {
-            dir = node_path_1.default.resolve(start);
-        }
-        catch {
-            continue;
-        }
-        for (;;) {
-            try {
-                const pkgPath = node_path_1.default.join(dir, 'node_modules', AGENT_SDK_PKG);
-                if (node_fs_1.default.existsSync(pkgPath)) {
-                    const parsed = JSON.parse(node_fs_1.default.readFileSync(pkgPath, 'utf8'));
-                    if (typeof parsed.version === 'string' && parsed.version.length > 0)
-                        return parsed.version;
-                }
-            }
-            catch { /* unreadable/malformed — keep walking */ }
-            const parent = node_path_1.default.dirname(dir);
-            if (parent === dir)
-                break;
-            dir = parent;
-        }
+function managedSettingsDir(platform) {
+    if (platform === 'darwin')
+        return '/Library/Application Support/ClaudeCode';
+    if (platform === 'win32')
+        return ['C:', 'Program Files', 'ClaudeCode'].join(node_path_1.default.win32.sep);
+    return '/etc/claude-code';
+}
+// #4747: a repo-controlled .claude/settings*.json must not hang or exhaust the CLI.
+const MAX_SETTINGS_FILE_BYTES = 1024 * 1024;
+/**
+ * Read one JSON settings file. Missing (ENOENT/ENOTDIR) is `absent`; any other
+ * read error, invalid JSON, or a non-object root is `unreadable` (fail-closed).
+ */
+function readJsonObjectFile(p) {
+    let text;
+    try {
+        const st = node_fs_1.default.statSync(p);
+        if (!st.isFile() || st.size > MAX_SETTINGS_FILE_BYTES)
+            return { status: 'unreadable' };
+        text = node_fs_1.default.readFileSync(p, 'utf8');
     }
-    return undefined;
+    catch (e) {
+        const code = e?.code;
+        return code === 'ENOENT' || code === 'ENOTDIR' ? { status: 'absent' } : { status: 'unreadable' };
+    }
+    let parsed;
+    try {
+        parsed = JSON.parse(text);
+    }
+    catch {
+        return { status: 'unreadable' };
+    }
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        return { status: 'unreadable' };
+    }
+    return { status: 'ok', settings: parsed };
+}
+function readManagedSource(dir) {
+    try {
+        const base = readJsonObjectFile(node_path_1.default.join(dir, 'managed-settings.json'));
+        const dropInDir = node_path_1.default.join(dir, 'managed-settings.d');
+        let names = [];
+        try {
+            names = node_fs_1.default.readdirSync(dropInDir);
+        }
+        catch (e) {
+            const code = e?.code;
+            if (code !== 'ENOENT' && code !== 'ENOTDIR')
+                return { scope: 'managed', status: 'unreadable' };
+        }
+        const dropIns = names.filter((n) => !n.startsWith('.') && n.endsWith('.json')).sort()
+            .map((n) => readJsonObjectFile(node_path_1.default.join(dropInDir, n)));
+        if (base.status === 'unreadable' || dropIns.some((d) => d.status === 'unreadable')) {
+            return { scope: 'managed', status: 'unreadable' };
+        }
+        const layers = [];
+        if (base.status === 'ok')
+            layers.push(base.settings);
+        for (const d of dropIns) {
+            if (d.status === 'ok')
+                layers.push(d.settings);
+        }
+        if (layers.length === 0)
+            return { scope: 'managed', status: 'absent' };
+        return { scope: 'managed', status: 'ok', settings: Object.assign({}, ...layers) };
+    }
+    catch {
+        return { scope: 'managed', status: 'unreadable' };
+    }
 }
 /**
- * Resolve `--runtime`/`--agent-sdk-version`/`--no-nested-dispatch` into the
- * `{ runtimeId, hostIntegration, agentSdkVersion }` triple both `detect-backend`
- * and `resolve-wave-dispatch` pass to the pure detection seam.
+ * Read the settings files that can carry Claude Code's workflow kill switches
+ * (#4747). Returns exactly four sources, precedence-ordered highest first:
+ * managed, projectLocal, project, user. `--settings` and non-file managed
+ * sources are not observable. No subprocesses; never throws.
+ */
+function readWorkflowSettingsSources(opts) {
+    const fileSource = (scope, p) => {
+        try {
+            const r = readJsonObjectFile(p);
+            return r.status === 'ok' ? { scope, status: 'ok', settings: r.settings } : { scope, status: r.status };
+        }
+        catch {
+            return { scope, status: 'unreadable' };
+        }
+    };
+    const managedDir = opts.managedDir ?? managedSettingsDir(opts.platform ?? process.platform);
+    const configDir = opts.env ? shellProjection.envGet(opts.env, 'CLAUDE_CONFIG_DIR') : undefined;
+    let user;
+    if (typeof configDir === 'string' && configDir.length > 0) {
+        user = fileSource('user', node_path_1.default.join(configDir, 'settings.json'));
+    }
+    else if (typeof opts.homedir === 'string' && opts.homedir.length > 0) {
+        user = fileSource('user', node_path_1.default.join(opts.homedir, '.claude', 'settings.json'));
+    }
+    else {
+        user = { scope: 'user', status: 'unreadable' };
+    }
+    return [
+        readManagedSource(managedDir),
+        fileSource('projectLocal', node_path_1.default.join(opts.cwd, '.claude', 'settings.local.json')),
+        fileSource('project', node_path_1.default.join(opts.cwd, '.claude', 'settings.json')),
+        user,
+    ];
+}
+/**
+ * Resolve `--runtime`/`--no-nested-dispatch` and the Claude Code workflow kill
+ * switches into the `{ runtimeId, hostIntegration, workflowAvailability }` triple
+ * both `detect-backend` and `resolve-wave-dispatch` pass to the pure detection
+ * seam. `--agent-sdk-version` / GSD_AGENT_SDK_VERSION are ignored (#4747).
  */
 function resolveDetectionArgs(args, cwd) {
     // #2590: the old fallback chain was `--runtime > GSD_RUNTIME > 'unknown'`,
@@ -151,14 +220,25 @@ function resolveDetectionArgs(args, cwd) {
     // --runtime reported `runtime_not_claude` on a perfectly ordinary Claude
     // project. Delegate to the canonical resolver instead of re-deriving it.
     const runtimeId = argValue(args, '--runtime') || runtimeSlash.resolveRuntime(cwd || null);
-    // Explicit flag wins (lets a caller pin a version); then the environment;
-    // then the actually-installed SDK.
-    const agentSdkVersion = argValue(args, '--agent-sdk-version')
-        || process.env['GSD_AGENT_SDK_VERSION']
-        || resolveInstalledAgentSdkVersion(cwd || process.cwd());
+    let home;
+    try {
+        home = node_os_1.default.homedir();
+    }
+    catch {
+        home = undefined;
+    }
+    // Test-only seam so CLI tests do not read the host's real managed settings; ignored outside GSD_TEST_MODE.
+    const injectedManagedDir = process.env['GSD_TEST_MODE'] === '1'
+        ? shellProjection.envGet(process.env, 'GSD_TEST_MANAGED_SETTINGS_DIR')
+        : undefined;
+    const testManagedDir = typeof injectedManagedDir === 'string' && injectedManagedDir.length > 0 ? injectedManagedDir : undefined;
+    const workflowAvailability = core.resolveWorkflowAvailability({
+        env: { CLAUDE_CODE_DISABLE_WORKFLOWS: shellProjection.envGet(process.env, 'CLAUDE_CODE_DISABLE_WORKFLOWS') },
+        sources: readWorkflowSettingsSources({ cwd: cwd || process.cwd(), env: process.env, platform: process.platform, homedir: home, ...(testManagedDir ? { managedDir: testManagedDir } : {}) }),
+    });
     const noNested = args.includes('--no-nested-dispatch');
     const hostIntegration = noNested ? { dispatch: { nested: false, background: true } } : CAPABLE_HOST;
-    return { runtimeId, hostIntegration, agentSdkVersion };
+    return { runtimeId, hostIntegration, workflowAvailability };
 }
 /**
  * #2686 — resolve the `gsd-executor` model this dispatch should carry.
@@ -216,9 +296,9 @@ function readWavesManifest(wavesPath, error) {
  * SDK version come from flags (the orchestrator already knows these) or env.
  */
 function cmdDetectBackend(args, cwd, raw) {
-    const { runtimeId, hostIntegration, agentSdkVersion } = resolveDetectionArgs(args, cwd);
+    const { runtimeId, hostIntegration, workflowAvailability } = resolveDetectionArgs(args, cwd);
     const flatConfig = resolveFlatClaudeOrchestrationConfig(cwd);
-    const result = detectWorkflowBackend({ runtimeId, hostIntegration, config: flatConfig, agentSdkVersion });
+    const result = detectWorkflowBackend({ runtimeId, hostIntegration, config: flatConfig, workflowAvailability });
     output(result, raw);
 }
 /**
@@ -277,7 +357,7 @@ function cmdResolveWaveDispatch(args, cwd, raw, error) {
     const read = readWavesManifest(wavesPath, (msg) => error('resolve-wave-dispatch: ' + msg));
     if (!read.ok)
         return; // read/parse failure — error() already surfaced it loudly above
-    const { runtimeId, hostIntegration, agentSdkVersion } = resolveDetectionArgs(args, cwd);
+    const { runtimeId, hostIntegration, workflowAvailability } = resolveDetectionArgs(args, cwd);
     const flatConfig = resolveFlatClaudeOrchestrationConfig(cwd);
     const budgetTokens = budgetRaw !== undefined ? parseInt(budgetRaw, 10) : undefined;
     const budget = (typeof budgetTokens === 'number' && !Number.isNaN(budgetTokens)) ? budgetTokens : undefined;
@@ -285,7 +365,7 @@ function cmdResolveWaveDispatch(args, cwd, raw, error) {
         runtimeId,
         hostIntegration,
         config: flatConfig,
-        agentSdkVersion,
+        workflowAvailability,
         phaseDir,
         runId,
         waves: read.waves,
@@ -311,4 +391,4 @@ function routeClaudeOrchestrationCommand(opts) {
         usage(error);
     }
 }
-module.exports = { routeClaudeOrchestrationCommand };
+module.exports = { routeClaudeOrchestrationCommand, readWorkflowSettingsSources, managedSettingsDir };

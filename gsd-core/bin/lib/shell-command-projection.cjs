@@ -49,6 +49,7 @@ exports.envGet = envGet;
 exports.resolveExecutableBinary = resolveExecutableBinary;
 exports.projectSpawnInvocation = projectSpawnInvocation;
 exports.execTool = execTool;
+exports.execArgvQuarantined = execArgvQuarantined;
 exports.resolveGsdToolsPath = resolveGsdToolsPath;
 exports.dispatchGsdCommand = dispatchGsdCommand;
 exports.probeTty = probeTty;
@@ -216,7 +217,8 @@ function projectPortableHookBaseDir({ configDir, homeDir }) {
     const normalizedHome = posixNormalize(String(homeDir || ''));
     if (!normalizedConfigDir || !normalizedHome)
         return normalizedConfigDir;
-    return normalizedConfigDir.startsWith(normalizedHome)
+    // Boundary-checked: `/home/ux` is not under `/home/u`.
+    return (normalizedConfigDir.startsWith(normalizedHome) && (normalizedConfigDir.length === normalizedHome.length || normalizedConfigDir[normalizedHome.length] === '/'))
         ? '$HOME' + normalizedConfigDir.slice(normalizedHome.length)
         : normalizedConfigDir;
 }
@@ -360,7 +362,11 @@ function isManagedHookCommand(commandText, opts = {}) {
     const normalizedCommand = posixNormalize(commandText);
     if (typeof opts.configDir === 'string' && opts.configDir.length > 0) {
         const normalizedHooksDir = `${posixNormalize(node_path_1.default.join(opts.configDir, 'hooks'))}/`;
-        if (!normalizedCommand.includes(normalizedHooksDir))
+        // #5850: a PowerShell single-quoted literal doubles every quote delimiter in
+        // the path, so a configDir containing one only matches once the doubling is undone.
+        // Only inside single-quoted literals, where the doubling is the escaping.
+        const collapsedCommand = normalizedCommand.replace(/'((?:[^']|'')*)'/g, (_literal, body) => `'${body.replace(/(['\u2018\u2019\u201A\u201B])\1/g, '$1')}'`);
+        if (!normalizedCommand.includes(normalizedHooksDir) && !collapsedCommand.includes(normalizedHooksDir))
             return false;
     }
     for (const basename of managedBasenames) {
@@ -963,6 +969,87 @@ function execTool(program, args, opts = {}) {
     // `${program}: not found`, and callers across 53 files match on the string they
     // passed. Resolution must not leak an absolute path into that message.
     return _spawnResult(result, program);
+}
+/**
+ * Seam primitive for running untrusted argv with no shell (#4310, ADR-4310).
+ * Refuses cmd.exe mediation: a `.cmd`/`.bat` target would run through a shell,
+ * so it is reported as `refused` and never spawned. Output is returned
+ * untrimmed; this function never throws.
+ */
+function execArgvQuarantined(program, args, opts) {
+    try {
+        const platform = opts.platform ?? process.platform;
+        const notFound = { outcome: 'not_found', exitCode: null, stdout: '', stderr: '', signal: null };
+        const isWin = platform === 'win32';
+        const pathApi = isWin ? node_path_1.default.win32 : node_path_1.default.posix;
+        const env = opts.env ?? process.env;
+        let resolved = null;
+        if (pathApi.isAbsolute(program)) {
+            // An absolute program is addressed directly: no PATH lookup is involved.
+            resolved = _isFile(program, true, platform) ? program : null;
+        }
+        else if (program.includes('/') || program.includes('\\')) {
+            // The quarantine passes bare names only; a relative path would resolve against the project cwd.
+            return notFound;
+        }
+        else {
+            // Only ABSOLUTE PATH entries are searched: an empty or relative entry would
+            // resolve against the project (the spawn cwd), so a committed ./git could run.
+            const segments = String(envGet(env, 'PATH') ?? '')
+                .split(isWin ? ';' : ':')
+                .filter((seg) => seg.length > 0 && pathApi.isAbsolute(seg));
+            if (isWin) {
+                const joined = segments.join(';');
+                resolved = resolveExecutableBinary(program, { platform, env: { ...env, PATH: joined, Path: joined } });
+            }
+            else {
+                for (const seg of segments) {
+                    const candidate = node_path_1.default.posix.join(seg, program);
+                    if (_isFile(candidate, true, platform)) {
+                        resolved = candidate;
+                        break;
+                    }
+                }
+            }
+        }
+        if (resolved === null || !pathApi.isAbsolute(resolved))
+            return notFound;
+        if (isWin && CMD_MEDIATED_EXT.test(node_path_1.default.win32.basename(resolved))) {
+            return { outcome: 'refused', exitCode: null, stdout: '', stderr: '', signal: null };
+        }
+        const result = node_child_process_1.default.spawnSync(resolved, args, {
+            cwd: opts.cwd,
+            env: opts.env,
+            encoding: 'utf-8',
+            stdio: ['ignore', 'pipe', 'pipe'],
+            timeout: opts.timeout,
+            maxBuffer: opts.maxBuffer,
+            windowsHide: true,
+            shell: false,
+        });
+        const stdout = (result.stdout ?? '').toString();
+        const stderr = (result.stderr ?? '').toString();
+        const signal = result.signal ?? null;
+        const spawnError = result.error;
+        const code = spawnError?.code;
+        let outcome;
+        if (code === 'ENOENT')
+            outcome = 'not_found';
+        else if (isSpawnTimeout({ error: result.error }))
+            outcome = 'timed_out';
+        else if (code === 'ENOBUFS')
+            outcome = 'overflow';
+        else if (result.error)
+            outcome = 'error';
+        else if (result.status === null && signal)
+            outcome = 'killed';
+        else
+            outcome = 'exited';
+        return { outcome, exitCode: outcome === 'exited' ? result.status : null, stdout, stderr, signal };
+    }
+    catch {
+        return { outcome: 'error', exitCode: null, stdout: '', stderr: '', signal: null };
+    }
 }
 /**
  * Resolve the absolute path to gsd-tools.cjs relative to THIS module.

@@ -43,7 +43,7 @@ const pattern_cjs_1 = require("./pattern.cjs");
 const milestone_release_map_cjs_1 = require("./milestone-release-map.cjs");
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const roadmapParserMod = require("./roadmap-parser.cjs");
-const { getMilestonePhaseFilter, extractCurrentMilestone, getMilestoneInfo, sliceMilestoneWindow, } = roadmapParserMod;
+const { getMilestonePhaseFilter, extractCurrentMilestone, getMilestoneInfo, sliceMilestoneWindow, classifyMilestoneScalar, readStateMilestoneScalar, sameMilestoneVersion, } = roadmapParserMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const planningScopeMod = require("./planning-scope.cjs");
 const { SCOPE } = planningScopeMod;
@@ -225,7 +225,9 @@ function cmdRequirementsMarkComplete(cwd, reqIdsRaw, raw) {
         // Surface traceability drift: checkbox reconciled (this run or before) but the
         // table has no row for this ID. This is what makes a partial reconcile
         // distinguishable from a full one (#2140).
-        if (hasTable && doneCheckbox && !hasRow) {
+        // #5844: a row in a table with no Status column is still a row; only the
+        // Status write is impossible there, so existence is read directly.
+        if (hasTable && doneCheckbox && !hasRow && !(0, markdown_table_cjs_1.traceabilityRowExists)(reqContent, reqId)) {
             tableUnmatched.push(reqId);
         }
     }
@@ -603,15 +605,15 @@ function cmdMilestoneComplete(cwd, version, options, raw) {
             try {
                 const stateRaw = node_fs_1.default.existsSync(statePath) ? node_fs_1.default.readFileSync(statePath, 'utf-8') : null;
                 if (stateRaw) {
-                    const milestoneMatch = stateRaw.match(/^milestone:\s*(.+)/m);
-                    if (milestoneMatch)
-                        stateVersion = milestoneMatch[1].trim();
+                    // One owner for the STATE `milestone:` scalar (#5726): quoted, null and
+                    // empty values and a body `milestone:` line are not drift.
+                    stateVersion = classifyMilestoneScalar(readStateMilestoneScalar(stateRaw)).version;
                 }
             }
             catch {
                 /* skip — stateVersion stays null, scan still runs */
             }
-            if (stateVersion !== null && stateVersion !== version) {
+            if (stateVersion !== null && !sameMilestoneVersion(stateVersion, version)) {
                 // #2946: emit a WARNING so the suspicious STATE mismatch is visible
                 // rather than silently disarming the guard. Plain-text diagnostic on
                 // stderr, matching the existing [gsd-tools] WARNING convention

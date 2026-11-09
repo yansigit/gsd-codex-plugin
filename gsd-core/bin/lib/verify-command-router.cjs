@@ -23,7 +23,12 @@ function routeVerifyCommand({ verify, args, cwd, raw, error }) {
         error,
         unknownMessage: (_subcommand, available) => `Unknown verify subcommand. Available: ${available.join(', ')}`,
         handlers: {
-            'plan-structure': () => verify.cmdVerifyPlanStructure(cwd, args[2], raw),
+            'plan-structure': () => {
+                const rest = args.slice(2);
+                const replay = rest.includes('--replay');
+                const positional = rest.filter((a) => a !== '--replay');
+                verify.cmdVerifyPlanStructure(cwd, positional[0], raw, { replay });
+            },
             'phase-completeness': () => verify.cmdVerifyPhaseCompleteness(cwd, args[2], raw),
             references: () => verify.cmdVerifyReferences(cwd, args[2], raw),
             commits: () => verify.cmdVerifyCommits(cwd, args.slice(2), raw),

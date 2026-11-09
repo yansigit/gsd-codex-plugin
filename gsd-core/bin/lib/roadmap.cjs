@@ -171,7 +171,7 @@ function searchPhaseInContent(content, escapedPhase, phaseNum, convention) {
         }
         return null;
     }
-    const phaseName = headerMatch[1].trim();
+    const phaseName = (0, phase_entry_grammar_cjs_1.stripInsertedMarker)(headerMatch[1]);
     const headerIndex = headings[headingIndex].offset;
     const currentHeading = headings[headingIndex];
     const nextHeading = headings
@@ -395,7 +395,7 @@ function collectAnalyzePhases(cwd, content, phasesDir, phaseDirNames, convention
         if (isSentinelPhase(phaseNum, bracketId))
             continue;
         detailKeys.add(occurrenceKey(phaseNum, bracketId));
-        const phaseName = match[2 + G].replace(/\(INSERTED\)/i, '').trim();
+        const phaseName = (0, phase_entry_grammar_cjs_1.stripInsertedMarker)(match[2 + G]);
         // Extract goal from the section
         const sectionStart = match.index;
         const restOfContent = content.slice(sectionStart);

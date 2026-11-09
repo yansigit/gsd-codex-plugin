@@ -14,6 +14,7 @@ const node_path_1 = __importDefault(require("node:path"));
 const text_lines_cjs_1 = require("./text-lines.cjs");
 const shell_command_projection_cjs_1 = require("./shell-command-projection.cjs");
 const pattern_cjs_1 = require("./pattern.cjs");
+const phase_entry_grammar_cjs_1 = require("./phase-entry-grammar.cjs");
 const install_manifest_record_cjs_1 = require("./install-manifest-record.cjs");
 const frontmatter_fence_cjs_1 = require("./frontmatter-fence.cjs");
 const security_cjs_1 = require("./security.cjs");
@@ -1782,7 +1783,74 @@ function stageDeclaredRemovals(cwd, removedDeclared) {
     }
     return { removedEntries, removedPathspec, failures };
 }
-function cmdCommit(cwd, message, files, raw, amend, noVerify, filesRemoved) {
+/**
+ * #6043 (ADR-4908 §3): a committing verb commits in the checkout the process
+ * runs in. Returns the typed refusal when it cannot: not a git repository, or
+ * `cwd` / a path to commit resolves outside `ctx.worktreeRoot`.
+ * `cwd` and the worktree root are compared by realpath; a relative path is
+ * resolved lexically against the canonical `cwd`, so a `.planning` symlink
+ * inside the worktree stays inside; an absolute path is canonicalized through
+ * its nearest existing ancestor directory.
+ * A degraded context (git timed out or could not run) makes no claim about the
+ * worktree, so it never refuses.
+ */
+function commitRefusal(ctx, cwd, files, filesRemoved) {
+    if (ctx.provenance.reason === 'not_git_repo') {
+        return { reason: 'not_git_repo', message: `commit refused: ${cwd} is not inside a git repository` };
+    }
+    if (ctx.provenance.degraded)
+        return null;
+    const realOrSelf = (p) => {
+        try {
+            return node_fs_1.default.realpathSync.native(p);
+        }
+        catch {
+            return p;
+        }
+    };
+    // Nearest existing ancestor directory of an absolute path, realpath'd, with
+    // the not-yet-existing remainder re-appended (macOS /var <-> /private/var,
+    // Windows 8.3 short names like RUNNER~1).
+    const canonicalAbsolute = (abs) => {
+        const rest = [node_path_1.default.basename(abs)];
+        let ancestor = node_path_1.default.dirname(abs);
+        for (;;) {
+            try {
+                return node_path_1.default.join(node_fs_1.default.realpathSync.native(ancestor), ...rest);
+            }
+            catch {
+                const parent = node_path_1.default.dirname(ancestor);
+                if (parent === ancestor)
+                    return abs;
+                rest.unshift(node_path_1.default.basename(ancestor));
+                ancestor = parent;
+            }
+        }
+    };
+    const norm = (p) => {
+        const slashed = p.replace(/\\/g, '/');
+        return process.platform === 'win32' ? slashed.toLowerCase() : slashed;
+    };
+    const inside = (target, root) => (0, security_cjs_1.isContainedIn)(norm(target), norm(root), { sep: '/' });
+    const worktreeRoot = realOrSelf(node_path_1.default.resolve(ctx.worktreeRoot));
+    const realCwd = realOrSelf(node_path_1.default.resolve(cwd));
+    const declared = [...(files ?? []), ...(filesRemoved ?? [])];
+    const targets = declared.length > 0 ? declared : ['.planning/'];
+    // Lexical against the canonical cwd: a `.planning` symlink component is not followed.
+    const resolveTarget = (t) => node_path_1.default.isAbsolute(t) ? canonicalAbsolute(node_path_1.default.resolve(t)) : node_path_1.default.resolve(realCwd, t);
+    const escaping = !inside(realCwd, worktreeRoot)
+        ? realCwd
+        : targets.map(resolveTarget).find((abs) => !inside(abs, worktreeRoot));
+    if (escaping === undefined)
+        return null;
+    return {
+        reason: 'outside_worktree',
+        skipped: false,
+        message: `commit refused: ${escaping} is outside the worktree ${worktreeRoot}; ` +
+            'pass the checkout that owns the path with --project-dir to commit there',
+    };
+}
+function cmdCommit(cwd, message, files, raw, amend, noVerify, filesRemoved, ctx) {
     if (!message && !amend) {
         error('commit message required');
     }
@@ -1811,6 +1879,16 @@ function cmdCommit(cwd, message, files, raw, amend, noVerify, filesRemoved) {
         };
         output(result, raw, 'skipped');
         return;
+    }
+    // #6043: refuse before branching or staging, and only AFTER the commit_docs
+    // skip above, so a benign skip is never turned into an error.
+    const refusal = ctx ? commitRefusal(ctx, cwd, files, filesRemoved) : null;
+    if (refusal) {
+        error(refusal.message, refusal.reason === 'not_git_repo' ? ERROR_REASON.COMMIT_NOT_GIT_REPO : ERROR_REASON.COMMIT_OUTSIDE_WORKTREE, {
+            committed: false,
+            ...(refusal.skipped === false ? { skipped: false } : {}),
+            hash: null,
+        });
     }
     // Ensure branching strategy branch exists before first commit (#1278).
     // Pre-execution workflows (discuss, plan, research) commit artifacts but the branch
@@ -3537,7 +3615,7 @@ function cmdStats(cwd, format, raw) {
             phasesByNumber.set(key, {
                 number: key,
                 ...(displayId ? { display_id: displayId } : {}),
-                name: phaseName.replace(/\(INSERTED\)/i, '').trim(),
+                name: (0, phase_entry_grammar_cjs_1.stripInsertedMarker)(phaseName),
                 plans: 0,
                 summaries: 0,
                 phaseStatus: phase_status_cjs_1.PHASE_STATUS.NOT_STARTED,

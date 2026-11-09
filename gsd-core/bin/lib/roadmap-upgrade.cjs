@@ -1092,7 +1092,7 @@ function computeBracketPlan(cwd) {
     // never `null` (unlimited). Comparing under a DIFFERENT rule than the one
     // that created the directory refused two-milestone roadmaps the
     // tooling's own commands produced.
-    const slugify = (text) => (coreUtilsMod.generateSlugInternal(text.replace(/\(INSERTED\)/i, '').trim()) ?? '');
+    const slugify = (text) => (coreUtilsMod.generateSlugInternal((0, phase_entry_grammar_cjs_1.stripInsertedMarker)(text)) ?? '');
     // #4144 round 7 W2, corrected round 8 B1: a plan-level ambiguity check
     // that runs BEFORE the resolution loop below and never touches its
     // (unmodified, round-6) algorithm. For every directory that structurally

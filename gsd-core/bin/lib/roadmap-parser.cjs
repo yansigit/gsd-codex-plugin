@@ -25,6 +25,7 @@ const node_crypto_1 = require("node:crypto");
 const node_fs_1 = __importDefault(require("node:fs"));
 const node_path_1 = __importDefault(require("node:path"));
 const pattern_cjs_1 = require("./pattern.cjs");
+const markdown_sectionizer_cjs_1 = require("./markdown-sectionizer.cjs");
 const phase_entry_grammar_cjs_1 = require("./phase-entry-grammar.cjs");
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const phaseIdModule = require("./phase-id.cjs");
@@ -60,7 +61,7 @@ const { rawFrontmatterMapping } = frontmatterMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const unusableInputMod = require("./unusable-input.cjs");
 const { UNUSABLE_REASON, warnUnusableInput } = unusableInputMod;
-const markdown_sectionizer_cjs_1 = require("./markdown-sectionizer.cjs");
+const markdown_sectionizer_cjs_2 = require("./markdown-sectionizer.cjs");
 const markdown_table_cjs_1 = require("./markdown-table.cjs");
 const roadmap_progress_cjs_1 = require("./roadmap-progress.cjs");
 // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -73,10 +74,93 @@ const { SCOPE } = planningScopeMod;
  * (`extractCurrentMilestone`, `currentMilestoneRawRanges`,
  * `isMilestoneShippedInRoadmap`) previously kept byte-identical copies.
  */
-const MILESTONE_CLOSED_MARKER_PATTERN = /\b(?:CLOSED|ARCHIVED|ABANDONED|SHIPPED|FAILED)\b|✅|🗄/i;
+const CLOSED_STATUS_WORD_SOURCE = '\\b(?:CLOSED|ARCHIVED|ABANDONED|SHIPPED|FAILED)\\b';
+const CLOSED_STATUS_MARK_SOURCE = '\u{2705}|\u{1f5c4}';
+// Same source, same flags as the pre-#5726 literal: no `u`, so `i` keeps ASCII-only folding.
+const MILESTONE_CLOSED_MARKER_PATTERN = new RegExp(`${CLOSED_STATUS_WORD_SOURCE}|${CLOSED_STATUS_MARK_SOURCE}`, 'i');
 const MILESTONE_ACTIVE_MARKER_PATTERN = /\b(?:STARTED|ACTIVE|WIP)\b|in\s+progress|🚧|🔄/i;
+const CLOSED_STATUS_WORD_RE = new RegExp(CLOSED_STATUS_WORD_SOURCE, 'i');
+const CLOSED_STATUS_MARK_RE = new RegExp(CLOSED_STATUS_MARK_SOURCE, 'u');
+/**
+ * THE closed-milestone predicate (#5726, ADR-3180): selection, masking, the
+ * archive strip and the shipped refusal all call this one function. It is the
+ * pre-#5726 rule, a closed marker and no active marker, with ONE exception: a
+ * check mark that appears only inside a parenthetical naming another version
+ * (`Next (after v2.0 prep` + check mark + `)`) does not close the heading. A
+ * status word counts anywhere, including inside a version parenthetical
+ * (`(shipped, replaces v0.9)`).
+ */
 function isClosedMilestoneHeading(headingText) {
-    return MILESTONE_CLOSED_MARKER_PATTERN.test(headingText) && !MILESTONE_ACTIVE_MARKER_PATTERN.test(headingText);
+    if (!MILESTONE_CLOSED_MARKER_PATTERN.test(headingText) || MILESTONE_ACTIVE_MARKER_PATTERN.test(headingText))
+        return false;
+    return CLOSED_STATUS_WORD_RE.test(headingText) || hasClosedStatusMark(headingText);
+}
+/**
+ * Does a check mark close the heading? One linear pass splits the heading into
+ * its top-level text and its top-level parentheticals. A parenthetical is exempt
+ * only when the heading's own version (text before the first parenthetical)
+ * exists and every version the parenthetical names is unrelated to it; versions
+ * are normalized by one helper (case-insensitive, dotted segments, suffix dropped,
+ * a dotted prefix counts as the same). An unbalanced or nested parenthesis, a
+ * missing own version or a version after the group disables the exemption, so such
+ * a heading reads exactly as before #5726.
+ */
+function hasClosedStatusMark(headingText) {
+    let depth = 0;
+    let start = 0;
+    let outside = '';
+    let ownText = '';
+    const groups = [];
+    for (let i = 0; i < headingText.length; i++) {
+        const ch = headingText[i];
+        if (ch === '(') {
+            depth += 1;
+            if (depth > 1)
+                return CLOSED_STATUS_MARK_RE.test(headingText);
+            if (groups.length === 0)
+                ownText = outside;
+            start = i + 1;
+        }
+        else if (ch === ')') {
+            depth -= 1;
+            if (depth < 0)
+                return CLOSED_STATUS_MARK_RE.test(headingText);
+            if (depth === 0)
+                groups.push(headingText.slice(start, i));
+        }
+        else if (depth === 0) {
+            outside += ch;
+        }
+    }
+    if (depth !== 0)
+        return CLOSED_STATUS_MARK_RE.test(headingText);
+    if (CLOSED_STATUS_MARK_RE.test(outside))
+        return true;
+    const own = versionSegments(ownText);
+    return groups.some((group) => {
+        if (!CLOSED_STATUS_MARK_RE.test(group))
+            return false;
+        const named = versionsIn(group);
+        // Fail closed: exempt only when the heading's own version precedes the group, the
+        // group names a version, and every version it names is unrelated to the own one.
+        return own === null || named.length === 0 || named.some((v) => versionsRelated(own, v));
+    });
+}
+const HEADING_VERSION_RE = /\bv\d+(?:\.\d+)*/gi;
+/** `v` + digits + dotted segments, lowercased as numbers; any suffix (`-beta`, `.rc`) is dropped. */
+function versionsIn(text) {
+    return (text.match(HEADING_VERSION_RE) ?? []).map((v) => v.slice(1).split('.').map(Number));
+}
+function versionSegments(text) {
+    return versionsIn(text)[0] ?? null;
+}
+/** Equal, or one a dotted-segment prefix of the other (`v2` / `v2.0` / `v2.0.1`). */
+function versionsRelated(a, b) {
+    const n = Math.min(a.length, b.length);
+    for (let i = 0; i < n; i++)
+        if (a[i] !== b[i])
+            return false;
+    return true;
 }
 /**
  * Is this `<details>` block a CLOSED milestone? One test for the read-side strip
@@ -97,7 +181,7 @@ function isClosedMilestoneBlock(block) {
  * Strip shipped milestone content wrapped in <details> blocks.
  */
 function stripShippedMilestones(content) {
-    return (0, markdown_sectionizer_cjs_1.stripTaggedBlocks)(content, 'details');
+    return (0, markdown_sectionizer_cjs_2.stripTaggedBlocks)(content, 'details');
 }
 /**
  * #5543: hide every CLOSED-milestone `<details>` block (`<details>` opener, a
@@ -219,6 +303,132 @@ function isMilestoneShippedInRoadmap(content, version) {
         }
     }
     return false;
+}
+/**
+ * #5726: `content` with every fenced code block and HTML comment blanked to
+ * spaces, so offsets and line structure are unchanged but no heading inside a
+ * fence or comment can be located. `\n` stays at its index; every other
+ * character (`\r` included) becomes a space; no `<!--` appears that the input
+ * did not have at that index.
+ *
+ * ONE linear scan in document order; the construct that starts first wins:
+ *
+ * - At a line start, a fence opener (the `matchFenceDelimiter` grammar: 0-3 spaces
+ *   of indent, 3+ backticks or tildes, a backtick opener's info string holds no
+ *   backtick) blanks through its matching closer line (same character, at least
+ *   the opener's length, nothing but whitespace after), or to EOF when none
+ *   exists. A `<!--` inside a fence opens nothing.
+ * - Otherwise the next `<!--` at `p` opens a comment, and its `-->` is searched
+ *   from `p + 2`, so `<!-->` and `<!--->` are complete comments (CommonMark
+ *   0.31). With a closer, `p .. closer + 3` is blanked and may span lines; a
+ *   fence line inside it is part of the comment.
+ * - With no closer anywhere after it: if the `<!--` opens its line (0-3 spaces
+ *   before it, CommonMark HTML block type 2) everything to EOF is blanked; if
+ *   it is mid-line nothing is hidden and the scan resumes after `p + 4`.
+ *
+ * Each of the next `<!--`, `-->` and `\n` is searched through a cached finder
+ * (the scan position only moves forward, so a hit at or past the position is
+ * still the next hit, and a miss stays a miss), keeping the whole pass linear.
+ */
+function blankFencesAndComments(content) {
+    const n = content.length;
+    const finder = (needle) => {
+        let hit = -2;
+        return (from) => {
+            if (hit === -1)
+                return -1;
+            if (hit < from)
+                hit = content.indexOf(needle, from);
+            return hit;
+        };
+    };
+    const nextOpen = finder('<!--');
+    const nextClose = finder('-->');
+    const nextNewline = finder('\n');
+    const fenceOn = (from, to) => (0, markdown_sectionizer_cjs_1.matchFenceDelimiter)(content.slice(from, to));
+    const lineEnd = (from) => {
+        const nl = nextNewline(from);
+        return nl === -1 ? n : nl;
+    };
+    const pieces = [];
+    let at = 0;
+    const hide = (from, to) => {
+        pieces.push(content.slice(at, from), content.slice(from, to).replace(/[^\n]/g, ' '));
+        at = to;
+    };
+    let pos = 0;
+    let lineStart = 0;
+    let atLineStart = true;
+    while (pos < n) {
+        const le = lineEnd(pos);
+        if (atLineStart) {
+            const opener = fenceOn(pos, le);
+            if (opener !== null && opener.canOpen) {
+                let closeEnd = n;
+                for (let ls = le + 1; ls < n;) {
+                    const e = lineEnd(ls);
+                    const m = fenceOn(ls, e);
+                    if (m !== null && m.closes(opener)) {
+                        closeEnd = e;
+                        break;
+                    }
+                    ls = e + 1;
+                }
+                hide(pos, closeEnd);
+                pos = closeEnd + 1;
+                lineStart = pos;
+                continue;
+            }
+        }
+        const p = nextOpen(pos);
+        if (p === -1 || p >= le) {
+            pos = le + 1;
+            lineStart = pos;
+            atLineStart = true;
+            continue;
+        }
+        const close = nextClose(p + 2);
+        if (close !== -1) {
+            const end = close + 3;
+            hide(p, end);
+            if (le < end)
+                lineStart = content.lastIndexOf('\n', end - 1) + 1;
+            pos = end;
+            atLineStart = false;
+            continue;
+        }
+        if (p - lineStart <= 3 && /^ *$/.test(content.slice(lineStart, p))) {
+            hide(p, n);
+            return pieces.join('');
+        }
+        pos = p + 4;
+        atLineStart = false;
+    }
+    pieces.push(content.slice(at));
+    return pieces.join('');
+}
+/**
+ * #5726: is the milestone window `extractCurrentMilestoneScoped` selected for
+ * `version` a SHIPPED one? Decided on the heading the owner selects
+ * (`selectActiveMilestoneHeading`: the first non-closed match, else the first),
+ * located in fence- and comment-blanked content so an example inside a fence or
+ * comment cannot stand in for the real heading.
+ */
+function selectedMilestoneHeadingShipped(content, version, phaseIdConvention) {
+    const visible = blankFencesAndComments(content);
+    let matches = locateMilestoneHeadings(visible, version);
+    if (matches.length === 0)
+        matches = bracketFallbackHeadingMatches(visible, version, phaseIdConvention);
+    if (matches.length === 0)
+        return false;
+    return isClosedMilestoneHeading(selectActiveMilestoneHeading(visible, version, matches)[1]);
+}
+/**
+ * #5726: is the `<summary>` the archive-span window was cut from a shipped one?
+ * Read from fence- and comment-blanked content, tags removed.
+ */
+function archiveSummaryShipped(summaryInner) {
+    return isClosedMilestoneHeading(summaryInner.replace(/<[^>]{0,200}>/g, ''));
 }
 // #2761 B1: matches a bracket MILESTONE heading's intro (`[GSD.02]`) at the
 // START of a heading's text, capturing the bracket id in group 1. Shared by
@@ -357,7 +567,7 @@ function computeMilestoneSectionEnd(content, headingText, headingStart, addition
     const afterHeading = headingStart + headingText.length;
     // Use tokenizeHeadings (fence-aware, offsets into original content) to find
     // the next stop boundary without re-implementing fence detection. T4 seam migration.
-    const headings = headingTokens ?? (0, markdown_sectionizer_cjs_1.tokenizeHeadings)(content);
+    const headings = headingTokens ?? (0, markdown_sectionizer_cjs_2.tokenizeHeadings)(content);
     for (const h of headings) {
         if (h.offset <= headingStart)
             continue;
@@ -516,6 +726,25 @@ function isMilestoneBoundedInRoadmap(content, version) {
 function hasVersionedMilestones(content) {
     return /^#{1,3}\s+.*v\d+\.\d+/mi.test(content);
 }
+/**
+ * #5726: does this ROADMAP carry a RECOGNIZED versioned milestone heading — a
+ * non-Phase level 1-3 heading with a version token, outside fenced code and
+ * HTML comments? Stricter than `hasVersionedMilestones` (a raw line regex that
+ * a Phase title such as `### Phase 1: Migrate to v2.0 API`, a fenced example or
+ * a commented-out heading all satisfy), so it is NOT a replacement: that
+ * predicate feeds `classifyMilestoneWindow`'s rows 3/4 and its behavior stays
+ * as is. This one gates only the write refusal for an unresolved STATE
+ * milestone, which must not fire on a roadmap that has no real milestone
+ * heading at all. Fences and comments are blanked by `blankFencesAndComments`,
+ * and `tokenizeHeadings` then reads the headings;
+ * `isRecognizedMilestoneHeading` (Phase exclusion, level bound) and
+ * `listMilestoneHeadings` (the version-bearing grammar) judge them.
+ */
+function hasRecognizedVersionedMilestoneHeading(content) {
+    const visible = blankFencesAndComments(content);
+    return (0, markdown_sectionizer_cjs_2.tokenizeHeadings)(visible).some((heading) => isRecognizedMilestoneHeading(heading.text, heading.level)
+        && listMilestoneHeadings(`${'#'.repeat(heading.level)} ${heading.text}`).length > 0);
+}
 // This file's milestone-heading vocabulary: a version token (`v1.2`-style),
 // a ✅/🚧/📋 status marker, or the word "Milestone". Tested against a
 // non-Phase heading's own text by `hasMilestoneSectioning` below — this
@@ -610,7 +839,7 @@ const MILESTONE_HEADING_SIGNAL_PATTERN = /v\d+\.\d+|✅|📋|🚧|\bMilestone\b/
 function countMilestoneHeadings(content) {
     const isPhaseHeading = (text) => /^Phase\s+\S/i.test(text);
     let milestoneHeadingCount = 0;
-    for (const heading of (0, markdown_sectionizer_cjs_1.tokenizeHeadings)(content)) {
+    for (const heading of (0, markdown_sectionizer_cjs_2.tokenizeHeadings)(content)) {
         if (heading.level < 1 || heading.level > 3)
             continue;
         if (isPhaseHeading(heading.text))
@@ -690,7 +919,7 @@ function sliceMilestoneWindow(content, version) {
  */
 function milestoneSections(content) {
     const sections = [];
-    const headings = (0, markdown_sectionizer_cjs_1.tokenizeHeadings)(content);
+    const headings = (0, markdown_sectionizer_cjs_2.tokenizeHeadings)(content);
     for (const heading of headings) {
         if (heading.level < 1 || heading.level > 3)
             continue;
@@ -797,7 +1026,7 @@ function hasPhaseEntries(markdown, phaseIdConvention) {
     // #3641: the widened grammar engages ONLY when the resolved convention is
     // 'bracket' — a project that has not opted in runs the legacy pattern
     // alone, byte-identically.
-    for (const h of (0, markdown_sectionizer_cjs_1.tokenizeHeadings)(markdown)) {
+    for (const h of (0, markdown_sectionizer_cjs_2.tokenizeHeadings)(markdown)) {
         if (h.level < 2 || h.level > 4)
             continue;
         if (isPhaseEntryHeading(h.text, phaseIdConvention))
@@ -808,7 +1037,7 @@ function hasPhaseEntries(markdown, phaseIdConvention) {
     // doc showing the convention) counts as a real phase entry. Strip fences
     // through the canonical seam before testing, matching tokenizeHeadings'
     // fence-awareness above.
-    if (BULLET_PHASE_LINE_PATTERN.test((0, markdown_sectionizer_cjs_1.stripFencedCode)(markdown).text))
+    if (BULLET_PHASE_LINE_PATTERN.test((0, markdown_sectionizer_cjs_2.stripFencedCode)(markdown).text))
         return true;
     // #3577: a markdown-table phase listing also declares phases.
     return collectTablePhaseRows(markdown).length > 0;
@@ -827,7 +1056,7 @@ const PHASE_LISTING_HEADER_RE = /^\|?\s*phase(?:\s*(?:#|no\.?|number))?\s*\|/i;
 const PHASE_NAME_HEADER_RE = /^(?:phase\s+)?name$/i;
 const TABLE_PHASE_ID_RE = /^[A-Za-z]?\d[\w.-]*$/;
 function collectTablePhaseRows(window) {
-    const unfenced = (0, markdown_sectionizer_cjs_1.stripFencedCode)(window).text;
+    const unfenced = (0, markdown_sectionizer_cjs_2.stripFencedCode)(window).text;
     const lines = unfenced.split(/\r?\n/);
     const rows = [];
     for (let i = 0; i + 1 < lines.length; i++) {
@@ -873,7 +1102,7 @@ function collectTablePhaseRows(window) {
  * synthesis it was never meant to coexist with.
  */
 function hasPhaseListingTableHeader(content) {
-    const unfenced = (0, markdown_sectionizer_cjs_1.stripFencedCode)(content).text;
+    const unfenced = (0, markdown_sectionizer_cjs_2.stripFencedCode)(content).text;
     return unfenced.split(/\r?\n/).some((line) => PHASE_LISTING_HEADER_RE.test(line));
 }
 /**
@@ -906,7 +1135,7 @@ function scanMilestonePhaseIdSets(window, convention, context) {
     const capturing = convention === 'bracket';
     const bracketGroups = capturing ? 1 : 0;
     const phaseHeadingPattern = new RegExp(`^${phaseHeadingPrefixSrcFor(PHASE_HEADING_BASELINE.ANY_BRACKET, convention, capturing)}(${context?.phaseNaming === 'custom' && convention !== 'bracket' ? phaseIdModule.phaseScanTokenSource(context) : '[\\w][\\w.-]*'})(?:\\s*\\([^)\\n]{0,200}\\))?\\s*:`, 'i');
-    for (const h of (0, markdown_sectionizer_cjs_1.tokenizeHeadings)(window)) {
+    for (const h of (0, markdown_sectionizer_cjs_2.tokenizeHeadings)(window)) {
         if (h.level < 2 || h.level > 4)
             continue;
         const pm = phaseHeadingPattern.exec(h.text);
@@ -929,7 +1158,7 @@ function scanMilestonePhaseIdSets(window, convention, context) {
     // collapsing to a zero-count pass-all filter.
     let bm;
     const scanner = new RegExp(BULLET_PHASE_LINE_PATTERN.source, 'gim');
-    const unfenced = (0, markdown_sectionizer_cjs_1.stripFencedCode)(window).text;
+    const unfenced = (0, markdown_sectionizer_cjs_2.stripFencedCode)(window).text;
     while ((bm = scanner.exec(unfenced)) !== null) {
         if (!/^999\b/.test(bm[1]))
             ids.add(bm[1]);
@@ -999,7 +1228,7 @@ function scanMilestonePhaseIds(window, convention) {
  */
 function findMilestoneScopeHeadingLines(text, convention) {
     const out = [];
-    for (const h of (0, markdown_sectionizer_cjs_1.tokenizeHeadings)(text)) {
+    for (const h of (0, markdown_sectionizer_cjs_2.tokenizeHeadings)(text)) {
         if (h.level > 3)
             continue;
         if (/^Phase\s+\S/i.test(h.text))
@@ -1090,7 +1319,7 @@ function bracketFallbackHeadingMatches(content, version, bracketScopeConvention)
     // For every survivor, rebuilding [fullLine, fullLine] plus `.index`
     // retains the match shape and first-match order expected downstream.
     const bracketMilestoneHeadingRe = new RegExp(`^${bracketMilestoneIntroSrcFor(milestoneInt)}`, 'i');
-    return (0, markdown_sectionizer_cjs_1.tokenizeHeadings)(content)
+    return (0, markdown_sectionizer_cjs_2.tokenizeHeadings)(content)
         .filter((h) => h.level <= 3 && content[h.offset] === '#' && bracketMilestoneHeadingRe.test(h.text))
         .map((h) => {
         const lineEnd = content.indexOf('\n', h.offset);
@@ -1146,12 +1375,15 @@ function bracketAwareMilestoneSection(content, selected, sectionStart, bracketBo
 }
 /**
  * #5038: single owner for classifying a `milestone:` scalar as STATE.md spells
- * it. The frontmatter parser (FAILSAFE_SCHEMA) and the raw-regex readers both
- * see YAML null as text, so every reader classifies it here. Recognizes the
- * YAML 1.2 core-schema null spellings (`null`, `Null`, `NULL`, `~`) with an
- * optional trailing ` # comment` and optional surrounding quotes (the
- * frontmatter parser has already stripped them, so the raw readers must agree);
- * a blank value is absent, not null.
+ * it. The frontmatter parser (FAILSAFE_SCHEMA) sees YAML null as text, so every
+ * reader classifies it here. The input is an already DECODED scalar (both the
+ * frontmatter path and the raw line read in `readStateMilestoneScalar` decode
+ * through the same FAILSAFE loader), so a quoted `"null"` is indistinguishable
+ * from a bare `null` after decoding and reads as explicit null. A decoded value
+ * of `null`, `Null`, `NULL` or `~` is explicit null on both paths. A decoded
+ * `null # x` (quoted on disk) is a literal version; an unquoted
+ * `milestone: null # x` decodes to `null` and is an explicit null. A blank value
+ * is absent, not null.
  */
 function classifyMilestoneScalar(raw) {
     if (typeof raw !== 'string')
@@ -1159,19 +1391,31 @@ function classifyMilestoneScalar(raw) {
     const trimmed = raw.trim();
     if (trimmed === '')
         return { explicitNull: false, version: null };
-    const bare = trimmed.replace(/\s+#.*$/, '').trim().replace(/^(['"])(.*)\1$/, '$2');
-    if (/^(?:null|Null|NULL|~)$/.test(bare))
+    if (/^(?:null|Null|NULL|~)$/.test(trimmed))
         return { explicitNull: true, version: null };
+    // The input is already a DECODED scalar (#4998): a quote or ` #` inside it is
+    // literal content, so the version is the trimmed text.
     return { explicitNull: false, version: trimmed };
+}
+/**
+ * #5726: do two spellings name the same milestone version? Case-insensitive, the
+ * leading `v` optional (`1.0` / `v1.0`); a suffix is significant (`v1.0-closing`
+ * is a different version from `v1.0`).
+ */
+function sameMilestoneVersion(a, b) {
+    const fold = (v) => v.trim().replace(/^v(?=\d)/i, '').toLowerCase();
+    return fold(a) === fold(b);
 }
 /**
  * #4998: STATE.md's `milestone:` scalar as the frontmatter parser DECODES it.
  * The raw `^milestone:` line read captured the on-disk YAML text — quotes and
  * escapes included — and that text was re-serialized as the value, adding one
- * escape layer per `state.*` write. Falls back to the legacy line read only
- * when there is no parseable frontmatter, or its `milestone` is not text. One
- * that parses without a `milestone` key names none: a `milestone:` line further
- * down (a fenced example) is not one (#4998 review, Minor 5).
+ * escape layer per `state.*` write. Falls back to a `^milestone:` line read
+ * only when there is no parseable frontmatter, or its `milestone` is not text;
+ * that fallback line is decoded through the same FAILSAFE loader as
+ * frontmatter (#5726). Frontmatter that parses without a `milestone` key names
+ * none: a `milestone:` line further down (a fenced example) is not one (#4998
+ * review, Minor 5).
  */
 function readStateMilestoneScalar(stateRaw) {
     const fm = rawFrontmatterMapping(stateRaw);
@@ -1183,8 +1427,20 @@ function readStateMilestoneScalar(stateRaw) {
         // A non-string value keeps the pre-#4998 line read, which finds this
         // frontmatter line first.
     }
-    const m = stateRaw.match(/^milestone:\s*(.+)/m);
-    return m ? m[1] : null;
+    // `[ \t]*(\S.*)` cannot cross a newline: an empty value must not borrow the next
+    // line (the `---` closing the frontmatter), so it reads as absent.
+    const m = stateRaw.match(/^milestone:[ \t]*(\S.*)/m);
+    if (!m)
+        return null;
+    // #5726: this branch holds on-disk YAML text. Decode it with the SAME guarded
+    // FAILSAFE loader the frontmatter path uses (a one-key synthetic frontmatter
+    // block), so quotes, YAML escapes and a trailing ` # comment` decode identically
+    // on both paths by construction. An undecodable or non-string result keeps the
+    // trimmed raw text.
+    const text = m[1].trim();
+    const decoded = rawFrontmatterMapping(`---\nmilestone: ${text}\n---\n`);
+    const value = decoded ? decoded['milestone'] : undefined;
+    return typeof value === 'string' ? value : text;
 }
 /**
  * Extract the current milestone section from ROADMAP.md by positive lookup,
@@ -1221,6 +1477,9 @@ function extractCurrentMilestoneScoped(content, cwd, ws, phaseIdConvention) {
     }
     let version = null;
     let stateAssertsNoMilestone = false;
+    // #5726: set only when the version came from STATE.md's `milestone:` field,
+    // not from the in-progress bullet guess below.
+    let versionFromState = false;
     try {
         const statePath = node_path_1.default.join(planningDir(cwd, ws), 'STATE.md');
         const stateRaw = (0, shell_command_projection_cjs_1.platformReadSync)(statePath);
@@ -1229,6 +1488,7 @@ function extractCurrentMilestoneScoped(content, cwd, ws, phaseIdConvention) {
             if (milestoneScalar !== null) {
                 const classified = classifyMilestoneScalar(milestoneScalar);
                 version = classified.version;
+                versionFromState = classified.version !== null;
                 stateAssertsNoMilestone = classified.explicitNull;
             }
         }
@@ -1247,6 +1507,11 @@ function extractCurrentMilestoneScoped(content, cwd, ws, phaseIdConvention) {
     // twin copy in `getMilestonePhaseFilter`, the intra-owner-file duplicate
     // review caught since the drift guard exempts this file by construction).
     const versionedMilestonesPresent = hasVersionedMilestones(content);
+    // #5726: STATE.md's milestone is one the ROADMAP itself marks shipped. Decided
+    // below, from the heading (or archive `<summary>`) the window was actually cut
+    // from, so a line that merely mentions the version cannot read as shipped.
+    // Reported by the window's one owner.
+    const shippedOf = (shipped) => shipped && versionFromState && version !== null ? { shippedMilestone: version } : {};
     if (!version) {
         const value = stripShippedMilestones(content);
         return {
@@ -1296,7 +1561,7 @@ function extractCurrentMilestoneScoped(content, cwd, ws, phaseIdConvention) {
                 const anyMilestoneOrDetails = /^#{1,3}\s+(?!Phase\s+\S)(?:.*v\d+\.\d+|✅|📋|🚧|🔄)|<details/im;
                 const firstMilestoneMatch = content.match(anyMilestoneOrDetails);
                 const preambleCutoff = firstMilestoneMatch ? firstMilestoneMatch.index : detailsOpenIdx;
-                const preamble = (0, markdown_sectionizer_cjs_1.stripTaggedBlocks)(content.slice(0, preambleCutoff), 'details')
+                const preamble = (0, markdown_sectionizer_cjs_2.stripTaggedBlocks)(content.slice(0, preambleCutoff), 'details')
                     // #5007 (Phase 6 / ADR-4910 §8): shared owner, see
                     // PHASE_HEADING_BLOCK_STRIP_RE above.
                     .replace(PHASE_HEADING_BLOCK_STRIP_RE, '')
@@ -1312,21 +1577,30 @@ function extractCurrentMilestoneScoped(content, cwd, ws, phaseIdConvention) {
                         windowHasPhaseEntries: hasPhaseEntries(value, phaseIdConvention),
                         documentHasPhaseEntries,
                     }),
+                    ...shippedOf(archiveSummaryShipped(blankFencesAndComments(content).match(summaryPattern)?.[1] ?? '')),
                 };
             }
         }
         const value = stripShippedMilestones(content);
-        return {
-            value,
-            scope: classifyMilestoneWindow({
-                readable: true,
-                versionResolved,
-                hasVersionedMilestones: versionedMilestonesPresent,
-                headingFound: false,
-                windowHasPhaseEntries: hasPhaseEntries(value, phaseIdConvention),
-                documentHasPhaseEntries,
-            }),
-        };
+        const scope = classifyMilestoneWindow({
+            readable: true,
+            versionResolved,
+            hasVersionedMilestones: versionedMilestonesPresent,
+            headingFound: false,
+            windowHasPhaseEntries: hasPhaseEntries(value, phaseIdConvention),
+            documentHasPhaseEntries,
+        });
+        // #5726 (row 5): STATE.md names a milestone and the ROADMAP, which carries
+        // versioned milestone headings, has none for it. `value` is then the whole
+        // unshipped roadmap, so a write verb must not allocate against it. Reported
+        // only here, by the window's one owner; a free-form legacy ROADMAP (no
+        // versioned headings) and a bullet-guessed version stay a plain UNSCOPED.
+        // The gate counts only RECOGNIZED milestone headings, so a version token in
+        // a Phase title, a fence or an HTML comment does not read as a milestone.
+        if (scope === SCOPE.UNSCOPED && versionFromState && hasRecognizedVersionedMilestoneHeading(content)) {
+            return { value, scope, unresolvedMilestone: version };
+        }
+        return { value, scope };
     }
     const allMatches = headingMatches;
     const isClosed = isClosedMilestoneHeading;
@@ -1340,7 +1614,7 @@ function extractCurrentMilestoneScoped(content, cwd, ws, phaseIdConvention) {
     // #2761 B3: tokenize once for both the centralized section-end owner and
     // the bracket preamble scan below. This keeps both boundary decisions
     // fence-aware without restoring the local section walker retired by #3184.
-    const currentMilestoneHeadings = (0, markdown_sectionizer_cjs_1.tokenizeHeadings)(content);
+    const currentMilestoneHeadings = (0, markdown_sectionizer_cjs_2.tokenizeHeadings)(content);
     const { sectionEnd, selectedBracketId, bracketBoundary } = bracketAwareMilestoneSection(content, selected, sectionStart, bracketBoundaryActive, currentMilestoneHeadings);
     const anyMilestonePattern = /^#{1,3}\s+(?!Phase\s+\S)(?:.*v\d+\.\d+|✅|📋|🚧)/im;
     let earliestMilestoneIndex;
@@ -1528,7 +1802,7 @@ function extractCurrentMilestoneScoped(content, cwd, ws, phaseIdConvention) {
     // forcing the two sites onto an identical terminal token that would be a
     // behavior change here.
     const currentSectionHasPhaseDetails = new RegExp(`^#{2,4}\\s*${phaseHeadingPrefixSrcFor(PHASE_HEADING_BASELINE.LABEL_ONLY)}\\S`, 'im').test(currentSection);
-    const preambleBase = (0, markdown_sectionizer_cjs_1.stripTaggedBlocks)(beforeMilestones, 'details');
+    const preambleBase = (0, markdown_sectionizer_cjs_2.stripTaggedBlocks)(beforeMilestones, 'details');
     // #3235: the conditional wraps the REPLACE, not the pattern. This used to select between the
     // strip regex and a `/$/` sentinel, which made the do-not-strip branch an identity replacement
     // (CodeQL js/identity-replacement, alert 53) -- correct, but it left both branches sharing one
@@ -1553,6 +1827,7 @@ function extractCurrentMilestoneScoped(content, cwd, ws, phaseIdConvention) {
             windowHasPhaseEntries: hasPhaseEntries(value, phaseIdConvention),
             documentHasPhaseEntries,
         }),
+        ...shippedOf(selectedMilestoneHeadingShipped(content, version, bracketScopeConvention)),
     };
 }
 /**
@@ -1605,7 +1880,7 @@ function blankCodeAndComments(content) {
     // closes a block.
     const lines = content.split('\n');
     const blank = (t) => t.replace(/[^\r\n]/g, ' ');
-    for (const f of (0, markdown_sectionizer_cjs_1.scanFencedBlocks)(lines)) {
+    for (const f of (0, markdown_sectionizer_cjs_2.scanFencedBlocks)(lines)) {
         // An unclosed fence is bounded at the next heading, not EOF, so later archives stay visible.
         let last = f.closeLineIdx;
         if (last === -1) {
@@ -1622,7 +1897,7 @@ function blankCodeAndComments(content) {
     const joined = lines.join('\n');
     let codeBlanked = '';
     let at = 0;
-    for (const sp of (0, markdown_sectionizer_cjs_1.scanInlineCodeSpans)(joined)) {
+    for (const sp of (0, markdown_sectionizer_cjs_2.scanInlineCodeSpans)(joined)) {
         codeBlanked += joined.slice(at, sp.start) + blank(joined.slice(sp.start, sp.end));
         at = sp.end;
     }
@@ -1636,7 +1911,7 @@ function plainClosedSections(content, overlapsActive, activeVersion) {
     // A closed milestone written as a plain heading section (no `<details>`) is
     // archive too. It ends at the next heading of the same or shallower level, so
     // a following `## Progress` table stays visible.
-    const headingTokens = (0, markdown_sectionizer_cjs_1.tokenizeHeadings)(content);
+    const headingTokens = (0, markdown_sectionizer_cjs_2.tokenizeHeadings)(content);
     const spans = [];
     for (let i = 0; i < headingTokens.length; i++) {
         const h = headingTokens[i];
@@ -1891,7 +2166,7 @@ function withPhaseSection(content, phaseId, edit, levelBounded = false) {
         const cut = body.search(/^#{1,6}[ \t]+(?:\[[^\]\n]{1,200}\][ \t]*)?Phase\s+\S/m);
         return cut === -1 ? edit(body) : edit(body.slice(0, cut)) + body.slice(cut);
     };
-    return (0, markdown_sectionizer_cjs_1.withSection)(content, (h) => headingRe.test(h.text), ownBody, { levelBounded });
+    return (0, markdown_sectionizer_cjs_2.withSection)(content, (h) => headingRe.test(h.text), ownBody, { levelBounded });
 }
 // ─── Roadmap phase lookup ─────────────────────────────────────────────────────
 // #2199: a bullet/checkbox phase entry, e.g. `- [ ] **Phase 36 — Authentication**`
@@ -1908,7 +2183,7 @@ function bulletPhaseLineFor(phaseNum, phaseSource) {
 function findRoadmapPhaseInContent(content, phaseNum, phaseSource) {
     // #1729: OPTIONAL_PHASE_TAG_SOURCE after the number tolerates a pre-colon ( ) tag.
     const headingPattern = new RegExp(`^(?:\\[[^\\]]{1,200}\\]\\s*)?Phase\\s+${phaseSource ?? phaseMarkdownRegexSource(phaseNum)}${OPTIONAL_PHASE_TAG_SOURCE}:\\s*(.+)$`, 'i');
-    const headings = (0, markdown_sectionizer_cjs_1.tokenizeHeadings)(content);
+    const headings = (0, markdown_sectionizer_cjs_2.tokenizeHeadings)(content);
     const headingIndex = headings.findIndex((heading) => headingPattern.test(heading.text));
     if (headingIndex === -1)
         return null;
@@ -1916,7 +2191,7 @@ function findRoadmapPhaseInContent(content, phaseNum, phaseSource) {
     const headerMatch = heading.text.match(headingPattern);
     if (!headerMatch)
         return null;
-    const phaseName = headerMatch[1].trim();
+    const phaseName = (0, phase_entry_grammar_cjs_1.stripInsertedMarker)(headerMatch[1]);
     const nextHeading = headings.slice(headingIndex + 1).find((candidate) => candidate.level <= heading.level);
     const sectionEnd = nextHeading ? nextHeading.offset : content.length;
     const section = content.slice(heading.offset, sectionEnd).trim();
@@ -2642,7 +2917,7 @@ function currentMilestoneRawRanges(content, cwd, phaseIdConvention) {
     const selected = selectActiveMilestoneHeading(content, version, headingMatches);
     const sectionStart = selected.index ?? 0;
     const bracketBoundaryActive = bracketScopeConvention === 'bracket';
-    const currentMilestoneHeadings = (0, markdown_sectionizer_cjs_1.tokenizeHeadings)(content);
+    const currentMilestoneHeadings = (0, markdown_sectionizer_cjs_2.tokenizeHeadings)(content);
     const { sectionEnd, bracketBoundary } = bracketAwareMilestoneSection(content, selected, sectionStart, bracketBoundaryActive, currentMilestoneHeadings);
     const selectedVersionToken = selected[1].match(/v\d+(?:\.\d+)+(?:[-.][A-Za-z0-9]+)*/i)?.[0];
     const detailsVersionBoundary = selectedVersionToken
@@ -2885,6 +3160,7 @@ module.exports = {
     getMilestoneInfo,
     classifyMilestoneScalar,
     readStateMilestoneScalar,
+    sameMilestoneVersion,
     getMilestonePhaseFilter,
     currentMilestoneRawRanges,
     withPhaseSection,
@@ -2944,6 +3220,8 @@ module.exports = {
     milestoneVersionAtOffset,
     // #5679: same-length copy with fenced blocks, code spans and HTML comments blanked.
     blankCodeAndComments,
+    // #5726: fences and HTML comments blanked (same length, newlines kept).
+    blankFencesAndComments,
     // #4144 round 5 Blocker 1: the readers' own phase-heading grammar, so the
     // bracket roadmap migrator's "phase-like but unparsed" refusal
     // (src/roadmap-upgrade.cts) can gate on it instead of a private, looser

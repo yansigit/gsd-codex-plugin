@@ -2639,9 +2639,7 @@ function cmdInitManager(cwd, raw) {
         const phaseNum = capturesBracketId ? match[2] : match[1];
         if (bracketId)
             bracketIdsByPhaseNumber.set(phaseNum, bracketId);
-        const phaseName = (capturesBracketId ? match[3] : match[2])
-            .replace(/\(INSERTED\)/i, '')
-            .trim();
+        const phaseName = (0, phase_entry_grammar_cjs_1.stripInsertedMarker)(capturesBracketId ? match[3] : match[2]);
         let displayId;
         if (bracketId) {
             try {
@@ -3447,7 +3445,7 @@ function cmdInitProgress(cwd, raw, options = {}) {
         let hm;
         while ((hm = headingPattern.exec(roadmapContent)) !== null) {
             roadmapPhaseNums.add(hm[hNumGroup]);
-            roadmapPhaseNames.set(hm[hNumGroup], hm[hNameGroup].replace(/\(INSERTED\)/i, '').trim());
+            roadmapPhaseNames.set(hm[hNumGroup], (0, phase_entry_grammar_cjs_1.stripInsertedMarker)(hm[hNameGroup]));
         }
         // #4906 Phase 5 (#4984): NOT migrated onto phaseHeadingPrefixSrcFor — same
         // out-of-scope reasoning as roadmapPhaseMatchesExactPrefix/detectPhaseMvpMode

@@ -12,6 +12,7 @@
  */
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.XML_DECISION_TAG_NAMES = void 0;
+exports.matchFenceDelimiter = matchFenceDelimiter;
 exports.stripFencedCode = stripFencedCode;
 exports.stripInlineCode = stripInlineCode;
 exports.scanInlineCodeSpans = scanInlineCodeSpans;
@@ -24,6 +25,7 @@ exports.iterateBullets = iterateBullets;
 exports.updateBullet = updateBullet;
 exports.updateHeading = updateHeading;
 exports.extractTaggedBlocks = extractTaggedBlocks;
+exports.extractTaggedBlockSpans = extractTaggedBlockSpans;
 exports.stripTaggedBlocks = stripTaggedBlocks;
 exports.editOutsideTaggedBlocks = editOutsideTaggedBlocks;
 exports.maskFences = maskFences;
@@ -35,6 +37,30 @@ exports.editHeadingSlice = editHeadingSlice;
 exports.deleteSection = deleteSection;
 exports.extractXmlTagBodies = extractXmlTagBodies;
 const pattern_cjs_1 = require("./pattern.cjs");
+const FENCE_DELIMITER_RE = /^( {0,3})(`{3,}|~{3,})(.*)$/;
+/**
+ * The single CommonMark fence-delimiter grammar: ≤3 spaces of indent, a run of
+ * ≥3 backticks or tildes, then trailing text. A trailing `\r` is stripped first
+ * (CRLF safety). Returns `null` when the line is not a delimiter line at all.
+ * `stripFencedCode`, `scanFencedBlocks`, `tokenizeHeadings` and the roadmap
+ * parser's comment/fence blanking all classify delimiter lines through this one
+ * matcher.
+ */
+function matchFenceDelimiter(line) {
+    const m = FENCE_DELIMITER_RE.exec(line.replace(/\r$/, ''));
+    if (m === null)
+        return null;
+    const char = m[2][0];
+    const len = m[2].length;
+    const trailing = m[3];
+    return {
+        char,
+        len,
+        trailing,
+        canOpen: !(char === '`' && trailing.includes('`')),
+        closes: (opener) => char === opener.char && len >= opener.len && /^\s*$/.test(trailing),
+    };
+}
 // ─── stripFencedCode ──────────────────────────────────────────────────────────
 /**
  * CommonMark-correct fenced-code-block stripper.
@@ -62,27 +88,20 @@ function stripFencedCode(content) {
     const lines = content.split('\n');
     const kept = [];
     let openFence = null;
-    // Matches: optional indent (≤3 spaces per CommonMark), fence run, optional info string
-    const delimRe = /^( {0,3})(`{3,}|~{3,})(.*)$/;
     for (const rawLine of lines) {
-        // Strip trailing \r for delimiter matching (CRLF safety)
-        const line = rawLine.replace(/\r$/, '');
-        const m = delimRe.exec(line);
+        const m = matchFenceDelimiter(rawLine);
         if (m) {
-            const char = m[2][0];
-            const len = m[2].length;
-            const trailing = m[3];
             if (openFence === null) {
                 // CommonMark §4.5: backtick fence info string must not contain a backtick.
                 // If it does, this line is NOT a valid fence opener (treat as ordinary content).
-                if (char === '`' && trailing.includes('`')) {
+                if (!m.canOpen) {
                     kept.push(rawLine);
                     continue;
                 }
                 // Opening delimiter — record fence state, drop this line
-                openFence = { char, len };
+                openFence = { char: m.char, len: m.len };
             }
-            else if (char === openFence.char && len >= openFence.len && /^\s*$/.test(trailing)) {
+            else if (m.closes(openFence)) {
                 // Closing delimiter (same char, sufficient length, no trailing content) — close and drop
                 openFence = null;
             }
@@ -213,9 +232,8 @@ function stripInlineCodeLine(line) {
  * different-info-string fence, a fence nested/indented inside another fence,
  * and a `~~~` fence are all classified exactly as `stripFencedCode` would.
  *
- * Tracked duplication (same status as `tokenizeHeadings`'s copy, see its
- * comment above): this is a second independent copy of the fence state
- * machine, pending a T-tier consolidation.
+ * Delimiter classification goes through `matchFenceDelimiter`, the one shared
+ * grammar (also used by `stripFencedCode` and `tokenizeHeadings`).
  *
  * Exported so `context-predicates.cts` can consume this seam directly for its
  * line-preserving fenced-line skip detection, instead of carrying a third
@@ -223,24 +241,19 @@ function stripInlineCodeLine(line) {
  * comment).
  */
 function scanFencedBlocks(lines) {
-    const delimRe = /^( {0,3})(`{3,}|~{3,})(.*)$/;
     const blocks = [];
     let open = null;
     for (let i = 0; i < lines.length; i++) {
-        const line = lines[i].replace(/\r$/, '');
-        const m = delimRe.exec(line);
+        const m = matchFenceDelimiter(lines[i]);
         if (!m)
             continue;
-        const char = m[2][0];
-        const len = m[2].length;
-        const trailing = m[3];
         if (open === null) {
             // CommonMark §4.5: backtick fence info string must not contain a backtick.
-            if (char === '`' && trailing.includes('`'))
+            if (!m.canOpen)
                 continue; // not a valid opener — ordinary content
-            open = { char, len, infoString: trailing.trim(), openLineIdx: i };
+            open = { char: m.char, len: m.len, infoString: m.trailing.trim(), openLineIdx: i };
         }
-        else if (char === open.char && len >= open.len && /^\s*$/.test(trailing)) {
+        else if (m.closes(open)) {
             blocks.push({
                 char: open.char,
                 len: open.len,
@@ -319,30 +332,26 @@ function tokenizeHeadings(content) {
     const tokens = [];
     // We re-run the fence state machine to know which lines are "kept", so we
     // can map line index in original to whether it survived.
-    const delimRe = /^( {0,3})(`{3,}|~{3,})(.*)$/;
     let openFence = null;
     // Accumulate character offset as we iterate lines
     let charOffset = 0;
     for (let i = 0; i < originalLines.length; i++) {
         const rawLine = originalLines[i];
         const line = rawLine.replace(/\r$/, '');
-        const dm = delimRe.exec(line);
+        const dm = matchFenceDelimiter(rawLine);
         if (dm) {
-            const char = dm[2][0];
-            const len = dm[2].length;
-            const trailing = dm[3];
             if (openFence === null) {
                 // CommonMark §4.5: backtick fence info string must not contain a backtick.
-                if (char === '`' && trailing.includes('`')) {
+                if (!dm.canOpen) {
                     // Not a valid fence opener — check for heading on this line (will fall through)
                 }
                 else {
-                    openFence = { char, len };
+                    openFence = { char: dm.char, len: dm.len };
                     charOffset += rawLine.length + 1;
                     continue;
                 }
             }
-            else if (char === openFence.char && len >= openFence.len && /^\s*$/.test(trailing)) {
+            else if (dm.closes(openFence)) {
                 openFence = null;
                 charOffset += rawLine.length + 1;
                 continue;
@@ -817,6 +826,28 @@ function extractTaggedBlocks(content, tagName, allowAttributes = false) {
         results.push(match[1]);
     }
     return results;
+}
+/**
+ * Offset spans of the bodies `extractTaggedBlocks` returns (#4309): same
+ * pattern, same blocks, but each body is reported as `{ start, end }` into
+ * `content` so a caller can test whether an arbitrary offset lies inside a
+ * block (and dedupe nested blocks) without re-harvesting the text.
+ * `content.slice(span.start, span.end)` equals the matching extracted body.
+ */
+function extractTaggedBlockSpans(content, tagName, allowAttributes = false) {
+    if (typeof content !== 'string' || content.length === 0)
+        return [];
+    if (typeof tagName !== 'string' || tagName.length === 0)
+        return [];
+    const closeLength = `</${tagName}>`.length;
+    const pattern = taggedBlockPattern(tagName, 'g', allowAttributes);
+    const spans = [];
+    let match;
+    while ((match = pattern.exec(content)) !== null) {
+        const end = match.index + match[0].length - closeLength;
+        spans.push({ start: end - match[1].length, end });
+    }
+    return spans;
 }
 /**
  * Build the single, ReDoS-safe `<tag>…</tag>` block regex shared by

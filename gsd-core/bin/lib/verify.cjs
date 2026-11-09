@@ -26,10 +26,13 @@ const modelProfilesMod = require("./model-profiles.cjs");
 const coreUtilsMod = require("./core-utils.cjs");
 const { findOrphanSummaries, findUnsummarizedPlans } = coreUtilsMod;
 const shell_command_projection_cjs_1 = require("./shell-command-projection.cjs");
+const read_only_git_env_cjs_1 = require("./read-only-git-env.cjs");
 const security_cjs_2 = require("./security.cjs");
 const runtime_slash_cjs_1 = require("./runtime-slash.cjs");
 const schema_detect_cjs_1 = require("./schema-detect.cjs");
 const markdown_sectionizer_cjs_1 = require("./markdown-sectionizer.cjs");
+const criterion_baseline_cjs_1 = require("./criterion-baseline.cjs");
+const criterion_replay_cjs_1 = require("./criterion-replay.cjs");
 const pattern_cjs_1 = require("./pattern.cjs");
 const gate_exit_cjs_1 = require("./gate-exit.cjs");
 const gate_evidence_cjs_1 = require("./gate-evidence.cjs");
@@ -796,11 +799,9 @@ function scanQuantitativeCriteria(content) {
         return { errors, warnings };
     // Allow markers may sit anywhere in the plan (same as the sibling scanners).
     // The reason must be non-empty: `R1 - -->` is not an auditable exit.
-    const allow = new Set();
-    const allowRe = /<!--\s*plan-criteria-allow:\s*(R[1-6])\s+-\s+([^>]*\S)\s*-->/g;
-    let am;
-    while ((am = allowRe.exec(content || '')) !== null)
-        allow.add(am[1]);
+    // #4309: the marker parser is shared with the baseline-notation scanner
+    // (it also honors B1/B2; this scanner only ever asks about R ids).
+    const allow = (0, criterion_baseline_cjs_1.parseCriteriaAllowMarkers)(content || '');
     const record = (bucket, rule, message, seen) => {
         if (allow.has(rule) || seen.has(message))
             return;
@@ -1179,7 +1180,7 @@ function scanPlanTruncation(content) {
     }
     return errors;
 }
-function cmdVerifyPlanStructure(cwd, filePath, raw) {
+function cmdVerifyPlanStructure(cwd, filePath, raw, opts = {}) {
     if (!filePath) {
         error('file path required');
     }
@@ -1269,6 +1270,36 @@ function cmdVerifyPlanStructure(cwd, filePath, raw) {
     const quantScan = scanQuantitativeCriteria(content);
     errors.push(...quantScan.errors);
     warnings.push(...quantScan.warnings);
+    // #4309: criterion baseline notation (B1 non-discriminating, B2 legacy
+    // comment). Parse failures are statuses only and never change validity.
+    const baselineScan = (0, criterion_baseline_cjs_1.scanBaselineNotation)(content);
+    errors.push(...baselineScan.errors);
+    warnings.push(...baselineScan.warnings);
+    // #4310: opt-in replay (ADR-4310). Advisory: mismatches are warnings, statuses never change validity.
+    let replayReport = null;
+    if (opts.replay === true) {
+        const projectDir = node_path_1.default.resolve(cwd);
+        const head = (0, shell_command_projection_cjs_1.execGit)(['rev-parse', 'HEAD'], { cwd: projectDir, timeout: 5000 });
+        const headSha = head.exitCode === 0 && /^[0-9a-f]{40}$/.test(head.stdout) ? head.stdout : null;
+        const replayEnv = { ...process.env, ...(0, read_only_git_env_cjs_1.readOnlyGitEnv)(), GIT_TERMINAL_PROMPT: '0', GCM_INTERACTIVE: 'never', GIT_PAGER: 'cat', PAGER: 'cat' };
+        // Fail closed: an operand that exists but cannot be shown to resolve inside the project is refused.
+        const isInsideRoot = (candidate) => {
+            const st = (0, gate_evidence_cjs_1.statEvidence)(node_path_1.default.resolve(projectDir, candidate));
+            return st.kind === 'none' || (st.kind === 'found' && (0, security_cjs_2.tryWithinRoot)(candidate, projectDir) !== null);
+        };
+        replayReport = (0, criterion_replay_cjs_1.replayBaselineCriteria)(content, {
+            isInsideRoot,
+            run: (argv, { timeoutMs }) => (0, shell_command_projection_cjs_1.execArgvQuarantined)(argv[0], argv.slice(1), {
+                cwd: projectDir,
+                env: replayEnv,
+                timeout: timeoutMs,
+                maxBuffer: criterion_replay_cjs_1.REPLAY_LIMITS.OUTPUT_CAP_BYTES,
+            }),
+            now: () => Date.now(),
+            headSha,
+        });
+        warnings.push(...replayReport.warnings);
+    }
     emitVerbVerdict(validityVerdict(errors.length === 0, {
         valid: errors.length === 0,
         errors,
@@ -1276,6 +1307,18 @@ function cmdVerifyPlanStructure(cwd, filePath, raw) {
         task_count: tasks.length,
         tasks,
         frontmatter_fields: Object.keys(fm),
+        // #4309: appended keys (additive payload).
+        baseline_notation_count: baselineScan.notationCount,
+        baseline_findings: baselineScan.findings,
+        baseline_statuses: baselineScan.statuses,
+        ...(replayReport === null ? {} : {
+            replay: {
+                head_sha: replayReport.head_sha,
+                results: replayReport.results,
+                mismatch_count: replayReport.mismatch_count,
+                statuses: replayReport.statuses,
+            },
+        }),
     }), 'status', raw, errors.length === 0 ? 'valid' : 'invalid');
 }
 function cmdVerifyPhaseCompleteness(cwd, phase, raw) {
