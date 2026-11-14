@@ -3513,7 +3513,8 @@ function cmdScaffold(cwd, type, options, raw) {
         }
         case 'verification': {
             filePath = node_path_1.default.join(phaseDir, `${padded}-VERIFICATION.md`);
-            content = `---\nphase: "${padded}"\nname: "${name || phaseInfo?.['phase_name'] || 'Unnamed'}"\ncreated: ${today}\nstatus: pending\n---\n\n# Phase ${phase}: ${name || phaseInfo?.['phase_name'] || 'Unnamed'} — Verification\n\n## Goal-Backward Verification\n\n**Phase Goal:** [From ROADMAP.md]\n\n## Checks\n\n| # | Requirement | Status | Evidence |\n|---|------------|--------|----------|\n\n## Result\n\n_Pending verification_\n`;
+            // No verdict exists until the verifier runs; an absent status reads as missing.
+            content = `---\nphase: "${padded}"\nname: "${name || phaseInfo?.['phase_name'] || 'Unnamed'}"\ncreated: ${today}\n---\n\n# Phase ${phase}: ${name || phaseInfo?.['phase_name'] || 'Unnamed'} — Verification\n\n## Goal-Backward Verification\n\n**Phase Goal:** [From ROADMAP.md]\n\n## Checks\n\n| # | Requirement | Status | Evidence |\n|---|------------|--------|----------|\n\n## Result\n\n_Pending verification_\n`;
             break;
         }
         case 'phase-dir': {

@@ -90,6 +90,8 @@ const MAX_STAGED_BUNDLE_BYTES = 128 * 1024 * 1024;
  * unbounded readdir work before the byte cap trips). 100k entries is far more than any real bundle.
  */
 const MAX_STAGED_BUNDLE_ENTRIES = 100_000;
+const GIT_METADATA_RM_MAX_RETRIES = 3;
+const GIT_METADATA_RM_RETRY_DELAY_MS = 100;
 let _httpsGetImpl = node_https_1.default.get;
 /** Test seam: override the low-level https.get transport used by realHttpsGet. Pass null to restore. */
 function _setHttpsGetImpl(fn) {
@@ -858,6 +860,16 @@ function resolveGit(parsed, opts, gsdHome, hostVersion) {
                 throw new Error(`git checkout "${parsed.ref}" failed (exit ${checkoutResult.exitCode}): ${checkoutResult.stderr}`);
             }
         }
+        // #5298: clone metadata is not bundle content. Remove it only from this
+        // scratch clone before shared staging budgets, validation, and consent hashing.
+        // This is deliberately fail-closed: staging never continues after an
+        // unverified metadata-removal result.
+        node_fs_1.default.rmSync(node_path_1.default.join(cloneDir, '.git'), {
+            recursive: true,
+            force: true,
+            maxRetries: GIT_METADATA_RM_MAX_RETRIES,
+            retryDelay: GIT_METADATA_RM_RETRY_DELAY_MS,
+        });
         // Read id from capability.json via the SHARED bounded reader (#1461 finding 2): a cloned repo's
         // oversized/non-regular capability.json is refused, never read unbounded.
         const manifestPath = node_path_1.default.join(cloneDir, 'capability.json');
