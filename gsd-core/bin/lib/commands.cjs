@@ -48,7 +48,7 @@ const planningScopeMod = require("./planning-scope.cjs");
 const { SCOPE } = planningScopeMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const modelResolverMod = require("./model-resolver.cjs");
-const { resolveModelInternal, resolveTierInternal, resolveModelForTier, resolveProviderEscalation, resolveEffortInternal, resolveFastModeInternal, resolveEffortForTier, resolveGranularityInternal, assertValidGranularityOverride } = modelResolverMod;
+const { computeProfileTier, resolveModelOverride, resolveModelInternal, resolveTierInternal, resolveModelForTier, resolveProviderEscalation, resolveEffortInternal, resolveFastModeInternal, resolveEffortForTier, resolveGranularityInternal, assertValidGranularityOverride } = modelResolverMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const agentCommandRouterMod = require("./agent-command-router.cjs");
 const { AGENT_FAILURE_CLASSES } = agentCommandRouterMod;
@@ -445,29 +445,44 @@ function cmdHistoryDigest(cwd, raw) {
         error('Failed to generate history digest: ' + e.message);
     }
 }
-function cmdResolveModel(cwd, agentType, raw) {
+function cmdResolveModel(cwd, agentType, raw, fallbackAgent) {
     if (!agentType) {
         error('agent-type required');
     }
     const config = loadConfig(cwd);
     const profile = config['model_profile'] || 'balanced';
-    const model = resolveModelInternal(cwd, agentType);
+    // #6213: a hinted executor with no model_overrides entry and no catalog tier would otherwise
+    // resolve to the generic profile alias. With `--fallback-agent <catalog role>` it resolves as
+    // that role instead. The fallback must be an own key of MODEL_PROFILES, else the flag is ignored.
+    const agentModelsMap = MODEL_PROFILES;
+    // An override counts only when resolveModelInternal would actually use it (non-empty, mappable);
+    // an empty or unusable entry must not block the fallback.
+    const hasUsableOverride = resolveModelOverride(config, agentType) !== null;
+    let resolveAs = agentType;
+    let appliedFallback = null;
+    if (typeof fallbackAgent === 'string' && fallbackAgent.length > 0 &&
+        Object.hasOwn(agentModelsMap, fallbackAgent) &&
+        !hasUsableOverride && computeProfileTier(config, agentType) === null) {
+        resolveAs = fallbackAgent;
+        appliedFallback = fallbackAgent;
+    }
+    const model = resolveModelInternal(cwd, resolveAs);
+    // The effort belongs to the hinted agent, not to the fallback role whose model it borrows.
     const effort = resolveEffortInternal(cwd, agentType);
     // Own-property guard: agentType is an unvalidated CLI positional, so a
     // prototype-chain value ("toString", "constructor") would otherwise return
     // an inherited truthy member from this plain object and misreport a
     // genuinely unknown agent as known (unknown_agent dropped from the result).
-    const agentModelsMap = MODEL_PROFILES;
-    const agentModels = Object.hasOwn(agentModelsMap, agentType) ? agentModelsMap[agentType] : undefined;
+    const agentModels = Object.hasOwn(agentModelsMap, resolveAs) ? agentModelsMap[resolveAs] : undefined;
     // #2229: `tier` is additive — existing keys and their values are untouched, so
     // every `--pick model` / `--pick profile` / `--raw` consumer is unaffected. It
     // exists because the model id is deliberately blank under resolve_model_ids:"omit",
     // which leaves a tier-sensitive guard with nothing to read.
-    const tier = resolveTierInternal(cwd, agentType);
+    const tier = resolveTierInternal(cwd, resolveAs);
     const result = agentModels
         ? { model, profile, effort, tier }
         : { model, profile, effort, tier, unknown_agent: true };
-    output(result, raw, model);
+    output(appliedFallback ? { ...result, fallback_agent: appliedFallback } : result, raw, model);
 }
 function cmdResolveGranularity(cwd, phaseType, raw, override) {
     if (!phaseType) {

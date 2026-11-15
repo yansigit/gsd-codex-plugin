@@ -779,16 +779,16 @@ function computeDependencyLevels(rawPlans, planMap, canonicalToId, shortFormToId
     }
     return { level, visited, order: queue, unresolved };
 }
-function cmdPhasePlanIndex(cwd, phase, raw) {
-    if (!phase) {
-        error('phase required for phase-plan-index');
-    }
+/**
+ * The phase-directory resolution `phase-plan-index` performs, extracted so the read-only plan
+ * lookups that must agree with it (#6213 `resolvePlanAgentHint`) cannot drift from it.
+ */
+function locatePlanIndexPhaseDir(cwd, phase) {
     const phasesDir = node_path_1.default.join(planningDir(cwd), 'phases');
     const directoryContext = phaseDirectoryOptions(cwd);
     const lookup = resolvePhaseDirectoryLookup(cwd, phase, undefined, directoryContext);
     const { normalized } = lookup;
     let phaseDir = null;
-    let phaseDirName = null;
     let ambiguousMatches = null;
     try {
         const entries = node_fs_1.default.readdirSync(phasesDir, { withFileTypes: true });
@@ -806,12 +806,122 @@ function cmdPhasePlanIndex(cwd, phase, raw) {
         }
         else if (matches.length === 1) {
             phaseDir = node_path_1.default.join(phasesDir, matches[0]);
-            phaseDirName = matches[0];
         }
     }
     catch {
         // phases dir doesn't exist
     }
+    return { phaseDir, normalized, ambiguousMatches };
+}
+/**
+ * #6213: the `agent_hint` a plan declares, read with the SAME phase resolution, plan-file set and
+ * plan parser `phase-plan-index` uses. Null on any lookup failure (phase not found, ambiguous,
+ * unknown plan id, unreadable plan, no hint) — the caller then dispatches gsd-executor.
+ */
+function resolvePlanAgentHint(cwd, phase, planId) {
+    try {
+        if (!phase || !planId)
+            return null;
+        const { phaseDir, ambiguousMatches } = locatePlanIndexPhaseDir(cwd, phase);
+        if (!phaseDir || ambiguousMatches)
+            return null;
+        const planFile = scanPhasePlans(phaseDir).planFiles
+            .filter(isCanonicalPlanFile)
+            .sort()
+            .find((f) => planIdFromFile(f) === planId);
+        if (!planFile)
+            return null;
+        const planPath = node_path_1.default.join(phaseDir, planFile);
+        const hint = parsePlanDocument(node_fs_1.default.readFileSync(planPath, 'utf-8'), planPath).agentHint;
+        return typeof hint === 'string' && hint.length > 0 ? hint : null;
+    }
+    catch {
+        return null;
+    }
+}
+/**
+ * #6213: the `agent_hint` of every canonical plan in a phase (same phase resolution, plan-file set
+ * and parser as `resolvePlanAgentHint`), in plan-file order, hint-less plans omitted. Empty on any
+ * lookup failure. A plan that cannot be read or parsed contributes nothing; the others still do.
+ */
+function listPhaseAgentHints(cwd, phase) {
+    try {
+        if (!phase)
+            return [];
+        const { phaseDir, ambiguousMatches } = locatePlanIndexPhaseDir(cwd, phase);
+        if (!phaseDir || ambiguousMatches)
+            return [];
+        return readPhaseDirAgentHints(phaseDir);
+    }
+    catch {
+        return [];
+    }
+}
+/** The `agent_hint` of every canonical plan in one phase directory; an unreadable plan is skipped. */
+function readPhaseDirAgentHints(phaseDir) {
+    const hints = [];
+    for (const planFile of scanPhasePlans(phaseDir).planFiles.filter(isCanonicalPlanFile).sort()) {
+        try {
+            const planPath = node_path_1.default.join(phaseDir, planFile);
+            const hint = parsePlanDocument(node_fs_1.default.readFileSync(planPath, 'utf-8'), planPath).agentHint;
+            if (typeof hint === 'string' && hint.length > 0)
+                hints.push(hint);
+        }
+        catch {
+            // an unreadable plan has no routable hint
+        }
+    }
+    return hints;
+}
+/**
+ * #6213: the `agent_hint` of every canonical plan across every milestone phase directory (the scan
+ * `resolvePlanAgentHintAcrossPhases` uses), for a record that names no phase. Empty on any failure.
+ */
+function listAllPhaseAgentHints(cwd) {
+    try {
+        const phasesDir = node_path_1.default.join(planningDir(cwd), 'phases');
+        const hints = [];
+        for (const dirName of listMilestonePhaseDirs(phasesDir, { cwd }).value) {
+            hints.push(...readPhaseDirAgentHints(node_path_1.default.join(phasesDir, dirName)));
+        }
+        return hints;
+    }
+    catch {
+        return [];
+    }
+}
+/**
+ * #6213: locate a plan id across every milestone phase directory (same plan-file set and `planIdFromFile` as
+ * `resolvePlanAgentHint`). `matches` counts the plan files carrying that plan id; `hint` is
+ * its `agent_hint` only when exactly one plan matches, otherwise null.
+ */
+function resolvePlanAgentHintAcrossPhases(cwd, planId) {
+    try {
+        if (!planId)
+            return { matches: 0, hint: null };
+        const phasesDir = node_path_1.default.join(planningDir(cwd), 'phases');
+        const found = [];
+        for (const dirName of listMilestonePhaseDirs(phasesDir, { cwd }).value) {
+            const phaseDir = node_path_1.default.join(phasesDir, dirName);
+            for (const planFile of scanPhasePlans(phaseDir).planFiles.filter(isCanonicalPlanFile)) {
+                if (planIdFromFile(planFile) === planId)
+                    found.push(node_path_1.default.join(phaseDir, planFile));
+            }
+        }
+        if (found.length !== 1)
+            return { matches: found.length, hint: null };
+        const hint = parsePlanDocument(node_fs_1.default.readFileSync(found[0], 'utf-8'), found[0]).agentHint;
+        return { matches: 1, hint: typeof hint === 'string' && hint.length > 0 ? hint : null };
+    }
+    catch {
+        return { matches: 0, hint: null };
+    }
+}
+function cmdPhasePlanIndex(cwd, phase, raw) {
+    if (!phase) {
+        error('phase required for phase-plan-index');
+    }
+    const { phaseDir, normalized, ambiguousMatches } = locatePlanIndexPhaseDir(cwd, phase);
     if (ambiguousMatches) {
         output({
             phase: normalized,
@@ -825,7 +935,6 @@ function cmdPhasePlanIndex(cwd, phase, raw) {
         output({ phase: normalized, error: 'Phase not found', plans: [], waves: {}, incomplete: [], runnable: [], ready_plans: [], has_checkpoints: false }, raw);
         return;
     }
-    void phaseDirName; // used only to set phaseDir above
     // phaseFiles stays root-only readdirSync — it feeds only
     // describeNonCanonicalPlans's near-miss naming diagnostic below, which is
     // advisory text, not a counted/scheduled file set.
@@ -7103,6 +7212,10 @@ module.exports = {
     cmdPhaseNextDecimal,
     cmdFindPhase,
     cmdPhasePlanIndex,
+    resolvePlanAgentHint,
+    listPhaseAgentHints,
+    listAllPhaseAgentHints,
+    resolvePlanAgentHintAcrossPhases,
     cmdPhaseAdd,
     cmdPhaseAddBatch,
     cmdPhaseMvpMode,
