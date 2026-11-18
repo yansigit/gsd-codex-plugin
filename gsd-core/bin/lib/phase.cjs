@@ -6389,7 +6389,8 @@ function cmdPhaseComplete(cwd, phaseNum, raw) {
                             const reqUpdate = (0, markdown_table_cjs_2.updateTraceabilityCell)(reqContent, reqRowMatch, 'Status', (current) => {
                                 // #2788: accept `Gaps Found` too so a phase stranded by revert-phase (the
                                 // gaps_found response) can complete without hand-editing the table.
-                                if (/^(?:pending|in progress|gaps found)$/i.test(current.trim())) {
+                                // #6238: read the status word, so `Pending (note)` advances like `Pending`.
+                                if ((0, markdown_table_cjs_2.leadingRequirementStatus)(current, ['pending', 'in progress', 'gaps found']) !== null) {
                                     tableHit = true;
                                     return ' Complete ';
                                 }

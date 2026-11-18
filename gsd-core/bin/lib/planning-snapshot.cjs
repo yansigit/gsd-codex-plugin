@@ -142,6 +142,17 @@ function buildPhaseSnapshot(phasesDir, dir, convention) {
     };
 }
 /**
+ * Line count as an editor shows it: a trailing terminator does not open a new
+ * line. LF and CRLF both terminate a line; `''` is 0 lines. Exported for its
+ * property test (#5830).
+ */
+function countLines(content) {
+    if (content === '')
+        return 0;
+    const parts = content.split(/\r?\n/);
+    return parts[parts.length - 1] === '' ? parts.length - 1 : parts.length;
+}
+/**
  * Resolve every STATE.md-sourced field in one place: `currentPhaseLabel` (the
  * raw `Phase:` field under `## Current Position`, e.g. `"3 of 8 (User
  * Auth)"`, not a normalized phase-directory id — see the design doc's Known
@@ -196,6 +207,7 @@ function buildStateFields(statePath) {
             currentPhaseLabel: { value: null, scope: SCOPE.UNREADABLE },
             statePhaseTokens: { value: [], scope: SCOPE.UNREADABLE },
             stateStatus: { value: null, scope: SCOPE.UNREADABLE },
+            stateLineCount: { value: null, scope: SCOPE.UNREADABLE },
         };
     }
     if (content === null) {
@@ -203,6 +215,7 @@ function buildStateFields(statePath) {
             currentPhaseLabel: { value: null, scope: SCOPE.UNREADABLE },
             statePhaseTokens: { value: [], scope: SCOPE.UNREADABLE },
             stateStatus: { value: null, scope: SCOPE.UNREADABLE },
+            stateLineCount: { value: null, scope: SCOPE.UNREADABLE },
         };
     }
     const frontmatter = extractFrontmatter(content, statePath);
@@ -269,7 +282,8 @@ function buildStateFields(statePath) {
         ].map((m) => m[1]),
         scope: SCOPE.COMPLETE,
     };
-    return { currentPhaseLabel, statePhaseTokens, stateStatus };
+    const stateLineCount = { value: countLines(content), scope: SCOPE.COMPLETE };
+    return { currentPhaseLabel, statePhaseTokens, stateStatus, stateLineCount };
 }
 /**
  * Resolve `config` — the parsed `.planning/config.json`, preserving the same
@@ -1075,6 +1089,7 @@ function buildPlanningSnapshot(cwd) {
         projectSections: buildProjectSectionsField(cwd),
         statePhaseTokens: stateFields.statePhaseTokens,
         stateStatus: stateFields.stateStatus,
+        stateLineCount: stateFields.stateLineCount,
         roadmapDeclaredPhases: roadmapDeclared.declared,
         roadmapPhaseCheckboxes: buildRoadmapPhaseCheckboxesField(paths.roadmap, phaseIdConvention, directoryContext),
         researchValidationStatus: buildResearchValidationStatusField(paths.phases, phaseDirs.value, phaseDirs.scope, phaseIdConvention),
@@ -1096,4 +1111,5 @@ function buildPlanningSnapshot(cwd) {
 module.exports = {
     buildPlanningSnapshot,
     worstScope,
+    countLines,
 };

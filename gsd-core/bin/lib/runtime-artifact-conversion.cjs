@@ -37,6 +37,7 @@ const { getDirName, hostBehaviorsFor } = runtimeNamePolicy;
 const capabilityRegistry = require("./capability-registry.cjs");
 const hostIntegration = require("./host-integration.cjs");
 const shell_command_projection_cjs_1 = require("./shell-command-projection.cjs");
+const code_unit_cap_cjs_1 = require("./code-unit-cap.cjs");
 const frontmatterModule = require("./frontmatter.cjs");
 const frontmatter_fence_cjs_1 = require("./frontmatter-fence.cjs");
 const pattern_cjs_1 = require("./pattern.cjs");
@@ -868,18 +869,6 @@ const PI_INCLUDE_NOTE = '**Pi includes.** Pi does not expand `@path` references 
  * cap, as the Cline converter uses, could exceed it for astral characters).
  */
 const PI_SKILL_DESCRIPTION_MAX = 1024;
-/**
- * Cut `text` to at most `max` UTF-16 code units without splitting a surrogate
- * pair: when the cut would leave a lone high surrogate (the first half of an
- * astral character such as an emoji), drop that half too.
- */
-function capAtCodeUnits(text, max) {
-    if (text.length <= max)
-        return text;
-    const cut = text.slice(0, max);
-    const last = cut.charCodeAt(cut.length - 1);
-    return last >= 0xd800 && last <= 0xdbff ? cut.slice(0, -1) : cut;
-}
 // Pi and Kimi Code share the Agent Skills `/skill:<name>` format. These host-neutral
 // names read correctly at the Pi call sites; the Kimi-named originals stay because the
 // Kimi converter is mirrored in bin/install.js under a parity test (#2095).
@@ -913,7 +902,7 @@ function convertClaudeCommandToPiSkill(content, skillName, _runtime = null, cmdN
     // the same `/skill:` rewrite the body gets (#4324 is the same defect on the Claude path).
     const description = convertGsdCommandReferencesToSkillInvocations(rawDescription, names);
     const normalizedBody = replaceArgumentsPlaceholderOutsideFences(convertGsdCommandReferencesToSkillInvocations(frontmatter ? body : content, names));
-    const cappedDescription = capAtCodeUnits(toSingleLine(description), PI_SKILL_DESCRIPTION_MAX);
+    const cappedDescription = (0, code_unit_cap_cjs_1.capCodeUnits)(toSingleLine(description), PI_SKILL_DESCRIPTION_MAX, 'head');
     const unsupportedReason = Object.prototype.hasOwnProperty.call(PI_UNSUPPORTED_SKILLS, piSkillName)
         ? PI_UNSUPPORTED_SKILLS[piSkillName]
         : null;

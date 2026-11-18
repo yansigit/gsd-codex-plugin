@@ -39,7 +39,7 @@
  * Test matrix: .gsd/phase/feat-3873-state-md-schema/50-test-matrix.md
  */
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.STATE_FIELD_SCHEMA = exports.STATUS_LIFECYCLE_ENUM = void 0;
+exports.STATE_FIELD_SCHEMA = exports.STATE_MD_ENTRY_MAX_CHARS = exports.STATE_MD_LINE_TARGET = exports.STATUS_LIFECYCLE_ENUM = void 0;
 /**
  * The seven CANONICAL values `normalizeStateStatus` (`src/state-document.cts`)
  * maps recognized raw status prose TO — the function's default fallback plus
@@ -78,6 +78,24 @@ exports.STATUS_LIFECYCLE_ENUM = Object.freeze([
     'verifying',
     'completed',
 ]);
+/**
+ * STATE.md's documented size target, in lines (#5830). The one code-side
+ * copy of the number `gsd-core/templates/state.md`'s `<size_constraint>`,
+ * `gsd-core/workflows/execute-plan.md` and `docs/reference/state-md.md` state
+ * in prose ("Keep STATE.md under 100 lines"). The health rule W031 warns when
+ * STATE.md is more than 3x this target.
+ */
+exports.STATE_MD_LINE_TARGET = 100;
+/**
+ * The length bound for one STATE.md digest entry, in UTF-16 code units
+ * (JavaScript `string.length`, so an astral-plane emoji counts as 2). Set by
+ * #2618 for "Pending Todos" bullets (`PENDING_TODO_BULLET_MAX_CHARS`,
+ * `src/init.cts`, which truncates to it) and reused by #5830 for the Quick
+ * Tasks `Description` cell (`QUICK_TASK_DESCRIPTION_MAX_CHARS`,
+ * `src/markdown-table.cts`, which only warns past it). Both name this one
+ * constant so the two bounds cannot drift apart.
+ */
+exports.STATE_MD_ENTRY_MAX_CHARS = 240;
 // ─── The one declaration ────────────────────────────────────────────────────
 //
 // Row order below is `FIELD_CLASSIFICATION`'s (`src/state-transition.cts`,

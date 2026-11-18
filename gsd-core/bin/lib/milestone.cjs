@@ -155,7 +155,8 @@ function cmdRequirementsMarkComplete(cwd, reqIdsRaw, raw) {
             // documented gaps_found response) leaves a row stranded at Gaps Found with
             // no inverse; a genuinely-satisfied requirement must be able to reach
             // Complete again via mark-complete, or the milestone is blocked forever.
-            if (/^(pending|gaps found)$/i.test(current.trim())) {
+            // #6238: read the status word, so `Pending (note)` advances like `Pending`.
+            if ((0, markdown_table_cjs_1.leadingRequirementStatus)(current, ['pending', 'gaps found']) !== null) {
                 tableHit = true;
                 return ' Complete ';
             }
@@ -199,7 +200,7 @@ function cmdRequirementsMarkComplete(cwd, reqIdsRaw, raw) {
         });
         const hasRow = statusProbe.ok;
         const doneCheckbox = new RegExp(`-\\s*\\[x\\]\\s*\\*\\*${reqEscaped}\\*\\*`, 'i').test(reqContent);
-        const doneTable = Boolean(hasRow && /^complete$/i.test(currentStatusCell.trim()));
+        const doneTable = Boolean(hasRow && (0, markdown_table_cjs_1.leadingRequirementStatus)(currentStatusCell, ['complete']) !== null);
         // #2788 defect 2: when a traceability table exists AND this ID has a row in
         // it, `updated`/`marked_complete` must reflect the ROW moving, not a
         // checkbox-only flip. Otherwise (`table_unmatched` — no row for this ID, or
@@ -400,7 +401,7 @@ function cmdRequirementsRevertPhase(cwd, reqIdsRaw, raw) {
         const rowMatch = (row) => (Object.values(row)[0] ?? '').trim().toLowerCase() === reqId.toLowerCase();
         let tableHit = false;
         const tableUpdate = (0, markdown_table_cjs_1.updateTraceabilityCell)(reqContent, rowMatch, 'Status', (current) => {
-            if (/^complete$/i.test(current.trim())) {
+            if ((0, markdown_table_cjs_1.leadingRequirementStatus)(current, ['complete']) !== null) {
                 tableHit = true;
                 return ' Gaps Found ';
             }

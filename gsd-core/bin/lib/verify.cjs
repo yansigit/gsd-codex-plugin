@@ -100,7 +100,8 @@ void schema_detect_cjs_1.detectSchemaFiles;
  *   stays a pure-filesystem check with no subprocess cost.
  */
 function verifySummaryCore(cwd, summaryPath, checkFileCount, opts) {
-    const fullPath = node_path_1.default.join(cwd, summaryPath);
+    // #5859: init emits absolute paths (#2376); resolve keeps a relative path cwd-anchored.
+    const fullPath = node_path_1.default.resolve(cwd, summaryPath);
     const checkCount = checkFileCount || 2;
     const checkCommits = opts?.checkCommits !== false;
     if (!node_fs_1.default.existsSync(fullPath)) {

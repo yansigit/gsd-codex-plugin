@@ -566,11 +566,26 @@ function observeHarnessForkFromHead(deps) {
     const cwd = deps.cwd ?? '.';
     const cacheFile = node_path_1.default.join(cwd, '.gsd', 'harness-fork-probe.json');
     const stateRead = deps.stateRead ?? ((file) => {
+        let fd;
         try {
-            return node_fs_1.default.readFileSync(file, 'utf8');
+            // #5857: `.gsd` is project-supplied, so the cache path may be a FIFO. A plain read
+            // opens it blocking and never returns; O_NONBLOCK (absent on Windows, hence `|| 0`)
+            // makes the open return at once and the `isFile()` check treats it as no cache.
+            fd = node_fs_1.default.openSync(file, node_fs_1.default.constants.O_RDONLY | (node_fs_1.default.constants.O_NONBLOCK || 0) | (node_fs_1.default.constants.O_NOCTTY || 0));
+            if (!node_fs_1.default.fstatSync(fd).isFile())
+                return null;
+            return node_fs_1.default.readFileSync(fd, 'utf8');
         }
         catch {
             return null;
+        }
+        finally {
+            if (fd !== undefined) {
+                try {
+                    node_fs_1.default.closeSync(fd);
+                }
+                catch { /* nothing left to release */ }
+            }
         }
     });
     const stateWrite = deps.stateWrite ?? ((file, content) => {

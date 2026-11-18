@@ -123,16 +123,27 @@ function routeQuickBatchCommand({ args, cwd, raw, error, _quickBatch, _quickBatc
                 const items = (parsed.value ?? []).map((it) => ({ description: it.description }));
                 emit(qb.createBatch(cwd, items, { baseRevision, batchOptions }));
             },
-            // `quick-batch update --batch <id> --updates <json>`
+            // `quick-batch update --batch <id> [--updates <json>] [--head-revision <sha>]`
+            // `--head-revision` records the HEAD the batch itself left behind (#6203);
+            // `--updates` defaults to `[]` when only a head revision is recorded.
             update: () => {
                 const batchId = argValue(args, '--batch');
-                if (!batchId) {
-                    return makeInvalidArgs('--batch', 'Usage: gsd-tools quick-batch update --batch <id> --updates <json>', ERROR_REASON.USAGE);
+                const headRaw = argValue(args, '--head-revision');
+                // A following flag (`--head-revision --updates ...`) is not a revision.
+                const headRevision = headRaw !== undefined && !headRaw.startsWith('--') ? headRaw : undefined;
+                if (!batchId || (args.includes('--head-revision') && !headRevision)) {
+                    return makeInvalidArgs('--batch', 'Usage: gsd-tools quick-batch update --batch <id> [--updates <json>] [--head-revision <sha>]', ERROR_REASON.USAGE);
                 }
-                const updatesResult = parseJsonArg(argValue(args, '--updates'), '--updates');
-                if (!updatesResult.ok)
-                    return makeInvalidArgs('--updates', updatesResult.reason, ERROR_REASON.USAGE);
-                emit(qb.updateBatchItems(cwd, batchId, updatesResult.value));
+                let updates = [];
+                if (args.includes('--updates') || headRevision === undefined) {
+                    const updatesResult = parseJsonArg(argValue(args, '--updates'), '--updates');
+                    if (!updatesResult.ok)
+                        return makeInvalidArgs('--updates', updatesResult.reason, ERROR_REASON.USAGE);
+                    updates = updatesResult.value;
+                }
+                emit(headRevision !== undefined
+                    ? qb.updateBatchItems(cwd, batchId, updates, { headRevision })
+                    : qb.updateBatchItems(cwd, batchId, updates));
             },
             // `quick-batch resume --batch <id> [--current-base-revision <sha>]`
             resume: () => {

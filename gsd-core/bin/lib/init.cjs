@@ -17,6 +17,7 @@ const clock_cjs_1 = require("./clock.cjs");
 const pattern_cjs_1 = require("./pattern.cjs");
 const phase_entry_grammar_cjs_1 = require("./phase-entry-grammar.cjs");
 const markdown_sectionizer_cjs_1 = require("./markdown-sectionizer.cjs");
+const state_md_schema_cjs_1 = require("./state-md-schema.cjs");
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- io.cjs is an export= CommonJS module
 const io = require("./io.cjs");
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- config-loader.cjs is an export= CommonJS module
@@ -296,7 +297,7 @@ function buildPhaseCompletionProjection(cwd, phaseNumber, phaseDir, planCount, s
     };
 }
 function getLatestCompletedMilestone(cwd) {
-    const milestonesPath = node_path_1.default.join(planningRoot(cwd), 'MILESTONES.md');
+    const milestonesPath = node_path_1.default.join(planningDir(cwd), 'MILESTONES.md');
     const content = (0, shell_command_projection_cjs_1.platformReadSync)(milestonesPath);
     if (content === null)
         return null;
@@ -1422,6 +1423,8 @@ function cmdInitNewProject(cwd, raw, options = {}) {
         // read these instead of hardcoding '.planning/...' literals.
         requirements_path: toPosixPath(node_path_1.default.join(planningDir(cwd), 'REQUIREMENTS.md')),
         roadmap_path: toPosixPath(node_path_1.default.join(planningDir(cwd), 'ROADMAP.md')),
+        // #5859: the roadmapper's STATE.md write target, as cmdInitNewMilestone reports it.
+        state_path: toPosixPath(node_path_1.default.join(planningDir(cwd), 'STATE.md')),
         // #4456 correction: an isolated review pass initially "fixed" this to
         // planningDir(cwd, null) on the assumption that config.json is shared
         // like PROJECT.md (workstream-flag.md's directory diagram marks it
@@ -1434,7 +1437,8 @@ function cmdInitNewProject(cwd, raw, options = {}) {
         // workstream-aware planningDir(cwd), matching the established,
         // ADR-governed, tested contract.
         config_path: toPosixPath(node_path_1.default.join(planningDir(cwd), 'config.json')),
-        research_dir: toPosixPath(node_path_1.default.join(planningRoot(cwd), 'research')),
+        // null drops the workstream: research is project-level, shared by a project's workstreams like PROJECT.md.
+        research_dir: toPosixPath(node_path_1.default.join(planningDir(cwd, null), 'research')),
     };
     // #2992 (Phase 6.1): additive, optional field — degrades to null, never throws.
     // needsCodebaseMap is threaded from this scope's own isBrownfield/hasCodebaseMap
@@ -1472,7 +1476,7 @@ function cmdInitNewMilestone(cwd, raw, options = {}) {
         phase_dir_count: phaseDirCount,
         // #2376: absolute — see comment on phase_dir in cmdInitExecutePhase.
         phase_archive_path: latestCompleted
-            ? toPosixPath(node_path_1.default.join(planningRoot(cwd), 'milestones', `${latestCompleted.version}-phases`))
+            ? toPosixPath(node_path_1.default.join(planningDir(cwd), 'milestones', `${latestCompleted.version}-phases`))
             : null,
         // #4455 follow-up (code-review finding): PROJECT.md is shared across
         // workstreams — see cmdInitCompleteMilestone's projectPath comment for
@@ -1499,7 +1503,8 @@ function cmdInitNewMilestone(cwd, raw, options = {}) {
         // workstream-aware planningDir(cwd), matching the established,
         // ADR-governed, tested contract.
         config_path: toPosixPath(node_path_1.default.join(planningDir(cwd), 'config.json')),
-        research_dir: toPosixPath(node_path_1.default.join(planningRoot(cwd), 'research')),
+        // null drops the workstream: research is project-level, shared by a project's workstreams like PROJECT.md.
+        research_dir: toPosixPath(node_path_1.default.join(planningDir(cwd, null), 'research')),
         milestones_path: toPosixPath(node_path_1.default.join(planningDir(cwd), 'MILESTONES.md')),
         // #4456: new-milestone.md's Step 6 stages the phase-archive move
         // (`git add .planning/milestones/ .planning/phases/`) — both
@@ -2201,8 +2206,10 @@ function cmdInitPhaseOp(cwd, phase, raw) {
 // 240 matches the bound already vetted by maintainer review on the prior
 // attempt at this issue (PR #2662) — re-deriving a different number would be
 // pure bikeshedding, not a correctness improvement. See
-// .gsd/phase/feat-2618-compact-todo-pointers/40-design.md.
-const PENDING_TODO_BULLET_MAX_CHARS = 240;
+// .gsd/phase/feat-2618-compact-todo-pointers/40-design.md. The number lives
+// in state-md-schema as STATE_MD_ENTRY_MAX_CHARS, shared with the Quick Tasks
+// description bound (#5830), so the two cannot drift apart.
+const PENDING_TODO_BULLET_MAX_CHARS = state_md_schema_cjs_1.STATE_MD_ENTRY_MAX_CHARS;
 const PENDING_TODO_TITLE_FLOOR = 15;
 const PENDING_TODO_AREA_FLOOR = 3;
 function sanitizePendingTodoInline(value) {

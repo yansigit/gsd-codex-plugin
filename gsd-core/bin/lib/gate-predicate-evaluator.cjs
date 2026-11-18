@@ -30,10 +30,11 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 const node_path_1 = __importDefault(require("node:path"));
+const code_unit_cap_cjs_1 = require("./code-unit-cap.cjs");
 // ─── Public constants ─────────────────────────────────────────────────────────
 /** Default command timeout for `command-exit-zero` (30s). Matches execTool default. */
 const COMMAND_EXIT_ZERO_DEFAULT_TIMEOUT_MS = 30_000;
-/** Hard cap on the stderr/stdout tail embedded in the gate `message`. */
+/** Hard cap on the whole gate `message` (prefix + output tail, or prefix + command head on timeout). */
 const COMMAND_MAX_OUTPUT_CHARS = 2000;
 /** Hard cap on the declared command length (defense-in-depth against ARGV overflow / abuse). */
 const COMMAND_MAX_LENGTH = 4096;
@@ -55,9 +56,18 @@ function interpolate(command, ctx) {
         return '';
     });
 }
-/** Cap a string at COMMAND_MAX_OUTPUT_CHARS so gate messages stay context-bounded. */
-function trimToMax(s) {
-    return s.length > COMMAND_MAX_OUTPUT_CHARS ? s.slice(0, COMMAND_MAX_OUTPUT_CHARS) : s;
+/**
+ * `prefix` + `text` capped at COMMAND_MAX_OUTPUT_CHARS in total, keeping the TAIL (errors land last;
+ * ADR-2008) or the HEAD (a command's program name). `capCodeUnits` owns the surrogate-safe cut: the
+ * cap counts UTF-16 units, so a plain cut can orphan half a surrogate pair (U+FFFD in JSON).
+ * A prefix that alone fills the cap leaves no room for text: the prefix is cut to the cap.
+ */
+function prefixedCap(prefix, text, keep) {
+    const budget = COMMAND_MAX_OUTPUT_CHARS - prefix.length;
+    // Guard for a malformed `exitCode` (a long non-numeric string); a real prefix is under 45 characters.
+    if (budget <= 0)
+        return (0, code_unit_cap_cjs_1.capCodeUnits)(prefix, COMMAND_MAX_OUTPUT_CHARS, 'head');
+    return prefix + (0, code_unit_cap_cjs_1.capCodeUnits)(text, budget, keep);
 }
 function isNonEmptyString(v) {
     return typeof v === 'string' && v.trim().length > 0;
@@ -81,10 +91,15 @@ function evaluateCommandExitZero(predicate, ctx, deps) {
     }
     const interpolated = interpolate(command, ctx);
     const res = deps.runBoundedShell({ command: interpolated, cwd: ctx.cwd, timeoutMs });
+    const hasStderr = isNonEmptyString(res.stderr);
     if (res.timedOut) {
+        const prefix = `command timed out after ${Math.round(timeoutMs / 1000)}s: `;
         return {
             block: true,
-            message: trimToMax(`command timed out after ${Math.round(timeoutMs / 1000)}s: ${res.stderr || interpolated}`),
+            // The command's head (program name, leading args) identifies it; only stderr is tail-capped.
+            message: hasStderr
+                ? prefixedCap(prefix, res.stderr, 'tail')
+                : prefixedCap(prefix, interpolated, 'head'),
             details: { kind: 'command-exit-zero', timedOut: true, signal: res.signal },
         };
     }
@@ -97,11 +112,10 @@ function evaluateCommandExitZero(predicate, ctx, deps) {
     }
     // Non-zero (incl. null exit from a signal kill) => block. Surface code + stderr/stdout tail.
     const code = res.exitCode === null ? '<none>' : String(res.exitCode);
-    const tail = trimToMax(res.stderr || res.stdout || '');
-    const message = tail ? `command exited ${code}: ${tail}` : `command exited ${code}`;
+    const output = hasStderr ? res.stderr : isNonEmptyString(res.stdout) ? res.stdout : '';
     return {
         block: true,
-        message: trimToMax(message),
+        message: output ? prefixedCap(`command exited ${code}: `, output, 'tail') : `command exited ${code}`,
         details: { kind: 'command-exit-zero', exitCode: res.exitCode, signal: res.signal },
     };
 }

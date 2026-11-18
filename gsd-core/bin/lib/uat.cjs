@@ -108,6 +108,13 @@ function cmdAuditUat(cwd, raw) {
     }
     const results = [];
     let acknowledgedFiles = 0;
+    // #6231: every UAT / VERIFICATION / deferred-items document the scan actually
+    // READ, whether or not it yielded an item. `results` only holds files with
+    // something to report, so `total_files` is 0 both for a tree of clean files
+    // and for a tree the scan never reached; this counter tells them apart.
+    // A file that is read and then skipped as acknowledged still counts (it was
+    // examined); a file refused by the containment check is neither read nor counted.
+    let filesScanned = 0;
     // Active dirs are milestone-filtered; archived dirs deliberately are NOT.
     // listMilestonePhaseDirs derives the CURRENT milestone's phase directories
     // (window + sentinel filtered) from ROADMAP.md, and archived phases belong
@@ -148,6 +155,7 @@ function cmdAuditUat(cwd, raw) {
             // audit output.
             if (!isReportContained(phaseDir, uatFilePath))
                 continue;
+            filesScanned++;
             const content = readNormalizedDocument(uatFilePath);
             const { items, headingsSeen } = parseUatItemsWithStats(content);
             const uatFm = extractFrontmatter(content, uatFilePath);
@@ -221,6 +229,7 @@ function cmdAuditUat(cwd, raw) {
             // report reads `missing` and never reaches `reportStatusOf`'s message.
             if (!isReportContained(phaseDir, verificationFilePath))
                 continue;
+            filesScanned++;
             const content = readNormalizedDocument(verificationFilePath);
             const verFm = extractFrontmatter(content, verificationFilePath);
             // #5118: the owner's report reader judges `status` (exact match, no case
@@ -259,6 +268,7 @@ function cmdAuditUat(cwd, raw) {
         // required.
         const deferredFile = 'deferred-items.md';
         if (files.includes(deferredFile)) {
+            filesScanned++;
             const content = readNormalizedDocument(node_path_1.default.join(phaseDir, deferredFile));
             const items = parseDeferredItems(content);
             if (items.length > 0) {
@@ -297,6 +307,11 @@ function cmdAuditUat(cwd, raw) {
         // to the identical row when it happened to parse — the exact bug class
         // this issue exists to fix.
         parse_gap_files: results.filter((r) => r.parse_gap).length,
+        // #6231: additive. `0` means the scan read no UAT / VERIFICATION /
+        // deferred-items file at all, so an empty `results` is "nothing examined",
+        // not "nothing wrong"; a positive count with no items is a genuinely clean
+        // scan. Consumers (audit-uat.md, audit-fix.md) gate their all-clear on it.
+        files_scanned: filesScanned,
         by_category: {},
         by_phase: {},
         // #3783: additive segmentation so a consumer reads one field instead of
