@@ -34,6 +34,10 @@ function _getNestedConfigValue(config, dotKey) {
     return { found: true, value: current };
 }
 const _warnedRawConfigPaths = new Set();
+// #6332: per invocation, like the config-loader warning sets.
+// eslint-disable-next-line @typescript-eslint/no-require-imports -- invocation-scope.cjs is an export= CommonJS module
+const invocationScopeMod = require("./invocation-scope.cjs");
+invocationScopeMod.registerInvocationReset('capability-activation.warnedRawConfigPaths', () => { _warnedRawConfigPaths.clear(); });
 function _readRawConfigKey(filePath, dotKey, quiet = false) {
     try {
         // Bounded read (#5759): null is an absent file; a FIFO/device/oversized one throws to the

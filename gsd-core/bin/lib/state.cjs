@@ -191,6 +191,11 @@ function shouldResyncStateProgress(fields) {
 // Avoids re-reading N+1 directories on every state write when the phase structure
 // hasn't changed within the same gsd-tools invocation.
 const _diskScanCache = new Map();
+// #6332: the cache is per invocation. The binary gets that for free from its
+// one-call process; an in-process caller gets it from this reset.
+// eslint-disable-next-line @typescript-eslint/no-require-imports -- invocation-scope.cjs is an export= CommonJS module
+const invocationScopeMod = require("./invocation-scope.cjs");
+invocationScopeMod.registerInvocationReset('state.diskScanCache', () => { _diskScanCache.clear(); });
 // Track all lock files held by this process so they can be removed on exit.
 // process.on('exit') fires even on process.exit(1), unlike try/finally which is
 // skipped when error() calls process.exit(1) inside a locked region (#1916).
@@ -3101,6 +3106,16 @@ milestoneExplicitlyNull) {
                         const flooredCompletedPhases = roadmapCompletedPhases !== null
                             ? Math.max(diskCompletedPhases, roadmapCompletedPhases)
                             : diskCompletedPhases;
+                        // #6279: the walk found no phase dir AND the asserted milestone's
+                        // phases sit in its `milestone complete` archive, so its plans
+                        // were moved, not deleted. Gated on that archive so a milestone
+                        // that has no archive (a later one, or never closed) still takes
+                        // the disk count, zero included.
+                        const archiveVersion = String(assertedMilestoneVersion ?? (milestoneExplicitlyNull ? '' : storedMilestone ?? '')).trim();
+                        const archivedPhasesExist = phaseDirs.length === 0
+                            && archiveVersion !== ''
+                            && node_path_1.default.basename(archiveVersion) === archiveVersion
+                            && node_fs_1.default.existsSync(node_path_1.default.join(planningPaths(cwd).planning, 'milestones', `${archiveVersion}-phases`));
                         return {
                             // The two WITHHOLD shapes (#3354 milestoned-but-unbounded, #3573
                             // roadmap-absent-with-asserted-milestone) must be evaluated BEFORE
@@ -3114,6 +3129,7 @@ milestoneExplicitlyNull) {
                             completedPhases: diskCountsWithheld ? null : flooredCompletedPhases,
                             totalPlans: diskCountsWithheld ? null : diskTotalPlans,
                             completedPlans: diskCountsWithheld ? null : diskTotalSummaries,
+                            plansMeasured: phaseDirs.length > 0 || !archivedPhasesExist,
                             phaseDirScope,
                         };
                     })();
@@ -3144,16 +3160,22 @@ milestoneExplicitlyNull) {
                 else if (storedCompletedPhases !== null && storedCompletedPhases !== undefined) {
                     completedPhases = storedCompletedPhases;
                 }
-                if (cached.totalPlans !== null) {
+                // #6279: when the asserted milestone's phases were archived and the
+                // walk found none (plansMeasured false), a stored plan counter wins
+                // over the disk 0. Without a stored value the disk 0 stands.
+                // total_phases is unaffected: it comes from the ROADMAP headings.
+                const hasStoredTotalPlans = storedTotalPlans !== null && storedTotalPlans !== undefined;
+                const hasStoredCompletedPlans = storedCompletedPlans !== null && storedCompletedPlans !== undefined;
+                if (cached.totalPlans !== null && (cached.plansMeasured || !hasStoredTotalPlans)) {
                     totalPlans = cached.totalPlans;
                 }
-                else if (storedTotalPlans !== null && storedTotalPlans !== undefined) {
+                else if (hasStoredTotalPlans) {
                     totalPlans = storedTotalPlans;
                 }
-                if (cached.completedPlans !== null) {
+                if (cached.completedPlans !== null && (cached.plansMeasured || !hasStoredCompletedPlans)) {
                     completedPlans = cached.completedPlans;
                 }
-                else if (storedCompletedPlans !== null && storedCompletedPlans !== undefined) {
+                else if (hasStoredCompletedPlans) {
                     completedPlans = storedCompletedPlans;
                 }
                 milestoneUnbounded = cached.milestoneBounded === false;

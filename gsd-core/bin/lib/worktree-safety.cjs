@@ -2406,8 +2406,9 @@ function cmdWorktreeWorkerRecord(cwd, args = [], deps = {}) {
     const plan = flag('--plan');
     const summaryPath = flag('--summary-path');
     const logFile = flag('--log-file');
+    const executorRuntime = flag('--executor-runtime');
     if (!worktreePath || !pidText || !plan || !summaryPath) {
-        writeErr('Usage: worktree worker-record --path <worktree> --pid <pid> --plan <plan_number> --summary-path <path> [--log-file <path>]\n');
+        writeErr('Usage: worktree worker-record --path <worktree> --pid <pid> --plan <plan_number> --summary-path <path> [--log-file <path>] [--executor-runtime <runtime>]\n');
         process.exitCode = 2;
         return;
     }
@@ -2447,6 +2448,7 @@ function cmdWorktreeWorkerRecord(cwd, args = [], deps = {}) {
         exitCode: null,
         note: '',
         completedAt: null,
+        ...(executorRuntime ? { executorRuntime } : {}),
     };
     try {
         writeWorkerRecord(recordPath, record, deps);

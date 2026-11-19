@@ -29,10 +29,19 @@ const ioMod = require("./io.cjs");
 const { output, error: coreError } = ioMod;
 const shell_command_projection_cjs_1 = require("./shell-command-projection.cjs");
 // ─── Constants ───────────────────────────────────────────────────────────────
-const DEFAULT_STORE_DIR = node_path_1.default.join(node_os_1.default.homedir(), '.gsd', 'knowledge');
+/**
+ * The global store, under the home directory AS IT IS NOW. Resolved on each
+ * use, never once at load (#6333): a process that runs more than one command
+ * (the in-process CLI the test suite uses) would otherwise keep the first
+ * command's home for every later one, and a sandboxed call would write to
+ * whichever home happened to be current when this module was first loaded.
+ */
+function defaultStoreDir() {
+    return node_path_1.default.join(node_os_1.default.homedir(), '.gsd', 'knowledge');
+}
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 function getStoreDir(opts) {
-    return (opts && opts.storeDir) || DEFAULT_STORE_DIR;
+    return (opts && opts.storeDir) || defaultStoreDir();
 }
 function ensureStoreDir(dir) {
     if (!node_fs_1.default.existsSync(dir)) {
@@ -337,5 +346,5 @@ module.exports = {
     cmdLearningsCopy,
     cmdLearningsPrune,
     cmdLearningsDelete,
-    DEFAULT_STORE_DIR,
+    get DEFAULT_STORE_DIR() { return defaultStoreDir(); },
 };

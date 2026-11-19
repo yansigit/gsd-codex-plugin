@@ -84,15 +84,19 @@ Context files are resolved inside the workflow (`init quick`) and delegated via 
 When SUBCMD=list:
 
 ```bash
-ls -d .planning/quick/*/  2>/dev/null
+GSD_TOOLS="{{GSD_PLUGIN_ROOT}}/gsd-core/bin/gsd-tools.cjs"; gsd_run() { GSD_AGENTS_DIR="{{GSD_PLUGIN_ROOT}}/agents" node "$GSD_TOOLS" "$@"; }
+PLANNING_ROOT=$(gsd_run query planning.inspect ${GSD_WS:+--ws=${GSD_WS##* }} --pick generated_from.planning_root)
+: "${PLANNING_ROOT:?}"
+ls -d "${PLANNING_ROOT}"/quick/*/  2>/dev/null
 ```
 
 For each directory found:
 - Check if PLAN.md exists
 - Check if SUMMARY.md exists; if so, read `status` from its frontmatter via:
   ```bash
-GSD_TOOLS="{{GSD_PLUGIN_ROOT}}/gsd-core/bin/gsd-tools.cjs"; gsd_run() { GSD_AGENTS_DIR="{{GSD_PLUGIN_ROOT}}/agents" node "$GSD_TOOLS" "$@"; }
-  gsd_run query frontmatter.get .planning/quick/{dir}/SUMMARY.md status
+  PLANNING_ROOT=$(gsd_run query planning.inspect ${GSD_WS:+--ws=${GSD_WS##* }} --pick generated_from.planning_root)
+  : "${PLANNING_ROOT:?}"
+  gsd_run query frontmatter.get "${PLANNING_ROOT}/quick/{dir}/SUMMARY.md" status
   ```
 - Determine directory creation date: `stat -f "%SB" -t "%Y-%m-%d"` (macOS) or `stat -c "%w"` (Linux); fall back to the date prefix in the directory name (format: `YYYYMMDD-` prefix)
 - Derive display status:
@@ -127,7 +131,9 @@ When SUBCMD=status and SLUG is set (already sanitized):
 
 Find directory matching `*-{SLUG}` pattern:
 ```bash
-dir=$(ls -d .planning/quick/*-{SLUG}/ 2>/dev/null | head -1)
+PLANNING_ROOT=$(gsd_run query planning.inspect ${GSD_WS:+--ws=${GSD_WS##* }} --pick generated_from.planning_root)
+: "${PLANNING_ROOT:?}"
+dir=$(ls -d "${PLANNING_ROOT}"/quick/*-{SLUG}/ 2>/dev/null | head -1)
 ```
 
 If no directory found, print `No quick task found with slug: {SLUG}` and stop.
@@ -154,7 +160,9 @@ When SUBCMD=resume and SLUG is set (already sanitized):
 
 1. Find the directory matching `*-{SLUG}` pattern:
    ```bash
-   dir=$(ls -d .planning/quick/*-{SLUG}/ 2>/dev/null | head -1)
+   PLANNING_ROOT=$(gsd_run query planning.inspect ${GSD_WS:+--ws=${GSD_WS##* }} --pick generated_from.planning_root)
+   : "${PLANNING_ROOT:?}"
+   dir=$(ls -d "${PLANNING_ROOT}"/quick/*-{SLUG}/ 2>/dev/null | head -1)
    ```
 2. If no directory found, print `No quick task found with slug: {SLUG}` and stop.
 

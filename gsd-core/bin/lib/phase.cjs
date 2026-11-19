@@ -917,6 +917,49 @@ function resolvePlanAgentHintAcrossPhases(cwd, planId) {
         return { matches: 0, hint: null };
     }
 }
+/**
+ * #6303 (ADR-3711 D1): the `executor_runtime` of one canonical plan, located the way
+ * `resolvePlanAgentHint` locates it (the given phase, else a scan of every milestone phase
+ * directory that must find exactly one plan carrying the id). Null on any lookup failure.
+ */
+function resolvePlanExecutorRuntime(cwd, phase, planId) {
+    try {
+        if (!planId)
+            return null;
+        let planPath = null;
+        if (phase) {
+            const { phaseDir, ambiguousMatches } = locatePlanIndexPhaseDir(cwd, phase);
+            if (!phaseDir || ambiguousMatches)
+                return null;
+            const planFile = scanPhasePlans(phaseDir).planFiles
+                .filter(isCanonicalPlanFile)
+                .sort()
+                .find((f) => planIdFromFile(f) === planId);
+            if (!planFile)
+                return null;
+            planPath = node_path_1.default.join(phaseDir, planFile);
+        }
+        else {
+            const phasesDir = node_path_1.default.join(planningDir(cwd), 'phases');
+            const found = [];
+            for (const dirName of listMilestonePhaseDirs(phasesDir, { cwd }).value) {
+                const phaseDir = node_path_1.default.join(phasesDir, dirName);
+                for (const planFile of scanPhasePlans(phaseDir).planFiles.filter(isCanonicalPlanFile)) {
+                    if (planIdFromFile(planFile) === planId)
+                        found.push(node_path_1.default.join(phaseDir, planFile));
+                }
+            }
+            if (found.length !== 1)
+                return null;
+            planPath = found[0];
+        }
+        const declared = parsePlanDocument(node_fs_1.default.readFileSync(planPath, 'utf-8'), planPath).executorRuntime;
+        return typeof declared === 'string' && declared.length > 0 ? declared : null;
+    }
+    catch {
+        return null;
+    }
+}
 function cmdPhasePlanIndex(cwd, phase, raw) {
     if (!phase) {
         error('phase required for phase-plan-index');
@@ -1018,6 +1061,7 @@ function cmdPhasePlanIndex(cwd, phase, raw) {
             filesModified: planDoc.filesModified,
             filesDeleted: planDoc.filesDeleted,
             agentHint: planDoc.agentHint,
+            executorRuntime: planDoc.executorRuntime,
             gapClosure: planDoc.gapClosure,
             taskCount: planDoc.taskCount,
             hasSummary,
@@ -1162,6 +1206,7 @@ function cmdPhasePlanIndex(cwd, phase, raw) {
             files_modified: rawPlan.filesModified,
             files_deleted: rawPlan.filesDeleted,
             agent_hint: rawPlan.agentHint,
+            executor_runtime: rawPlan.executorRuntime,
             task_count: rawPlan.taskCount,
             has_summary: rawPlan.hasSummary,
             // #2830: additive fields — halted is this plan's OWN status; blocked_by
@@ -7217,6 +7262,7 @@ module.exports = {
     listPhaseAgentHints,
     listAllPhaseAgentHints,
     resolvePlanAgentHintAcrossPhases,
+    resolvePlanExecutorRuntime,
     cmdPhaseAdd,
     cmdPhaseAddBatch,
     cmdPhaseMvpMode,

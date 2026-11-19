@@ -495,6 +495,7 @@ function resolveLanePlan(input) {
                 slug,
                 host,
                 hostConfigKey,
+                hostConfigured: configured !== null,
                 url: `${host}${apiPath}`,
                 modelsUrl: discovers ? `${host}/v1/models` : null,
                 model,

@@ -175,27 +175,25 @@ function evaluateConsistencyRules(snapshot) {
 /**
  * Derive every filesystem path a repair handler needs, from `cwd` alone —
  * exactly how `cmdValidateHealth` derived them pre-migration
- * (`verify.cts:1644-1652`/`2301-2302`). `config.json`/`MILESTONES.md`/
- * `milestones/` are root-scoped (`planningRoot`); `STATE.md` is
- * workstream-scoped (`planningDir`) — the same root-vs-workstream split
- * `buildConfigField`/`buildStateFields` (`planning-snapshot.cts`) already
- * document for the read side.
+ * (`verify.cts:1644-1652`/`2301-2302`). `config.json` is project-scoped (the project base,
+ * never the workstream); `STATE.md`, `MILESTONES.md` and `milestones/` are scoped by
+ * `planningDir` (#5881): the workstream's own pair under a workstream, which is where
+ * `milestone complete` archives to and `init.complete-milestone` reports, and the same pair the
+ * W018 detection (`buildMilestoneArchiveStatusField`, `planning-snapshot.cts`) compares.
  */
 function repairPaths(cwd) {
-    // #3749: the project root is PROJECT-aware but deliberately NOT workstream-
-    // scoped — under GSD_PROJECT, config.json/MILESTONES.md/milestones belong to
-    // `.planning/<project>/` (the same base init.new-project's config_path
-    // names); under GSD_WORKSTREAM they stay at the workstream PARENT, keeping
-    // the documented root-vs-workstream split. planningDir(cwd, null) is exactly
-    // that base: project env honored, ws env suppressed.
+    // #3749: the config base is PROJECT-aware but deliberately NOT workstream-scoped — under
+    // GSD_PROJECT, config.json belongs to `.planning/<project>/` (the same base
+    // init.new-project's config_path names). planningDir(cwd, null) is exactly that base: project
+    // env honored, ws env suppressed. MILESTONES.md and milestones/ follow the workstream (#5881).
     const rootBase = planningDir(cwd, null);
     const wsBase = planningDir(cwd);
     return {
         rootBase,
         configPath: node_path_1.default.join(rootBase, 'config.json'),
         statePath: node_path_1.default.join(wsBase, 'STATE.md'),
-        milestonesPath: node_path_1.default.join(rootBase, 'MILESTONES.md'),
-        milestonesArchiveDir: node_path_1.default.join(rootBase, 'milestones'),
+        milestonesPath: node_path_1.default.join(wsBase, 'MILESTONES.md'),
+        milestonesArchiveDir: node_path_1.default.join(wsBase, 'milestones'),
     };
 }
 /** `verify.cts:2413-2429`'s default config.json payload, ported verbatim. */

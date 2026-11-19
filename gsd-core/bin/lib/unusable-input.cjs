@@ -108,6 +108,10 @@ const REASON_PROSE = Object.freeze({
  * guard, which ADR-1411 names as the precedent to reuse.
  */
 const _warnedUnusableInputs = new Set();
+// #6332: per invocation; an in-process caller resets it between calls.
+// eslint-disable-next-line @typescript-eslint/no-require-imports -- invocation-scope.cjs is an export= CommonJS module
+const invocationScopeMod = require("./invocation-scope.cjs");
+invocationScopeMod.registerInvocationReset('unusable-input.warnedInputs', () => { _warnedUnusableInputs.clear(); });
 /**
  * Count of diagnostics actually WRITTEN, which is not the same as the size of the dedup set:
  * one emission records every key the input could later be identified by, so set size counts

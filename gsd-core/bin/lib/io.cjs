@@ -23,10 +23,17 @@ const { setJsonErrorMode, getJsonErrorMode, EXIT_ENVELOPE_REASON, ExitError, set
  * Dedicated GSD temp directory: path.join(os.tmpdir(), 'gsd').
  * Created on first use. Keeps GSD temp files isolated from the system
  * temp directory so reap scans only GSD files (#1975).
+ *
+ * Resolved on each use, never once at load (#6333): os.tmpdir() follows
+ * TMPDIR / TEMP / TMP, and a process that runs more than one command (the
+ * in-process CLI the test suite uses) would otherwise keep the first
+ * command's temp root for every later one.
  */
-const GSD_TEMP_DIR = node_path_1.default.join(node_os_1.default.tmpdir(), 'gsd');
+function gsdTempDir() {
+    return node_path_1.default.join(node_os_1.default.tmpdir(), 'gsd');
+}
 function ensureGsdTempDir() {
-    (0, shell_command_projection_cjs_1.platformEnsureDir)(GSD_TEMP_DIR);
+    (0, shell_command_projection_cjs_1.platformEnsureDir)(gsdTempDir());
 }
 /**
  * Remove stale gsd-* temp files/dirs older than maxAgeMs (default: 5 minutes).
@@ -40,11 +47,12 @@ function reapStaleTempFiles(prefix = 'gsd-', { maxAgeMs = 5 * 60 * 1000, dirsOnl
     try {
         ensureGsdTempDir();
         const now = Date.now();
-        const entries = node_fs_1.default.readdirSync(GSD_TEMP_DIR);
+        const tempDir = gsdTempDir();
+        const entries = node_fs_1.default.readdirSync(tempDir);
         for (const entry of entries) {
             if (!entry.startsWith(prefix))
                 continue;
-            const fullPath = node_path_1.default.join(GSD_TEMP_DIR, entry);
+            const fullPath = node_path_1.default.join(tempDir, entry);
             try {
                 const stat = node_fs_1.default.statSync(fullPath);
                 if (now - stat.mtimeMs > maxAgeMs) {
@@ -181,6 +189,63 @@ function captureStdoutSyncWrites(run) {
     });
 }
 /**
+ * captureStdoutSyncWrites for a `run` that may finish synchronously (#6333).
+ * Returns the captured text when `run` returned a plain value, and a promise
+ * of it when `run` returned a promise. The capture, the restore and the
+ * flush-on-throw are the same in both arms, so the CLI's synchronous and
+ * asynchronous paths cannot drift apart here.
+ */
+function captureStdoutMaybeSync(run) {
+    const originalWriteSync = node_fs_1.default.writeSync;
+    let captured = '';
+    node_fs_1.default.writeSync = ((fd, data, ...rest) => {
+        if (fd === 1) {
+            if (Buffer.isBuffer(data)) {
+                captured += data.toString('utf-8');
+                return data.length;
+            }
+            const text = String(data);
+            captured += text;
+            let encoding = 'utf-8';
+            if (typeof rest[1] === 'string')
+                encoding = rest[1];
+            return Buffer.byteLength(text, encoding);
+        }
+        return originalWriteSync.call(node_fs_1.default, fd, data, ...rest);
+    });
+    const restore = () => {
+        node_fs_1.default.writeSync = originalWriteSync;
+    };
+    const restoreAndFlush = () => {
+        restore();
+        if (captured) {
+            try {
+                originalWriteSync.call(node_fs_1.default, 1, captured);
+            }
+            catch { /* best-effort flush */ }
+        }
+    };
+    let result;
+    try {
+        result = run();
+    }
+    catch (err) {
+        restoreAndFlush();
+        throw err;
+    }
+    if (result !== null && typeof result === 'object' && typeof result.then === 'function') {
+        return Promise.resolve(result).then(() => {
+            restore();
+            return captured;
+        }, (err) => {
+            restoreAndFlush();
+            throw err;
+        });
+    }
+    restore();
+    return captured;
+}
+/**
  * Resolve `output()`'s `@file:<path>` redirection (emitted for a >50KB JSON
  * payload) back to the real content, or return `captured` unchanged when it
  * is not that shape.
@@ -269,7 +334,7 @@ function output(result, raw, rawValue) {
         if (json.length > 50000) {
             reapStaleTempFiles();
             ensureGsdTempDir();
-            const tmpPath = node_path_1.default.join(GSD_TEMP_DIR, `gsd-${Date.now()}.json`);
+            const tmpPath = node_path_1.default.join(gsdTempDir(), `gsd-${Date.now()}.json`);
             (0, shell_command_projection_cjs_1.platformWriteSync)(tmpPath, json);
             data = '@file:' + tmpPath;
         }
@@ -551,7 +616,9 @@ function error(message, reason = ERROR_REASON.UNKNOWN, extra) {
     throw new ExitError(1);
 }
 module.exports = {
-    GSD_TEMP_DIR,
+    gsdTempDir,
+    /** The directory as it resolves now. Kept for callers that read it as a value. */
+    get GSD_TEMP_DIR() { return gsdTempDir(); },
     ensureGsdTempDir,
     reapStaleTempFiles,
     output,
@@ -563,5 +630,6 @@ module.exports = {
     error,
     formatDiagnosticToken,
     captureStdoutSyncWrites,
+    captureStdoutMaybeSync,
     resolveAtFileOutput,
 };

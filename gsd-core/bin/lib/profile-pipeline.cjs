@@ -21,7 +21,7 @@ const node_os_1 = __importDefault(require("node:os"));
 const node_readline_1 = __importDefault(require("node:readline"));
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const ioModule = require("./io.cjs");
-const { output, error, reapStaleTempFiles, ensureGsdTempDir, GSD_TEMP_DIR } = ioModule;
+const { output, error, reapStaleTempFiles, ensureGsdTempDir, gsdTempDir } = ioModule;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const cliExitModule = require("./cli-exit.cjs");
 const { ExitError } = cliExitModule;
@@ -338,7 +338,7 @@ async function cmdExtractMessages(projectArg, options, raw, overridePath) {
     }
     reapStaleTempFiles('gsd-pipeline-', { dirsOnly: true });
     ensureGsdTempDir();
-    const tmpDir = node_fs_1.default.mkdtempSync(node_path_1.default.join(GSD_TEMP_DIR, 'gsd-pipeline-'));
+    const tmpDir = node_fs_1.default.mkdtempSync(node_path_1.default.join(gsdTempDir(), 'gsd-pipeline-'));
     const outputPath = node_path_1.default.join(tmpDir, 'extracted-messages.jsonl');
     let sessionsProcessed = 0;
     let sessionsSkipped = 0;
@@ -499,7 +499,7 @@ async function cmdProfileSample(overridePath, options, raw) {
     }
     reapStaleTempFiles('gsd-profile-', { dirsOnly: true });
     ensureGsdTempDir();
-    const tmpDir = node_fs_1.default.mkdtempSync(node_path_1.default.join(GSD_TEMP_DIR, 'gsd-profile-'));
+    const tmpDir = node_fs_1.default.mkdtempSync(node_path_1.default.join(gsdTempDir(), 'gsd-profile-'));
     const outputPath = node_path_1.default.join(tmpDir, 'profile-sample.jsonl');
     for (const msg of allMessages) {
         node_fs_1.default.appendFileSync(outputPath, JSON.stringify(msg) + '\n');

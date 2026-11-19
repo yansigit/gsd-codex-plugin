@@ -47,7 +47,7 @@ const { readConfigFileBounded } = configFileReadMod;
 // #4257: `resolveEnvWorkstream` is that same module's ONE owner of the env
 // workstream discriminator `planningDir` applies — the name W002's scope
 // clause prints comes from the same resolution point that scoped the reads.
-const { planningPaths, planningRoot, resolvePhaseIdConvention, resolveEnvWorkstream } = planningWorkspace;
+const { planningPaths, planningRoot, planningDir, resolvePhaseIdConvention, resolveEnvWorkstream } = planningWorkspace;
 // #4257: canonical CommonMark code strippers (markdown-sectionizer is the
 // repo's T0 structural seam, adopted per the #2365 composition order — fenced
 // blocks first, then inline spans) so the `statePhaseTokens` harvest sees
@@ -742,13 +742,14 @@ function buildResearchValidationStatusField(phasesDir, phaseDirNames, enumeratio
  * DIRECTORIES, a different target than this field's `milestones/*-ROADMAP.md`
  * FILES — reusing it here would silently answer the wrong question.
  *
- * Root-scoped (`planningRoot(cwd)`), matching `verify.cts`'s own
- * `rootBase`-based `milestonesPath`/`milestonesArchiveDir`.
+ * Scoped by `planningDir(cwd)` (#5881): the project base under GSD_PROJECT and the workstream
+ * directory under a workstream, the same pair `milestone complete` writes and `init.complete-milestone`
+ * reports (`milestones_path`, `archive_dir`), and the pair `repairPaths` (health-diagnostic.cts) backfills.
  */
 function buildMilestoneArchiveStatusField(cwd) {
-    const rootBase = planningRoot(cwd);
-    const milestonesArchiveDir = node_path_1.default.join(rootBase, 'milestones');
-    const milestonesPath = node_path_1.default.join(rootBase, 'MILESTONES.md');
+    const scopeBase = planningDir(cwd);
+    const milestonesArchiveDir = node_path_1.default.join(scopeBase, 'milestones');
+    const milestonesPath = node_path_1.default.join(scopeBase, 'MILESTONES.md');
     let archivedVersions = [];
     let scope = SCOPE.COMPLETE;
     if (node_fs_1.default.existsSync(milestonesArchiveDir)) {
