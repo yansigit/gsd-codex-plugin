@@ -5,7 +5,7 @@
  * direct console/stdout/stderr write (ESLint-enforced).
  *
  * End-of-phase advisory check: scans `type: tdd` plans for RED/GREEN/REFACTOR gate-sequence
- * compliance (`test(<plan>):` / `feat(<plan>):` / `refactor(<plan>):` commits) and builds a review
+ * compliance (`test(<plan>):` / `feat(<plan>):` or `fix(<plan>):` / `refactor(<plan>):` commits) and builds a review
  * table. `passed` is always true (advisory — never truly blocks); `block` is `violations > 0` so
  * the host loop can read one uniform field.
  *
@@ -19,7 +19,7 @@
  *
  * Cross-plan GREEN (#4867): a gap closure is planned as a RED-only probe plan plus the plan that
  * `depends_on` it and carries the fix. A `type: tdd` plan with its own RED but no GREEN is credited
- * with a `feat(...)` commit under any plan that lists it in `depends_on`, directly or through a
+ * with a `feat(...)` or `fix(...)` commit under any plan that lists it in `depends_on`, directly or through a
  * chain; the row carries `greenFrom` and the report names the supplier. Its own RED is still
  * required, and a plan nothing depends on is scored on its own commits alone.
  *
@@ -116,6 +116,9 @@ function greenFollowsRed(projectDir, reds, greens) {
     }
     return unanswered ? null : false;
 }
+/** GREEN is a `feat` or a `fix` commit (#5274); `refactor`/`chore`/`docs` never satisfy it. */
+const GREEN_KINDS = ['feat', 'fix'];
+const greenShas = (commits) => commits.filter((c) => GREEN_KINDS.includes(c.kind)).map((c) => c.sha);
 /**
  * The verdict when the review could not read a plan or the phase directory. Advisory policy is
  * unchanged (`block: false`); the outcome is `unreadable` (exit UNAVAILABLE) and `passed` is false
@@ -208,15 +211,15 @@ function evaluateTddReviewCheckpoint(input) {
         // #5275: with a RED present, a GREEN counts only when it descends from a RED. Without one there is
         // nothing to order against and the plan is already missing RED, so a GREEN commit stays credited.
         const inOrder = (greens) => greens.length > 0 && (!red || greenFollowsRed(projectDir, reds, greens) !== false);
-        const ownGreens = shasOfKind(commits, 'feat');
+        const ownGreens = greenShas(commits);
         const ownOk = inOrder(ownGreens);
         // #4867: a RED-only probe plan is satisfied by the GREEN of a plan that (transitively) declares
-        // `depends_on` it. Only a real `feat(...)` commit under such a plan counts, and it must follow the
-        // RED too (#5275); the plan's own RED is still required, and a plan nothing depends on is scored
-        // on its own commits alone.
+        // `depends_on` it. Only a real `feat(...)` or `fix(...)` commit under such a plan counts, and it must follow
+        // the RED too (#5275); the plan's own RED is still required, and a plan nothing depends on is scored on its
+        // own commits alone.
         const dependentGreens = ownOk
             ? []
-            : transitiveDependents(planId, dependents).map((id) => ({ id, greens: shasOfKind(planCommits(projectDir, id), 'feat') }));
+            : transitiveDependents(planId, dependents).map((id) => ({ id, greens: greenShas(planCommits(projectDir, id)) }));
         const greenFrom = dependentGreens.filter((d) => inOrder(d.greens)).map((d) => d.id);
         const green = ownOk || greenFrom.length > 0;
         const anyGreenCommit = ownGreens.length > 0 || dependentGreens.some((d) => d.greens.length > 0);
@@ -258,9 +261,9 @@ function evaluateTddReviewCheckpoint(input) {
         table += '\n\n⚠ Gate violations are advisory — review before advancing.';
         for (const r of rows.filter(row => row.status === 'FAIL')) {
             table += r.reason === exports.TDD_ROW_REASON.GREEN_BEFORE_RED
-                ? `\n  Plan ${r.planId} GREEN precedes RED: no feat(...) commit descends from a test(...) commit.`
+                ? `\n  Plan ${r.planId} GREEN precedes RED: no ${GREEN_KINDS.map((k) => `${k}(...)`).join(' or ')} commit descends from a test(...) commit.`
                 : `\n  Plan ${r.planId} missing: ${r.missing.join(', ')} gate commit(s).`;
-            table += `\n  Expected commit pattern: test(${r.planId}): ... → feat(${r.planId}): ...`;
+            table += `\n  Expected commit pattern: test(${r.planId}): ... → ${GREEN_KINDS.map((k) => `${k}(${r.planId}): ...`).join(' or ')}`;
         }
     }
     // Uniform gate contract: block = violations > 0. The gate is advisory (blocking:false in

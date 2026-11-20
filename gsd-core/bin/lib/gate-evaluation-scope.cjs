@@ -583,7 +583,9 @@ function resolveAcrossSources(projectDir, unit, options, sources, ref) {
     }
     const finished = found.map((entry, index) => {
         const part = emptyScope(unit);
-        finishSubjectScope(part, entry.source.git, kept.filter((k) => k.index === index).map((k) => k.commit), entry.lookup.parentsOf, entry.opts, entry.source.repoRoot);
+        // The newest time is taken across the repos below; the per-repo part must not look the times up again.
+        const partOptions = entry.opts.allBranches === true ? { ...entry.opts, allBranches: false } : entry.opts;
+        finishSubjectScope(part, entry.source.git, kept.filter((k) => k.index === index).map((k) => k.commit), entry.lookup.parentsOf, partOptions, entry.source.repoRoot);
         return part;
     });
     const byRepo = new Map();
@@ -593,6 +595,15 @@ function resolveAcrossSources(projectDir, unit, options, sources, ref) {
             byRepo.set(commit.sha, withSourcePrefix(commit, prefix));
     });
     scope.commits = kept.map((k) => byRepo.get(k.commit.sha) ?? k.commit);
+    if (options.allBranches === true) {
+        const keptTimes = kept.flatMap((k) => {
+            const time = found[k.index]?.times.get(k.commit.sha);
+            return time === undefined ? [] : [time];
+        });
+        if (kept.length > 0 && keptTimes.length === 0)
+            throw new ScopeUnreadable('commit-time-unreadable');
+        scope.latestCommitTime = kept.length === 0 ? null : Math.max(...keptTimes);
+    }
     const gather = (pick) => uniqueSorted(finished.flatMap((part, index) => pick(part).map((f) => withPrefix(found[index]?.source.prefix ?? '', f))));
     scope.changedFiles = gather((part) => part.changedFiles);
     scope.files = gather((part) => part.files);
@@ -690,6 +701,9 @@ function resolveEvaluationScope(projectDir, unit, options = {}) {
             throw new ScopeUnreadable('unsafe-ref');
         if (options.since !== undefined && !isSafeRefArgument(options.since))
             throw new ScopeUnreadable('unsafe-since');
+        // #6117: the all-branches lookup is a plan/quick progress probe; a phase window is a range of one ref.
+        if (options.allBranches === true && unit.kind === 'phase')
+            throw new ScopeUnreadable('all-branches-needs-plan-or-quick');
         // #5867: a `planning.sub_repos` workspace keeps its history in the sub-repos, not at the root.
         const subRepoNames = readSubRepoNames(projectDir);
         if (subRepoNames.length > 0)
@@ -1104,7 +1118,8 @@ function lookupSubjectCommits(projectDir, unit, scope, git, ref, options) {
             throw new ScopeUnreadable('unsafe-committed-since');
         sinceArgs.push(`--since=${options.committedSince}`);
     }
-    const out = git(['log', range, logFormat(withBody), '-n', String(max * 2), ...sinceArgs, ...grepArgs, ...(pathspecs.length > 0 ? ['--', ...pathspecs] : [])]);
+    const rangeArgs = options.allBranches === true ? ['--branches'] : [range];
+    const out = git(['log', ...rangeArgs, logFormat(withBody), '-n', String(max * 2), ...sinceArgs, ...grepArgs, ...(pathspecs.length > 0 ? ['--', ...pathspecs] : [])]);
     // `--grep` matches ANY message line; a plan lookup is subject-anchored, so filter on the subject.
     const parentsOf = new Map();
     let commits = parseLog(out, withBody, parentsOf).filter((c) => anchored === null || anchored.test(c.subject)).slice(0, max);
@@ -1115,6 +1130,14 @@ function lookupSubjectCommits(projectDir, unit, scope, git, ref, options) {
 }
 /** The scope (commits, file sets, reason) of the commits `lookupSubjectCommits` found. */
 function finishSubjectScope(scope, git, commits, parentsOf, options, repoRoot) {
+    if (options.allBranches === true) {
+        const times = commitTimes(git, commits.map((c) => c.sha));
+        const known = commits.flatMap((c) => (times.has(c.sha) ? [times.get(c.sha)] : []));
+        // A commit whose time cannot be read is "could not look", never a time of 0 beside non-empty commits.
+        if (commits.length > 0 && known.length === 0)
+            throw new ScopeUnreadable('commit-time-unreadable');
+        scope.latestCommitTime = commits.length === 0 ? null : Math.max(...known);
+    }
     if (options.commitsOnly === true) {
         scope.commits = [...commits];
         if (commits.length === 0)
@@ -1151,7 +1174,7 @@ function resolveBySubject(projectDir, unit, scope, git, ref, options, repoRoot) 
 }
 // ─── The `check evaluation-scope` verb ────────────────────────────────────────
 const VALUE_FLAGS = new Set(['--phase', '--phase-dir', '--plan', '--quick', '--since', '--ref', '--pathspec', '--committed-since', '--max-commits']);
-const BOOLEAN_FLAGS = new Set(['--milestone-bound', '--include-body', '--include-files', '--commits-only']);
+const BOOLEAN_FLAGS = new Set(['--milestone-bound', '--include-body', '--include-files', '--commits-only', '--all-branches']);
 function parseScopeArgs(args) {
     const values = new Map();
     const flags = new Set();
@@ -1214,6 +1237,13 @@ function parseScopeArgs(args) {
         options.includeFiles = true;
     if (flags.has('--commits-only'))
         options.commitsOnly = true;
+    if (flags.has('--all-branches')) {
+        if (unit.kind === 'phase')
+            return '--all-branches applies to --plan and --quick units only';
+        if (flags.has('--milestone-bound'))
+            return '--all-branches and --milestone-bound cannot be combined: the milestone range is a range of one ref';
+        options.allBranches = true;
+    }
     return { unit, options };
 }
 /** `check evaluation-scope` — argv after the verb. A resolver, not a policy: it never blocks. */

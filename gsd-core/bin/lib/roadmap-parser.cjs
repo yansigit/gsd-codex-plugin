@@ -578,7 +578,7 @@ function computeMilestoneSectionEnd(content, headingText, headingStart, addition
         // Mirrors old stopPattern: level-bounded, not a Phase heading, milestone marker
         if (/^Phase\s+\S/i.test(h.text))
             continue;
-        if (/v\d+\.\d+|✅|📋|🚧/i.test(h.text))
+        if (MILESTONE_LEADING_VERSION_RE.test(h.text) || /✅|📋|🚧/.test(h.text))
             return h.offset;
         if (additionalBoundary?.(h))
             return h.offset;
@@ -630,6 +630,9 @@ function listMilestoneHeadings(content) {
         // — the two owners agree on WHICH milestone headings are selected, not on
         // raw heading text.
         const heading = m[0].replace(/^#{1,3}\s+/, '').trim();
+        // #6149: a heading that only MENTIONS a version is not a milestone heading.
+        if (!MILESTONE_LEADING_VERSION_RE.test(heading))
+            continue;
         const extracted = extractMilestoneHeadingName(heading);
         if (extracted === null)
             continue; // no version token on this heading — not a milestone heading
@@ -648,6 +651,17 @@ function listMilestoneHeadings(content) {
 // rather than typing `^#{1,3}\s+(?!Phase\s+\S)` a second time — the exact
 // duplication class ADR-3180 §7.2's widened guard exists to catch.
 const MILESTONE_HEADING_LINE_SOURCE = '^#{1,3}\\s+(?!Phase\\s+\\S)[^\\n]*';
+// #6149: the ONE rule for "this heading is a milestone's heading": its version token LEADS the heading text. Before the
+// token only a status emoji (✅ 📋 🚧), bold markers, the word `Roadmap` (`## Roadmap v2.0: Name`), a Milestone label (`Milestone
+// v1.0`, `Current Milestone: v3.0`, `Milestone 1: First Milestone v1.0`) and an ADR-612 bracket id (`[GSD.02] v2.0: …`)
+// may stand, so `## Carried forward to v0.5.0 (inputs, not phases)` mentions a version without being that milestone's
+// heading. Selection (`locateMilestoneHeadings`), enumeration (`listMilestoneHeadings`), section detection
+// (`MILESTONE_HEADING_SIGNAL_PATTERN`, `milestoneSections`), the section end (`computeMilestoneSectionEnd`) and the window
+// classifiers (`hasVersionedMilestones`, the preamble and earliest-milestone cutoffs) all read it, so they cannot disagree.
+const MILESTONE_LEADING_FILLER = '(?:[\\s✅📋🚧*]|Roadmap\\b|\\[[^\\]\\n]{0,64}\\])*';
+// At most ONE bounded Milestone label (never a repeated group: a repeated label would be ambiguous and backtrack badly).
+const MILESTONE_LEADING_PREFIX = `${MILESTONE_LEADING_FILLER}(?:[\\w :'-]{0,60}?Milestone\\b(?:\\s+\\d+)?:?${MILESTONE_LEADING_FILLER})?`;
+const MILESTONE_LEADING_VERSION_RE = new RegExp(`^${MILESTONE_LEADING_PREFIX}v\\d+\\.\\d+`, 'i');
 /**
  * #4304: classify one level-1..3 heading through the same milestone grammar
  * the window locator owns. Phase headings are excluded first through the
@@ -694,12 +708,13 @@ function locateMilestoneHeadings(content, version) {
     // `\b` alone is what preserves the #730 sub-milestone selection this
     // function owns: `v2.0` still matches inside `v2.0.1`, `v8.0` still
     // matches `## v8.0-B …`.
-    const boundary = new RegExp(`${escapedVersion}\\b`, 'i');
+    // #6149: and the version token must LEAD the heading text (MILESTONE_LEADING_PREFIX), not merely appear in it.
+    const boundary = new RegExp(`^${MILESTONE_LEADING_PREFIX}v?${escapedVersion}\\b`, 'i');
     const pattern = new RegExp(`(${MILESTONE_HEADING_LINE_SOURCE})`, 'gmi');
     const matches = [];
     let m;
     while ((m = pattern.exec(content)) !== null) {
-        if (boundary.test(m[1]))
+        if (boundary.test(m[1].replace(/^#{1,3}\s+/, '')))
             matches.push(m);
     }
     return matches;
@@ -724,7 +739,9 @@ function isMilestoneBoundedInRoadmap(content, version) {
  * copies by construction, so this was found by review instead.
  */
 function hasVersionedMilestones(content) {
-    return /^#{1,3}\s+.*v\d+\.\d+/mi.test(content);
+    // A Phase title mentioning a version still counts here (this predicate's pinned behaviour); any other heading must lead
+    // with its version (#6149).
+    return new RegExp(`^#{1,3}\\s+(?:(?=Phase\\s+\\S).*v\\d+\\.\\d+|${MILESTONE_LEADING_PREFIX}v\\d+\\.\\d+)`, 'mi').test(content);
 }
 /**
  * #5726: does this ROADMAP carry a RECOGNIZED versioned milestone heading — a
@@ -749,7 +766,10 @@ function hasRecognizedVersionedMilestoneHeading(content) {
 // a ✅/🚧/📋 status marker, or the word "Milestone". Tested against a
 // non-Phase heading's own text by `hasMilestoneSectioning` below — this
 // module's sole owner of "is this heading a milestone heading".
-const MILESTONE_HEADING_SIGNAL_PATTERN = /v\d+\.\d+|✅|📋|🚧|\bMilestone\b/i;
+const MILESTONE_HEADING_SIGNAL_PATTERN = {
+    // The version signal is the LEADING token (#6149); a status marker or the word `Milestone` anywhere still signals.
+    test: (text) => MILESTONE_LEADING_VERSION_RE.test(text) || /✅|📋|🚧|\bMilestone\b/i.test(text),
+};
 /**
  * #3184/#3204/#2828/#1761/#3185: could a WHOLE-DOCUMENT phase count conflate
  * two different milestones? That is the only question `buildStateFrontmatter`
@@ -927,7 +947,7 @@ function milestoneSections(content) {
             continue;
         if (!MILESTONE_HEADING_SIGNAL_PATTERN.test(heading.text))
             continue;
-        const extracted = extractMilestoneHeadingName(heading.text);
+        const extracted = MILESTONE_LEADING_VERSION_RE.test(heading.text) ? extractMilestoneHeadingName(heading.text) : null;
         const version = extracted?.version ?? null;
         const versionMajor = version?.match(/^v(\d+)/i);
         const milestoneInt = versionMajor ? parseInt(versionMajor[1], 10) : null;
@@ -946,7 +966,7 @@ function milestoneSections(content) {
         const summary = detailsMatch[0].match(/<summary[^>]*>([^<]*)<\/summary>/i)?.[1]?.trim() ?? '';
         if (!MILESTONE_HEADING_SIGNAL_PATTERN.test(summary))
             continue;
-        const extracted = extractMilestoneHeadingName(summary);
+        const extracted = MILESTONE_LEADING_VERSION_RE.test(summary) ? extractMilestoneHeadingName(summary) : null;
         const version = extracted?.version ?? null;
         const versionMajor = version?.match(/^v(\d+)/i);
         const milestoneInt = versionMajor ? parseInt(versionMajor[1], 10) : null;
@@ -1576,7 +1596,7 @@ function extractCurrentMilestoneScoped(content, cwd, ws, phaseIdConvention) {
                 const detailsEnd = closingMatch
                     ? detailsOpenIdx + (closingMatch.index ?? 0) + '</details>'.length
                     : content.length;
-                const anyMilestoneOrDetails = /^#{1,3}\s+(?!Phase\s+\S)(?:.*v\d+\.\d+|✅|📋|🚧|🔄)|<details/im;
+                const anyMilestoneOrDetails = new RegExp(`^#{1,3}\\s+(?!Phase\\s+\\S)(?:${MILESTONE_LEADING_PREFIX}v\\d+\\.\\d+|✅|📋|🚧|🔄)|<details`, 'im');
                 const firstMilestoneMatch = content.match(anyMilestoneOrDetails);
                 const preambleCutoff = firstMilestoneMatch ? firstMilestoneMatch.index : detailsOpenIdx;
                 const preamble = (0, markdown_sectionizer_cjs_2.stripTaggedBlocks)(content.slice(0, preambleCutoff), 'details')
@@ -1634,7 +1654,7 @@ function extractCurrentMilestoneScoped(content, cwd, ws, phaseIdConvention) {
     // fence-aware without restoring the local section walker retired by #3184.
     const currentMilestoneHeadings = (0, markdown_sectionizer_cjs_2.tokenizeHeadings)(content);
     const { sectionEnd, selectedBracketId, bracketBoundary } = bracketAwareMilestoneSection(content, selected, sectionStart, bracketBoundaryActive, currentMilestoneHeadings);
-    const anyMilestonePattern = /^#{1,3}\s+(?!Phase\s+\S)(?:.*v\d+\.\d+|✅|📋|🚧)/im;
+    const anyMilestonePattern = new RegExp(`^#{1,3}\\s+(?!Phase\\s+\\S)(?:${MILESTONE_LEADING_PREFIX}v\\d+\\.\\d+|✅|📋|🚧)`, 'im');
     let earliestMilestoneIndex;
     if (!bracketBoundaryActive) {
         // #2761 B3: the LEGACY (non-bracket-shaped) path stays a raw
@@ -1680,7 +1700,7 @@ function extractCurrentMilestoneScoped(content, cwd, ws, phaseIdConvention) {
                 continue;
             if (/^Phase\s+\S/i.test(h.text))
                 continue;
-            if (/v\d+\.\d+|✅|📋|🚧/i.test(h.text)) {
+            if (MILESTONE_LEADING_VERSION_RE.test(h.text) || /✅|📋|🚧/.test(h.text)) {
                 earliestMilestoneIndex = h.offset;
                 break;
             }
