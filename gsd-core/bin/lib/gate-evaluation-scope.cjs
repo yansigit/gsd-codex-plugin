@@ -71,8 +71,21 @@ const MAX_ID_LOOKUPS = 1024;
 // ─── SUMMARY `## Task Commits` extraction (port of the #4127 model) ───────────
 const TASK_COMMITS_HEADING = /^## Task Commits[ \t\r]*$/;
 const NEXT_HEADING = /^## /;
-const TASK_ROW_PREFIX = /^[ \t]*(?:[0-9]+\.|[-*])?[ \t]*\*\*Task[ \t]+[0-9]+:/;
+// `**Task N:` with an optional qualifier between the number and the colon (`**Task 1 (tracer):**`, `**Task 1 RED:**`, #6215).
+const TASK_ROW_PREFIX = /^[ \t]*(?:(?:[0-9]+\.|[-*])[ \t]*)?\*\*Task[ \t]+[0-9]+(?:[^0-9:*\r\n][^:*\r\n]*)?:/;
+// A task row the strict label does not recognise (`**Task 1 - tracer**`, `**Task 1 (x)**:`): counted as an unread row.
+const TASK_ROW_LOOSE = /^[ \t]*(?:(?:[0-9]+\.|[-*])[ \t]*)?\*\*Task[ \t]+[0-9]+/;
+// A list item nested under a task row (`  - RED \`<sha>\``): the TDD commits gsd-executor writes under the task (#6215).
+const SUB_BULLET = /^([ \t]+)(?:[-*+]|[0-9]+\.)[ \t]/;
+const PLAN_METADATA_LINE = /\*\*Plan metadata:?\*\*/;
 const HEX_TOKEN = /`[0-9a-f]{7,40}`/g;
+/** Indentation width in columns, a tab advancing to the next multiple of 4. */
+function indentWidth(line) {
+    let width = 0;
+    for (const ch of /^[ \t]*/.exec(line)?.[0] ?? '')
+        width = ch === '\t' ? width + 4 - (width % 4) : width + 1;
+    return width;
+}
 /**
  * The commit ids a SUMMARY names, in document order, duplicates included. Section-scoped (every
  * `## Task Commits` section), row-scoped (an optional list marker, the `**Task N:` label closed by
@@ -80,30 +93,81 @@ const HEX_TOKEN = /`[0-9a-f]{7,40}`/g;
  * counts, so a sha quoted in prose or on the `**Plan metadata:**` line is not a task commit.
  */
 function extractTaskCommitRefs(text) {
+    return scanTaskCommits(text).refs;
+}
+/**
+ * `extractTaskCommitRefs` plus whether the text has a `## Task Commits` section and how many task rows yielded no id.
+ * A task row may carry a qualifier before its colon, and the backticked ids on the first list level nested under a task
+ * row (deeper than the row; wrapped continuation lines allowed, a blank line or an unindented line ends the row) belong
+ * to that row, so a TDD task's RED and GREEN sub-bullets are read (#6215).
+ */
+function scanTaskCommits(text) {
     const refs = [];
     let inside = false;
+    let sectionFound = false;
+    let unreadRows = 0;
+    let rowIndent = -1; // column of the task row whose sub-bullets are being read; -1 when none
+    let rowIds = 0;
+    let subIndent = -1; // column of the first nested list level under that row
+    const tokens = (from) => {
+        const found = from.match(HEX_TOKEN) ?? [];
+        for (const token of found)
+            refs.push(token.slice(1, -1));
+        rowIds += found.length;
+    };
+    const endRow = () => {
+        if (rowIndent !== -1 && rowIds === 0)
+            unreadRows += 1;
+        rowIndent = -1;
+        rowIds = 0;
+        subIndent = -1;
+    };
     for (const line of text.split('\n')) {
         if (TASK_COMMITS_HEADING.test(line)) {
+            endRow();
             inside = true;
+            sectionFound = true;
             continue;
         }
         if (NEXT_HEADING.test(line)) {
+            endRow();
             inside = false;
             continue;
         }
         if (!inside)
             continue;
         const row = TASK_ROW_PREFIX.exec(line);
-        if (!row)
+        if (row) {
+            endRow();
+            rowIndent = indentWidth(line);
+            const rest = line.slice(row[0].length);
+            const close = rest.indexOf('**');
+            if (close !== -1)
+                tokens(rest.slice(close + 2));
             continue;
-        const rest = line.slice(row[0].length);
-        const close = rest.indexOf('**');
-        if (close === -1)
+        }
+        if (TASK_ROW_LOOSE.test(line)) {
+            endRow();
+            unreadRows += 1;
             continue;
-        for (const token of rest.slice(close + 2).match(HEX_TOKEN) ?? [])
-            refs.push(token.slice(1, -1));
+        }
+        if (rowIndent === -1)
+            continue;
+        if (line.trim() === '' || indentWidth(line) <= rowIndent) {
+            endRow();
+            continue;
+        }
+        const nested = SUB_BULLET.exec(line);
+        if (!nested)
+            continue; // a wrapped continuation of the row's description
+        const width = indentWidth(line);
+        if (subIndent === -1 || width < subIndent)
+            subIndent = width;
+        if (width === subIndent && !PLAN_METADATA_LINE.test(line))
+            tokens(line);
     }
-    return refs;
+    endRow();
+    return { refs, sectionFound, unreadRows };
 }
 // ─── Plan-id → anchored subject pattern ───────────────────────────────────────
 /**
@@ -370,7 +434,7 @@ function commitIsAncestor(projectDir, sha, of, execGit) {
 function emptyScope(unit) {
     return {
         unit, status: 'resolved', source: 'none', reason: null, commits: [],
-        changedFiles: [], files: [], missingOnDisk: [], outsideUnion: [], unreachable: [], rangeBase: null,
+        changedFiles: [], files: [], missingOnDisk: [], outsideUnion: [], unreachable: [], unparsedSummaries: [], rangeBase: null,
     };
 }
 // ─── planning.sub_repos (#5867) ───────────────────────────────────────────────
@@ -495,7 +559,7 @@ const withPrefix = (prefix, file) => (prefix === '' ? file : `${prefix}/${file}`
 function commitTimes(git, shas) {
     const times = new Map();
     for (const group of chunk(shas, SHA_CHUNK)) {
-        for (const line of git(['log', '--no-walk=unsorted', '--format=%H%x1f%ct', ...group]).split('\n')) {
+        for (const line of git(['log', '--no-walk=unsorted', '--format=%H%x1f%ct', ...group, '--']).split('\n')) {
             const [sha, time] = line.split('\x1f');
             if (sha && time !== undefined && /^[0-9]+$/.test(time))
                 times.set(sha, Number(time));
@@ -670,6 +734,7 @@ function resolvePhaseAcrossSources(projectDir, unit, options, sources, ref) {
         merged.status = 'degraded';
         merged.source = 'phase-range';
         merged.reason = `${parts[0]?.part.reason ?? 'no-task-commits'}:no-phase-start-anchor`;
+        merged.unparsedSummaries = [...gathered.unparsed].sort();
         return merged;
     }
     merged.status = taken.length > 0 ? 'resolved' : 'degraded';
@@ -689,6 +754,8 @@ function resolvePhaseAcrossSources(projectDir, unit, options, sources, ref) {
     merged.files = gather((part) => part.files);
     merged.missingOnDisk = gather((part) => part.missingOnDisk);
     merged.outsideUnion = gather((part) => part.outsideUnion);
+    // The unparsed SUMMARYs belong to the workspace's phase directory, not to a repo: no prefix.
+    merged.unparsedSummaries = uniqueSorted(pick.flatMap(({ part }) => part.unparsedSummaries));
     return merged;
 }
 function resolveEvaluationScope(projectDir, unit, options = {}) {
@@ -718,7 +785,7 @@ function resolveEvaluationScope(projectDir, unit, options = {}) {
     }
     catch (error) {
         const reason = error instanceof ScopeUnreadable ? error.reason : 'resolver-error';
-        return { ...emptyScope(unit), status: 'unresolvable', reason };
+        return { ...emptyScope(unit), status: 'unresolvable', reason, unparsedSummaries: scope.unparsedSummaries };
     }
 }
 /** First git release with `show --remerge-diff` (#5751). */
@@ -818,7 +885,7 @@ function parseLog(out, withBody, parentsOut) {
 function subjectsFor(git, shas, withBody, chunkSize, parentsOut) {
     const out = [];
     for (const group of chunk(shas, chunkSize)) {
-        out.push(...parseLog(git(['log', '--no-walk=unsorted', logFormat(withBody), ...group]), withBody, parentsOut));
+        out.push(...parseLog(git(['log', '--no-walk=unsorted', logFormat(withBody), ...group, '--']), withBody, parentsOut));
     }
     return out;
 }
@@ -884,13 +951,13 @@ function baseSideMergeFiles(git, merges, parentsOf, listed, listedNonMerge, rang
             continue;
         const [p1 = '', p2 = ''] = parents;
         try {
-            const secondSide = git(['rev-list', p2, `^${p1}`]).split('\n').filter(Boolean);
+            const secondSide = git(['rev-list', p2, `^${p1}`, '--']).split('\n').filter(Boolean);
             if (secondSide.some((entry) => listed.has(entry)))
                 continue;
             // One walk of the second parent's history after the phase start, intersected with the listed
             // non-merge commits (never one ancestry spawn per listed commit).
             const reachable = new Set(git([
-                'rev-list', p2, ...(rangeBase === EMPTY_TREE ? [] : [`^${rangeBase}`]),
+                'rev-list', p2, ...(rangeBase === EMPTY_TREE ? [] : [`^${rangeBase}`]), '--',
             ]).split('\n').filter(Boolean));
             if (listedNonMerge.some((entry) => reachable.has(entry)))
                 continue;
@@ -925,7 +992,7 @@ function newestOf(git, shas, chunkSize) {
         const tips = chunk(shas, chunkSize).map((group) => newestOf(git, group, chunkSize));
         return newestOf(git, tips, chunkSize);
     }
-    const tip = git(['rev-list', '--topo-order', '-n', '1', ...shas]).split('\n').filter(Boolean)[0];
+    const tip = git(['rev-list', '--topo-order', '-n', '1', ...shas, '--']).split('\n').filter(Boolean)[0];
     return tip ?? shas[0] ?? 'HEAD';
 }
 /** One clamp for every commit cap, so the CLI limit and the resolver's ceiling cannot diverge. */
@@ -959,6 +1026,7 @@ function gatherPhase(projectDir, unit) {
     if (!phaseDir)
         throw new ScopeUnreadable('phase-dir-not-found');
     const refs = [];
+    const unparsed = [];
     let summaryCount = 0;
     // The canonical LIVE summary set (root + nested, superseded excluded) from its single owner. A scan
     // that did not see every summary (an existing nested plans/ that could not be read) is "could not
@@ -969,14 +1037,17 @@ function gatherPhase(projectDir, unit) {
     const entries = [...planScan.value.summaryFiles].sort();
     for (const name of entries) {
         try {
-            refs.push(...extractTaskCommitRefs(node_fs_1.default.readFileSync(node_path_1.default.join(phaseDir, name), 'utf-8')));
+            const scanned = scanTaskCommits(node_fs_1.default.readFileSync(node_path_1.default.join(phaseDir, name), 'utf-8'));
+            refs.push(...scanned.refs);
+            if (scanned.sectionFound && (scanned.refs.length === 0 || scanned.unreadRows > 0))
+                unparsed.push(name.replace(/\p{Cc}/gu, '?'));
             summaryCount += 1;
         }
         catch {
             throw new ScopeUnreadable(`summary-unreadable:${name}`);
         }
     }
-    return { phaseDir, refs, summaryCount };
+    return { phaseDir, refs, summaryCount, unparsed };
 }
 /**
  * `gathered` / `anchored` / `partial` serve a `planning.sub_repos` workspace (#5867): the ids are
@@ -986,7 +1057,8 @@ function gatherPhase(projectDir, unit) {
  * because another repo may have the phase's files.
  */
 function resolvePhase(projectDir, unit, scope, git, ref, options, repoRoot, gathered, anchored = true, partial = false, notAfter) {
-    const { phaseDir, refs, summaryCount } = gathered ?? gatherPhase(projectDir, unit);
+    const { phaseDir, refs, summaryCount, unparsed } = gathered ?? gatherPhase(projectDir, unit);
+    scope.unparsedSummaries = [...unparsed].sort();
     // Resolve each listed id to a full sha reachable from the ref (and, for wave scoping, newer than `since`).
     const shas = [];
     const unreachable = [];
@@ -1071,7 +1143,7 @@ function resolvePhase(projectDir, unit, scope, git, ref, options, repoRoot, gath
     scope.reason = reason;
     scope.source = 'phase-range';
     const max = clampMaxCommits(options.maxCommits);
-    scope.commits = parseLog(git(['log', `${scope.rangeBase}..${ref}`, logFormat(options.includeBody === true), '-n', String(max)]), options.includeBody === true);
+    scope.commits = parseLog(git(['log', `${scope.rangeBase}..${ref}`, logFormat(options.includeBody === true), '-n', String(max), '--']), options.includeBody === true);
     finalizeFiles(scope, repoRoot, rangeFiles(git, scope.rangeBase, ref));
 }
 /** The plan/quick unit's matching commits (newest first, subject-anchored, `since` applied). */
@@ -1119,7 +1191,7 @@ function lookupSubjectCommits(projectDir, unit, scope, git, ref, options) {
         sinceArgs.push(`--since=${options.committedSince}`);
     }
     const rangeArgs = options.allBranches === true ? ['--branches'] : [range];
-    const out = git(['log', ...rangeArgs, logFormat(withBody), '-n', String(max * 2), ...sinceArgs, ...grepArgs, ...(pathspecs.length > 0 ? ['--', ...pathspecs] : [])]);
+    const out = git(['log', ...rangeArgs, logFormat(withBody), '-n', String(max * 2), ...sinceArgs, ...grepArgs, '--', ...pathspecs]);
     // `--grep` matches ANY message line; a plan lookup is subject-anchored, so filter on the subject.
     const parentsOf = new Map();
     let commits = parseLog(out, withBody, parentsOf).filter((c) => anchored === null || anchored.test(c.subject)).slice(0, max);

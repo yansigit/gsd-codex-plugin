@@ -45,6 +45,26 @@ const model_catalog_cjs_1 = require("./model-catalog.cjs");
 // added.
 const codex_agent_toml_cjs_1 = require("./codex-agent-toml.cjs");
 /**
+ * Frozen reason enum for an agents check that could not run (#5236): callers and tests assert on these wire values,
+ * never on prose. Adding a member is a deliberate coordinated change (enum, emitting site, the enum-lock test).
+ */
+const AGENTS_CHECK_REASON = Object.freeze({
+    /** The runtime id is not one GSD resolves (an out-of-tree host plugin, or any unregistered id): there is no agents directory to look in. */
+    UNKNOWN_RUNTIME: 'unknown_runtime',
+});
+/** Whether `runtime` is an id GSD cannot resolve. A retired spelling still throws: that refusal is not this case. */
+function isUnresolvableRuntime(runtime) {
+    try {
+        (0, runtime_name_policy_cjs_1.assertKnownRuntime)(runtime);
+        return false;
+    }
+    catch (err) {
+        if (err instanceof runtime_name_policy_cjs_1.UnknownRuntimeError)
+            return true;
+        throw err;
+    }
+}
+/**
  * Frozen reason enum for {@link checkCodexModelPosture}. Per CONTRIBUTING's
  * typed-IR rule ("Error / status / reason → a frozen enum"): callers and tests
  * assert on these wire values, never on prose. Adding a member is a deliberate
@@ -147,6 +167,20 @@ function getAgentsDir(runtime, projectRoot) {
  */
 function checkAgentsInstalled(runtime, projectRoot) {
     const resolvedRuntime = runtime ?? (process.env['GSD_RUNTIME'] || 'claude');
+    // #5236: this is a reporting path (every `init` bundle carries its result). For an id GSD cannot resolve there is
+    // no agents directory to read, and throwing would stop GSD on any out-of-tree host; say it could not be checked.
+    // The installers keep refusing an unknown id through the accessors themselves.
+    if (isUnresolvableRuntime(resolvedRuntime)) {
+        return {
+            agents_installed: null,
+            missing_agents: [],
+            installed_agents: [],
+            incomplete_agents: [],
+            agents_dir: null,
+            agent_runtime: resolvedRuntime,
+            agents_check_reason: AGENTS_CHECK_REASON.UNKNOWN_RUNTIME,
+        };
+    }
     const agentsDir = getAgentsDir(resolvedRuntime, projectRoot);
     const expectedAgents = Object.keys(MODEL_PROFILES);
     const installed = [];
@@ -563,6 +597,7 @@ function resolveAgentHint(name, runtime, projectRoot) {
 module.exports = {
     getAgentsDir,
     checkAgentsInstalled,
+    AGENTS_CHECK_REASON,
     checkCodexModelPosture,
     checkCodexSandboxPosture,
     canonicalAgentSourceDir,
