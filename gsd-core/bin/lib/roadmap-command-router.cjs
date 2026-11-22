@@ -224,6 +224,13 @@ function routeRoadmapCommand({ roadmap, args, cwd, raw, error }) {
                 if (convention === 'milestone-prefixed') {
                     warnings.push(...checkW021(roadmapContent));
                 }
+                // #6270: a plan row with no PLAN file, or a live PLAN file with no row, in a phase that lists its plans.
+                try {
+                    warnings.push(...roadmap.checkPlanRowsAgainstDisk(cwd, roadmapContent));
+                }
+                catch {
+                    // Best-effort like the scope probe above: a disk read failure must not mask the structural warnings.
+                }
                 const result = { warnings };
                 process.stdout.write(raw ? JSON.stringify(result) : JSON.stringify(result, null, 2));
                 // #2978: exit non-zero on any warning, per the documented contract

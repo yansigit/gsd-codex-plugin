@@ -11,6 +11,10 @@
  *
  * Per-CLI sourced axis VALUES (with citations) live in docs/reference/host-integration-capability-matrix.md — every value is documented or explicitly 'undocumented'.
  */
+// #4561: the dispatch-isolation vocabulary has ONE owner, src/dispatch-isolation.cts.
+// The `isolation` axis below is that tuple, not a restatement of it, and the
+// `DispatchIsolation` type is derived from the same tuple.
+const dispatch_isolation_cjs_1 = require("./dispatch-isolation.cjs");
 // ---------------------------------------------------------------------------
 // Protocol version
 // ---------------------------------------------------------------------------
@@ -60,9 +64,9 @@ const HOST_INTEGRATION_AXES = Object.freeze({
     // `undocumented` is NOT a member here; it is the corpus-wide sentinel above.
     // Mechanism-specific ("worktree"), not abstract — same "name only what a
     // host actually has" rule that kept effortSurface from guessing a
-    // config-file member above. A future non-worktree isolation mechanism adds a
-    // `*-container` member then, evidence-backed.
-    isolation: Object.freeze(['harness-worktree', 'orchestrator-worktree', 'none']),
+    // config-file member above. A future non-worktree mechanism adds a `*-container`
+    // member then, evidence-backed, to src/dispatch-isolation.cts (#4561).
+    isolation: dispatch_isolation_cjs_1.DISPATCH_ISOLATION_MODES,
 });
 const INTERFACE_POINTS = Object.freeze(['command', 'dispatch', 'model', 'hooks', 'state', 'artifact']);
 // ---------------------------------------------------------------------------

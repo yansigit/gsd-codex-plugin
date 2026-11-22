@@ -364,6 +364,10 @@ function detectSignals(cwd, now = Date.now) {
     const hasPlanning = node_fs_1.default.existsSync(paths.planning);
     const hasRoadmap = node_fs_1.default.existsSync(paths.roadmap);
     const git = readGitSignals(cwd);
+    // #6431: `/gsd-pause-work` never writes `paused_at`; what it always writes is the ROOT `.planning/HANDOFF.json` (whatever scope
+    // the human-readable `.continue-here.md` lands in, and under a workstream too), and `/gsd-resume-work` consumes it. That file
+    // IS the recorded pause, so it classifies as paused alongside the STATE.md field, and a resume routes forward again.
+    const handoffPresent = hasPlanning && node_fs_1.default.existsSync(node_path_1.default.join(cwd, '.planning', 'HANDOFF.json'));
     const empty = {
         current_phase: null,
         total_phases: null,
@@ -373,7 +377,7 @@ function detectSignals(cwd, now = Date.now) {
         has_roadmap: hasRoadmap,
         git_dirty: git.dirty,
         git_unpushed: git.unpushed,
-        paused: false,
+        paused: handoffPresent,
         blockers: [],
         has_git: git.has_git,
         verify_failed: false,
@@ -428,7 +432,7 @@ function detectSignals(cwd, now = Date.now) {
         for (const item of items)
             blockers.push(item.replace(/^-\s+/, '').trim());
     }
-    const paused = Boolean(pausedAtRaw && pausedAtRaw.trim());
+    const paused = Boolean(pausedAtRaw && pausedAtRaw.trim()) || handoffPresent;
     // Stale = no recorded activity for IDLE_STALE_MS. Used only by idle-stranded.
     // Computed here (with the clock seam) so the pure classify() stays a function
     // of (signals, staleActivity) and detectSignals owns all disk reads.

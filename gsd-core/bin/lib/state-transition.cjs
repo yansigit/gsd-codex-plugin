@@ -15,7 +15,7 @@
  * file I/O, and the disk-scan wrap it.
  */
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.STATE_MD_SECTIONS = exports.FRONTMATTER_BODY_SOURCE = exports.FIELD_CLASSIFICATION = void 0;
+exports.StatePlansNoLineError = exports.STATE_MD_SECTIONS = exports.FRONTMATTER_BODY_SOURCE = exports.FIELD_CLASSIFICATION = void 0;
 exports.formatProgressMachineSegment = formatProgressMachineSegment;
 exports.stateReplaceProgressPercent = stateReplaceProgressPercent;
 exports.beginFrontmatterReassembly = beginFrontmatterReassembly;
@@ -969,6 +969,22 @@ function transitionCoreUnmasked(content, intent, deps) {
 // beginPhase — intent implementation (Phase 1)
 // ----------------------------------------------------------------------------
 /**
+ * #6399: `state begin-phase --plans N` found nowhere in STATE.md to record the count: no `Total Plans in Phase` field
+ * and no `Plan:` line in `## Current Position`. Thrown by `beginPhaseCore` before it returns, so nothing is written;
+ * the begin-phase adapter turns it into the typed `plans_no_line` refusal.
+ */
+class StatePlansNoLineError extends Error {
+    planCount;
+    constructor(planCount) {
+        super(`state begin-phase --plans ${planCount}: STATE.md has no "Total Plans in Phase:" field and no "Plan:" line in ` +
+            `"## Current Position" to record the plan count; nothing was written. Add a "Total Plans in Phase:" line, or ` +
+            `run without --plans.`);
+        this.planCount = planCount;
+        this.name = 'StatePlansNoLineError';
+    }
+}
+exports.StatePlansNoLineError = StatePlansNoLineError;
+/**
  * Apply a `beginPhase` transition to STATE.md content.
  *
  * Phase 1 scope (this file): the Status field update only. Subsequent
@@ -1043,8 +1059,13 @@ function beginPhaseCore(content, intent, deps) {
             tryField('Current Phase Name', intent.phaseName);
         }
         tryField('Current Plan', String(startPlan));
+        // #6399: the count must land somewhere. `tryField` is a silent no-op when the field is absent, so the outcome is
+        // read back; the `Plan: N of M` line of `## Current Position` below is the other place a count is recorded.
+        let totalPlansLanded = false;
         if (intent.planCount != null) {
+            const before = updated.length;
             tryField('Total Plans in Phase', String(intent.planCount));
+            totalPlansLanded = updated.length > before;
         }
         // **Current focus:** body text line (#1104).
         const focusLabel = intent.phaseName
@@ -1075,7 +1096,11 @@ function beginPhaseCore(content, intent, deps) {
         // ## Current Position section mutation (#1104, #1365).
         // `locateCurrentPosition` (fence-aware, tokenizeHeadings-based) locates
         // the section; mirrors state.cts:2261-2324 byte-for-behaviour.
-        body = mutateCurrentPositionFirstTime(body, { ...intent, startPlan }, today, updated);
+        const planLine = { written: false };
+        body = mutateCurrentPositionFirstTime(body, { ...intent, startPlan }, today, updated, planLine);
+        if (intent.planCount != null && !totalPlansLanded && !planLine.written) {
+            throw new StatePlansNoLineError(intent.planCount);
+        }
     }
     else {
         // Resume path: only update Last activity timestamp in Current Position
@@ -1163,7 +1188,7 @@ function sliceCurrentPositionSection(body) {
  * `mutateCurrentPositionForAdvance` siblings below, both of which use
  * `locateCurrentPosition` directly.
  */
-function mutateCurrentPositionFirstTime(body, intent, today, updated) {
+function mutateCurrentPositionFirstTime(body, intent, today, updated, planLine) {
     const span = locateCurrentPosition(body);
     if (span === null)
         return body;
@@ -1184,11 +1209,14 @@ function mutateCurrentPositionFirstTime(body, intent, today, updated) {
     const planValue = `${intent.startPlan} of ${intent.planCount ?? '?'}`;
     if (/^Plan:/m.test(sectionBody)) {
         sectionBody = sectionBody.replace(/^Plan:.*$/m, `Plan: ${planValue}`);
+        planLine.written = true;
     }
     else {
         const replaced = (0, state_document_cjs_1.stateReplaceField)(sectionBody, 'Plan', planValue);
-        if (replaced !== null)
+        if (replaced !== null) {
             sectionBody = replaced;
+            planLine.written = true;
+        }
     }
     // Status line.
     const statusValue = `Executing Phase ${intent.phaseNumber}`;

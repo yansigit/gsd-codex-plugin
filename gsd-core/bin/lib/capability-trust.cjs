@@ -587,6 +587,32 @@ function collectInstructionSurfaces(manifest) {
             surfaces.push({ kind, name: entry });
         }
     }
+    surfaces.push(...collectReviewerContributionSurfaces(manifest));
+    return surfaces;
+}
+/**
+ * #3997: a `contribution` addressed `into: reviewer` at `review:pre` lands in the shared prompt every
+ * external reviewer lane reads. It is an instruction surface (its body reaches an agent's instruction
+ * context, like a skill) that ALSO crosses the reviewer-lane egress boundary, so it is disclosed by
+ * point and target. Disclosure names it; it never inspects the fragment (ADR-2363 D2) and it never
+ * enters `disclosureSignature` or `hasExecutable` (D3/D4, the frozen v1 encoding).
+ *
+ * Total, like its siblings: a non-array `contributions`, a non-object entry or a missing field each
+ * degrade quietly to "not disclosed". Not deduped: two declarations disclose twice.
+ */
+function collectReviewerContributionSurfaces(manifest) {
+    const declared = manifest['contributions'];
+    if (!Array.isArray(declared))
+        return [];
+    const surfaces = [];
+    for (const entry of declared) {
+        if (typeof entry !== 'object' || entry === null || Array.isArray(entry))
+            continue;
+        const { point, into } = entry;
+        if (point !== 'review:pre' || into !== 'reviewer')
+            continue;
+        surfaces.push({ kind: 'reviewer-contribution', name: `${point} (${into})` });
+    }
     return surfaces;
 }
 /**
@@ -1141,6 +1167,12 @@ function summarizeInstructionSurfaces(disclosure) {
     // ADR-2363 D1/D2, and Kerckhoffs: say plainly that nothing inspected these bodies. A summary that
     // named the surface while implying review would be worse than silence — a "looks checked" line
     // displaces the judgement this prompt exists to provoke (Goodhart, D2).
+    if (surfaces.some((s) => s?.kind === 'reviewer-contribution')) {
+        // #3997: say plainly where this text goes. A reviewer contribution is sent to every consented
+        // external reviewer lane together with the plan payload; it does not bypass lane consent.
+        lines.push('        reviewer-contribution text is sent to every external reviewer lane you have consented to,');
+        lines.push('        alongside the plan under review (cross-capability egress); lane consent and destinations are unchanged');
+    }
     lines.push('        these bodies are installed verbatim and are NOT content-scanned');
     return lines;
 }

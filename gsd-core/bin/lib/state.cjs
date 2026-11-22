@@ -40,7 +40,7 @@ const { renderBracketPhaseDisplay } = phaseIdDisplayMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const roadmapParserMod = require("./roadmap-parser.cjs");
 // #3642: hasMilestoneSectioning no longer consumed here — its >=2 semantics answered sibling conflation, but this branch asks asserted-vs-section (>=1). It stays exported from roadmap-parser.cjs for its unit pins.
-const { getMilestoneInfo, extractCurrentMilestone, isMilestoneBoundedInRoadmap, hasAnyMilestoneSection, classifyMilestoneScalar } = roadmapParserMod;
+const { getMilestoneInfo, extractCurrentMilestone, isMilestoneBoundedInRoadmap, hasAnyMilestoneSection, classifyMilestoneScalar, describeUnscopedMilestone } = roadmapParserMod;
 const shell_command_projection_cjs_1 = require("./shell-command-projection.cjs");
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const planningWorkspace = require("./planning-workspace.cjs");
@@ -119,7 +119,7 @@ const project_root_cjs_1 = require("./project-root.cjs");
 // it introduces no cycle on this path.
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const milestoneLockMod = require("./milestone-lock.cjs");
-const { transitionCore, applyStatePreservation, sliceCurrentPositionSection, stateReplaceProgressPercent, formatProgressMachineSegment } = stateTransitionMod;
+const { transitionCore, StatePlansNoLineError, applyStatePreservation, sliceCurrentPositionSection, stateReplaceProgressPercent, formatProgressMachineSegment } = stateTransitionMod;
 function replaceStateBodyField(content, statePath, field, value) {
     const { body, reassemble } = stateTransitionMod.beginFrontmatterReassembly(content, statePath);
     const replaced = (0, state_document_cjs_1.stateReplaceField)(body, field, value);
@@ -1312,7 +1312,12 @@ function cmdStateUpdateProgress(cwd, raw) {
         // (stateReplaceFieldWithFallback above) for a comparable silent no-op —
         // now routed through the shared `declineNoOp` helper (#3957) so the
         // pairing is structural rather than hand-written per arm.
-        declineNoOp(raw, 'updated', `phase scope is ${phaseScope}, not complete`, `state update-progress skipped — phase scope is ${phaseScope}, not complete. STATE.md's Progress field was left unchanged.`);
+        // #6271: UNSCOPED is the one non-COMPLETE scope an operator can fix by hand, and the bare message named neither
+        // cause nor fix, so every call declined and the counters drifted for the life of the project. The
+        // classification itself (ADR-3180 rows 4/5) is unchanged: it keeps a destructive consumer from acting on a
+        // window it could not find. One describer owns the wording (roadmap-parser.cts), shared with `state sync`.
+        const unscopedHint = phaseScope === SCOPE.UNSCOPED && cwd ? describeUnscopedMilestone(cwd) : '';
+        declineNoOp(raw, 'updated', `phase scope is ${phaseScope}, not complete`, `state update-progress skipped — phase scope is ${phaseScope}, not complete. STATE.md's Progress field was left unchanged.${unscopedHint ? ` ${unscopedHint}` : ''}`, unscopedHint ? { hint: unscopedHint } : {});
         return;
     }
     // #3233: zero plans in the current-milestone phases means there is nothing to
@@ -5534,6 +5539,14 @@ function cmdStateBeginPhase(cwd, phaseNumber, phaseName, planCount, raw) {
         clock: clock_cjs_1.realClock,
         sourcePath: statePath,
     };
+    // #6399: `--plans N` with nowhere in STATE.md to record the count refuses before any write, with the typed reason
+    // `plans_no_line`. The core runs first inside the lock, ahead of the milestone claim, so a refusal leaves no claim
+    // file behind and the file is only ever read under the lock, through the same bounded reader as every other write.
+    const refusePlansNoLine = (err) => {
+        if (err instanceof StatePlansNoLineError)
+            error(err.message, ERROR_REASON.STATE_PLANS_NO_LINE);
+        throw err;
+    };
     // #2736: the transition holds the exact display name; without this the
     // post-transform sync re-derives current_phase_name from the freshly
     // written `Phase: N (Name) — EXECUTING` line, which truncates any name
@@ -5557,11 +5570,17 @@ function cmdStateBeginPhase(cwd, phaseNumber, phaseName, planCount, raw) {
     // calls cannot both read "no claim" and both write.
     let milestoneConflict = null;
     const wrote = readModifyWriteStateMd(statePath, (content) => {
+        let result;
+        try {
+            result = transitionCore(content, intent, deps);
+        }
+        catch (err) {
+            return refusePlansNoLine(err);
+        }
         milestoneConflict = milestoneLockMod.claimMilestonePhase(cwd, String(phaseNumber));
         if (milestoneConflict) {
             milestoneLockMod.warnMilestoneConflict(milestoneConflict, `state.begin-phase ${phaseNumber}`);
         }
-        const result = transitionCore(content, intent, deps);
         precomputedUpdated = result.updated;
         // #3127 resume: the core preserved the mid-flight Current Phase Name, so
         // the intent-first override must not fire — it would drift frontmatter
@@ -6526,7 +6545,9 @@ function cmdStateSync(cwd, options, raw) {
         // consume `.value`.
         const syncScope = listMilestonePhaseDirs(phasesDir, { cwd, versionOverride: versionStr }).scope;
         if (syncScope !== SCOPE.COMPLETE) {
-            changes.push(`Progress: skipped — milestone phase scope is "${syncScope}", not COMPLETE (#3217)`);
+            // #6271: the same cause-and-fix as `update-progress`, from the one describer.
+            const syncHint = syncScope === SCOPE.UNSCOPED ? describeUnscopedMilestone(cwd) : '';
+            changes.push(`Progress: skipped — milestone phase scope is "${syncScope}", not COMPLETE (#3217)${syncHint ? `. ${syncHint}` : ''}`);
         }
         else {
             const p = (0, state_document_cjs_1.computeProgressPercent)(totalDiskSummaries, totalDiskPlans, diskCompletedPhases, syncTotalPhases, syncScope);

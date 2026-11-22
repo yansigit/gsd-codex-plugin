@@ -62,7 +62,9 @@ const planningScopeMod = require("./planning-scope.cjs");
 const { SCOPE } = planningScopeMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- roadmap-parser.cjs is an export= CommonJS module
 const roadmapParserMod = require("./roadmap-parser.cjs");
-const { stripShippedMilestones, extractCurrentMilestone, extractCurrentMilestoneScoped, currentMilestoneRawRanges, withPhaseSection, editCurrentMilestone, findMilestoneScopeHeadingLines, getMilestoneInfo, 
+const { stripShippedMilestones, 
+// #6271: moved to roadmap-parser.cts so state.cts shares the one sanitizer for echoed STATE.md milestone text.
+echoStateMilestone, extractCurrentMilestone, extractCurrentMilestoneScoped, currentMilestoneRawRanges, withPhaseSection, editCurrentMilestone, findMilestoneScopeHeadingLines, getMilestoneInfo, 
 // #5679: the STATE.md milestone read getMilestoneInfo itself uses, and the
 // archive-aware owner of a ROADMAP offset.
 readStateMilestoneScalar, classifyMilestoneScalar, milestoneVersionAtOffset, blankCodeAndComments, scanMilestonePhaseIds, 
@@ -1795,26 +1797,6 @@ function assertBracketGeneratedIdentity(command, config, customId) {
             'bracket phase identities are generated from the active milestone. ' +
             'Custom naming precedence under the bracket convention lands with #5067.');
     }
-}
-const STATE_MILESTONE_ECHO_LIMIT = 80;
-/**
- * #5726: STATE.md's `milestone:` value is untrusted text. Cap it at
- * `STATE_MILESTONE_ECHO_LIMIT` characters (ellipsis past the cap), then quote it
- * with `JSON.stringify` (the `phase.cts` precedent for echoed user text), which
- * escapes ESC/BEL/newlines; the characters JSON leaves raw but a terminal acts on
- * are escaped too: DEL and C1 controls, zero-width and direction marks
- * (U+200B-U+200F), line/paragraph separators and bidi embeddings/overrides
- * (U+2028-U+202E), the invisible-format block (U+2060-U+206F, incl. bidi
- * isolates), soft hyphen (U+00AD), Arabic letter mark (U+061C), Mongolian
- * vowel separator (U+180E), interlinear annotations (U+FFF9-U+FFFB) and the
- * BOM (U+FEFF).
- */
-function echoStateMilestone(value) {
-    const chars = Array.from(value);
-    const capped = chars.length > STATE_MILESTONE_ECHO_LIMIT
-        ? `${chars.slice(0, STATE_MILESTONE_ECHO_LIMIT).join('')}…`
-        : value;
-    return JSON.stringify(capped).replace(/[\u007f-\u009f\u{ad}\u{61c}\u{180e}\u{200b}-\u{200f}\u{2028}-\u{202e}\u{2060}-\u{206f}\u{feff}\u{fff9}-\u{fffb}]/gu, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`);
 }
 /**
  * #5726: the current-milestone window for a verb that WRITES to the ROADMAP.

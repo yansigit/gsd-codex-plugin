@@ -329,6 +329,17 @@ function gitSubcommand(args) {
 const SUB_REPO_GIT_HARDENING = [
     '-c', 'core.fsmonitor=false', '-c', 'log.showSignature=false', '-c', 'gpg.program=false',
 ];
+/**
+ * #6272: every `git log` and `git show` whose output this module parses (a sha, a time, a name list) states
+ * `--no-show-signature`.
+ * The single-repo path keeps the user's git config, and with `log.showSignature=true` a signed commit's `gpg:` lines
+ * land before its record, so the parser read the first field as something other than a sha and dropped the commit
+ * silently, and a `git show --name-only` listed the `gpg:` text as file names. The flag is also stated on the sub_repos
+ * path, where `SUB_REPO_GIT_HARDENING` already sets the config. The name-listing calls likewise state
+ * `-c diff.relative=false`: a user's `diff.relative=true` strips the working directory's prefix from the listed
+ * paths, which the repo-root join then reports as missing (a config, not an option, so every git version accepts it).
+ */
+const NO_SHOW_SIGNATURE = '--no-show-signature';
 function makeGit(projectDir, runner, leading = []) {
     return (args, cwd = projectDir) => {
         const result = runner([...leading, ...args], { cwd });
@@ -559,7 +570,7 @@ const withPrefix = (prefix, file) => (prefix === '' ? file : `${prefix}/${file}`
 function commitTimes(git, shas) {
     const times = new Map();
     for (const group of chunk(shas, SHA_CHUNK)) {
-        for (const line of git(['log', '--no-walk=unsorted', '--format=%H%x1f%ct', ...group, '--']).split('\n')) {
+        for (const line of git(['log', NO_SHOW_SIGNATURE, '--no-walk=unsorted', '--format=%H%x1f%ct', ...group, '--']).split('\n')) {
             const [sha, time] = line.split('\x1f');
             if (sha && time !== undefined && /^[0-9]+$/.test(time))
                 times.set(sha, Number(time));
@@ -842,13 +853,13 @@ function commitFiles(git, sha, parents) {
     if (parents > 1) {
         if (parents !== 2 || !supportsRemergeDiff(git))
             return [];
-        return splitNul(git(['-c', 'core.quotepath=off', 'show', '--remerge-diff', '--pretty=format:', '--name-only', '-z', sha, '--', '.', ...exports.SCOPE_EXCLUSION_PATHSPECS]));
+        return splitNul(git(['-c', 'core.quotepath=off', '-c', 'diff.relative=false', 'show', NO_SHOW_SIGNATURE, '--remerge-diff', '--pretty=format:', '--name-only', '-z', sha, '--', '.', ...exports.SCOPE_EXCLUSION_PATHSPECS]));
     }
-    const out = git(['-c', 'core.quotepath=off', 'show', '--first-parent', '--pretty=format:', '--name-only', '-z', sha, '--', '.', ...exports.SCOPE_EXCLUSION_PATHSPECS]);
+    const out = git(['-c', 'core.quotepath=off', '-c', 'diff.relative=false', 'show', NO_SHOW_SIGNATURE, '--first-parent', '--pretty=format:', '--name-only', '-z', sha, '--', '.', ...exports.SCOPE_EXCLUSION_PATHSPECS]);
     return splitNul(out);
 }
 function rangeFiles(git, base, tip) {
-    const out = git(['-c', 'core.quotepath=off', 'diff', '--name-only', '-z', `${base}..${tip}`, '--', '.', ...exports.SCOPE_EXCLUSION_PATHSPECS]);
+    const out = git(['-c', 'core.quotepath=off', '-c', 'diff.relative=false', 'diff', '--name-only', '-z', `${base}..${tip}`, '--', '.', ...exports.SCOPE_EXCLUSION_PATHSPECS]);
     return splitNul(out);
 }
 function finalizeFiles(scope, repoRoot, changed) {
@@ -885,7 +896,7 @@ function parseLog(out, withBody, parentsOut) {
 function subjectsFor(git, shas, withBody, chunkSize, parentsOut) {
     const out = [];
     for (const group of chunk(shas, chunkSize)) {
-        out.push(...parseLog(git(['log', '--no-walk=unsorted', logFormat(withBody), ...group, '--']), withBody, parentsOut));
+        out.push(...parseLog(git(['log', NO_SHOW_SIGNATURE, '--no-walk=unsorted', logFormat(withBody), ...group, '--']), withBody, parentsOut));
     }
     return out;
 }
@@ -926,7 +937,7 @@ function forkedAtOrBeforePhaseStart(git, p1, p2, rangeBase) {
 function phaseSideFiles(git, tip, p2, rangeBase, mergeSha) {
     const files = new Set();
     const out = git([
-        '-c', 'core.quotepath=off', 'log', '-m', '--format=%x01%H', '--name-only', '-z', tip, `^${p2}`,
+        '-c', 'core.quotepath=off', '-c', 'diff.relative=false', 'log', NO_SHOW_SIGNATURE, '-m', '--format=%x01%H', '--name-only', '-z', tip, `^${p2}`,
         ...(rangeBase === EMPTY_TREE ? [] : [`^${rangeBase}`]), '--', '.', ...exports.SCOPE_EXCLUSION_PATHSPECS,
     ]);
     let own = false;
@@ -1008,7 +1019,7 @@ const EMPTY_TREE = '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
  * anchor is the empty tree — `<empty>..<ref>` then includes the root commit's own files.
  */
 function phaseRangeBase(git, phaseDir, ref) {
-    const first = git(['log', ref, '--format=%H', '--diff-filter=A', '--', '.'], phaseDir)
+    const first = git(['log', NO_SHOW_SIGNATURE, ref, '--format=%H', '--diff-filter=A', '--', '.'], phaseDir)
         .split('\n').filter(Boolean).pop();
     if (!first)
         return null;
@@ -1143,7 +1154,7 @@ function resolvePhase(projectDir, unit, scope, git, ref, options, repoRoot, gath
     scope.reason = reason;
     scope.source = 'phase-range';
     const max = clampMaxCommits(options.maxCommits);
-    scope.commits = parseLog(git(['log', `${scope.rangeBase}..${ref}`, logFormat(options.includeBody === true), '-n', String(max), '--']), options.includeBody === true);
+    scope.commits = parseLog(git(['log', NO_SHOW_SIGNATURE, `${scope.rangeBase}..${ref}`, logFormat(options.includeBody === true), '-n', String(max), '--']), options.includeBody === true);
     finalizeFiles(scope, repoRoot, rangeFiles(git, scope.rangeBase, ref));
 }
 /** The plan/quick unit's matching commits (newest first, subject-anchored, `since` applied). */
@@ -1191,7 +1202,7 @@ function lookupSubjectCommits(projectDir, unit, scope, git, ref, options) {
         sinceArgs.push(`--since=${options.committedSince}`);
     }
     const rangeArgs = options.allBranches === true ? ['--branches'] : [range];
-    const out = git(['log', ...rangeArgs, logFormat(withBody), '-n', String(max * 2), ...sinceArgs, ...grepArgs, '--', ...pathspecs]);
+    const out = git(['log', NO_SHOW_SIGNATURE, ...rangeArgs, logFormat(withBody), '-n', String(max * 2), ...sinceArgs, ...grepArgs, '--', ...pathspecs]);
     // `--grep` matches ANY message line; a plan lookup is subject-anchored, so filter on the subject.
     const parentsOf = new Map();
     let commits = parseLog(out, withBody, parentsOf).filter((c) => anchored === null || anchored.test(c.subject)).slice(0, max);

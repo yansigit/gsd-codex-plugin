@@ -179,4 +179,4 @@ function mergeFederatedConfig(input) {
     }
     return { values, validKeys, warnings };
 }
-module.exports = { mergeFederatedConfig };
+module.exports = { mergeFederatedConfig, isWellFormedSlice: _isWellFormedSlice, typeMatchesSlice: _typeMatches };
