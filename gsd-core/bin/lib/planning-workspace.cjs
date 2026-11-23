@@ -147,6 +147,20 @@ function planningDir(cwd, ws, project) {
 function planningRoot(cwd) {
     return node_path_1.default.join(cwd, '.planning');
 }
+/**
+ * The one place that names a project's own `config.json` (ADR-1411 Decision 5, #6032): the file the
+ * active workstream or project owns. `ws` selects a workstream the way `planningDir` does; omit it
+ * for the environment's. Readers, probes and pre-write checks take the path from here, so
+ * `local/no-adhoc-config-merge` can flag any other construction of it. This module defines it
+ * because it owns the directory half (`planningDir`); `config-loader.cts` re-exports it.
+ */
+function projectConfigPath(cwd, ws) {
+    return node_path_1.default.join(planningDir(cwd, ws), 'config.json');
+}
+/** The flat root `config.json` a workstream inherits from (the loader's second project layer). */
+function rootConfigPath(cwd) {
+    return node_path_1.default.join(planningRoot(cwd), 'config.json');
+}
 const CONFIG_VALUE_ABSENT = Object.freeze({ present: false, value: undefined });
 /**
  * The value one config file sets at `keyPath`, if it sets one at all. Every
@@ -201,11 +215,11 @@ function ownConfigValue(configPath, keyPath) {
  */
 function readScopedConfigValue(cwd, keyPath, workstream) {
     try {
-        const scoped = ownConfigValue(node_path_1.default.join(planningDir(cwd, workstream), 'config.json'), keyPath);
+        const scoped = ownConfigValue(projectConfigPath(cwd, workstream), keyPath);
         if (scoped.present)
             return scoped;
         if ((workstream === undefined ? resolveEnvWorkstream() : workstream) !== null) {
-            return ownConfigValue(node_path_1.default.join(planningRoot(cwd), 'config.json'), keyPath);
+            return ownConfigValue(rootConfigPath(cwd), keyPath);
         }
     }
     catch {
@@ -670,6 +684,8 @@ module.exports = {
     createMemoryPointerAdapter,
     planningDir,
     planningRoot,
+    projectConfigPath,
+    rootConfigPath,
     resolveEnvWorkstream,
     resolvePhaseIdConvention,
     listAvailableWorkstreams,

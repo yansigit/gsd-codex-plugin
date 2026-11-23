@@ -25,6 +25,9 @@ const { SEVERITY, adviseRemedy } = healthDiagnosticMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- #6430 runtime-slash.cjs is an export= CommonJS module
 const runtimeSlashMod = require("../runtime-slash.cjs");
 const { resolveRuntime } = runtimeSlashMod;
+// eslint-disable-next-line @typescript-eslint/no-require-imports -- #6032 config-loader.cjs is an export= CommonJS module
+const configLoader = require("../config-loader.cjs");
+const { claudeSettingsLayers } = configLoader;
 const runtime_homes_cjs_1 = require("../runtime-homes.cjs");
 const package_identity_cjs_1 = require("../package-identity.cjs");
 /** The gsd-core plugin's key in `enabledPlugins` is `<name>@<marketplace>`. */
@@ -77,11 +80,7 @@ function checkContextBridge(snapshot) {
         const configDir = (0, runtime_homes_cjs_1.getGlobalConfigDir)('claude');
         // Claude Code's precedence, lowest first: user, project, local. A later scope overrides an earlier one per
         // `enabledPlugins` key, and its `statusLine` replaces the earlier one. (Managed settings are not read.)
-        const files = [
-            node_path_1.default.join(configDir, 'settings.json'),
-            node_path_1.default.join(snapshot.cwd, '.claude', 'settings.json'),
-            node_path_1.default.join(snapshot.cwd, '.claude', 'settings.local.json'),
-        ];
+        const files = claudeSettingsLayers(snapshot.cwd, configDir).map((layer) => layer.file).reverse();
         const enabled = new Map();
         let statusLineCommand = null;
         for (const file of files) {

@@ -30,7 +30,7 @@ const configFileReadMod = require("./config-file-read.cjs");
 const { readConfigFileBounded } = configFileReadMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const planningWorkspace = require("./planning-workspace.cjs");
-const { planningPaths, planningDir, findContextMdIn } = planningWorkspace;
+const { planningPaths, findContextMdIn } = planningWorkspace;
 const decisions_cjs_1 = require("./decisions.cjs");
 const markdown_sectionizer_cjs_1 = require("./markdown-sectionizer.cjs");
 // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -158,7 +158,7 @@ function parseJsonEvidence(text, span) {
  * (#5170, ADR-5057 §4).
  */
 function readGate(cwd) {
-    const cfgPath = node_path_1.default.join(planningDir(cwd), 'config.json');
+    const cfgPath = planningWorkspace.projectConfigPath(cwd);
     // Bounded read (#5759): a FIFO/device/oversized config is `unreadable` (reported), never waited on.
     let text;
     try {

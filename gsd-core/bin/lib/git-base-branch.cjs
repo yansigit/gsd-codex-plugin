@@ -30,9 +30,6 @@
  * Pure/testable: all I/O is injectable via the `deps` argument so unit
  * tests can run without touching the real filesystem or spawning real git.
  */
-var __importDefault = (this && this.__importDefault) || function (mod) {
-    return (mod && mod.__esModule) ? mod : { "default": mod };
-};
 Object.defineProperty(exports, "__esModule", { value: true });
 exports._readGitNested = _readGitNested;
 exports._readGitKey = _readGitKey;
@@ -46,7 +43,6 @@ exports.gitWorktreeInfoInternal = gitWorktreeInfoInternal;
 exports.phaseStartCommit = phaseStartCommit;
 exports.changedFilesSince = changedFilesSince;
 exports.cmdGitBaseBranch = cmdGitBaseBranch;
-const node_path_1 = __importDefault(require("node:path"));
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const configLoader = require("./config-loader.cjs");
 // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -113,7 +109,7 @@ function _readGitKey(config, field) {
 function readEffectiveGitConfig(cwd, deps) {
     let config = {};
     if (deps?.readFile && !deps.loadConfig) {
-        const raw = deps.readFile(node_path_1.default.join(cwd, '.planning', 'config.json'));
+        const raw = deps.readFile(configLoader.rootConfigPath(cwd));
         if (raw) {
             try {
                 const parsed = JSON.parse(raw);

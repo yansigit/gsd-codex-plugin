@@ -74,11 +74,6 @@ const DEPTH_TO_GRANULARITY = {
     comprehensive: 'fine',
 };
 // ─── Internal helpers ─────────────────────────────────────────────────────────
-function planningDir(cwd, workstream) {
-    if (!workstream)
-        return (0, node_path_1.join)(cwd, '.planning');
-    return (0, node_path_1.join)(cwd, '.planning', 'workstreams', workstream);
-}
 function detectSubRepos(cwd) {
     const results = [];
     try {
@@ -279,14 +274,14 @@ function readConfigBounded(filePath) {
         catch { /* best-effort */ }
     }
 }
-function migrateOnDisk(cwd, workstream, configPathOverride) {
+function migrateOnDisk(cwd, configPath) {
     // #3749: the caller (cmdMigrateConfig in config.cts) supplies the config
-    // path resolved through planning-workspace's PROJECT-aware planningDir.
+    // path resolved through the owner's PROJECT-aware `projectConfigPath`.
     // This module cannot import that sibling (#3571 install-layout contract),
-    // and its own local planningDir above is deliberately workstream-only —
-    // resolving here through the local copy made migrate-config under
-    // GSD_PROJECT rewrite the ROOT config instead of the scoped one.
-    const configPath = configPathOverride ?? (0, node_path_1.join)(planningDir(cwd, workstream), 'config.json');
+    // and a path built here could only be workstream-scoped — resolving through
+    // such a local copy made migrate-config under GSD_PROJECT rewrite the ROOT
+    // config instead of the scoped one. #6032: the path is therefore a required
+    // argument, never rebuilt here.
     let raw;
     try {
         raw = readConfigBounded(configPath);

@@ -14,7 +14,9 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 const node_path_1 = __importDefault(require("node:path"));
 const configuration_cjs_1 = require("./configuration.cjs");
 const runtime_homes_cjs_1 = require("./runtime-homes.cjs");
-const shell_command_projection_cjs_1 = require("./shell-command-projection.cjs");
+// eslint-disable-next-line @typescript-eslint/no-require-imports -- #6030 config-file-read.cjs is an export= CommonJS module
+const configFileRead = require("./config-file-read.cjs");
+const { readConfigFileBounded } = configFileRead;
 const settings_jsonc_cjs_1 = require("./settings-jsonc.cjs");
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- #5096 CJS interop import, as in the sibling config modules
 const loader = require("./config-loader.cjs");
@@ -53,7 +55,10 @@ const UNSAFE_SEGMENTS = new Set(['__proto__', 'constructor', 'prototype']);
 function readConfigLayer(file, family, readFile) {
     let raw;
     try {
-        raw = (readFile ?? shell_command_projection_cjs_1.platformReadSync)(file);
+        // Bounded regular-file read (#5759): a FIFO, device or oversized layer is a fault here, never a
+        // blocking open. Migrated readers inherit this guarantee from the resolver. A caller that holds
+        // the text already (family B, #6031) supplies its own `readFile`.
+        raw = readFile ? readFile(file) : readConfigFileBounded(file);
     }
     catch (err) {
         return { kind: 'fault', fault: {
@@ -179,9 +184,16 @@ function fileLayers(cwd, family, io) {
 }
 /** Resolve one eligible key without ever rewriting a configuration layer. */
 function resolveConfigValue(key, opts) {
+    // `configSchema` lets a caller that already holds a capability registry snapshot resolve
+    // against it; `quiet` keeps a read that must never write to stderr (an activation gate, #5139)
+    // from reporting an unusable layer. `honorGlobal` lets a caller that must stay inside what the
+    // loader reads from the global defaults file (`honorsGlobalDefaults`) skip that layer for a key
+    // outside it. None of the three changes which of the remaining layers wins.
+    const warn = opts.quiet === true ? () => false : warnUnusableInput;
     let cachedSchema;
-    const capabilitySchema = () => cachedSchema ??= getCapabilityConfigSchema(opts.cwd);
-    const family = keyFamily(key, capabilitySchema);
+    const capabilitySchema = () => cachedSchema ??= opts.configSchema ?? getCapabilityConfigSchema(opts.cwd);
+    const declaredFamily = keyFamily(key, capabilitySchema);
+    const family = declaredFamily ?? (opts.allowUndeclared === true ? 'A' : null);
     const missing = (reason) => ({
         found: false, value: undefined, layer: null, reason,
     });
@@ -189,7 +201,7 @@ function resolveConfigValue(key, opts) {
         return missing(CONFIG_REASON.NOT_CONFIGURED);
     if (opts.family && opts.family !== family)
         throw new RangeError(`Config key ${key} belongs to family ${family}`);
-    const federatedSlice = family === 'A' && !isCentralConfigKey(key)
+    const federatedSlice = declaredFamily === 'A' && !isCentralConfigKey(key)
         ? capabilitySchema()[key] : null;
     const entries = [];
     const faults = [];
@@ -202,6 +214,8 @@ function resolveConfigValue(key, opts) {
     const runtimeIo = family === 'B' ? opts.io : undefined;
     const layers = fileLayers(opts.cwd, family, runtimeIo);
     for (const [rank, { layer, file }] of layers.entries()) {
+        if (layer === 'global-defaults' && opts.honorGlobal && !opts.honorGlobal(key))
+            continue;
         const read = readConfigLayer(file, family, runtimeIo?.readFile);
         if (read.kind === 'fault') {
             faults.push({ rank, fault: read.fault });
@@ -218,7 +232,7 @@ function resolveConfigValue(key, opts) {
             emptyFile = true;
         const data = family === 'A' ? (0, configuration_cjs_1.normalizeLegacyKeys)(read.data) : null;
         if (data?.skipped.length) {
-            warnUnusableInput({ reason: UNUSABLE_REASON.CONFIG_SECTION_NOT_OBJECT, source: file });
+            warn({ reason: UNUSABLE_REASON.CONFIG_SECTION_NOT_OBJECT, source: file });
         }
         if (data?.normalizations.some((normalization) => normalization.requiresFilesystem)) {
             const planningSection = data.parsed['planning'];
@@ -278,7 +292,7 @@ function resolveConfigValue(key, opts) {
     const relevant = faults.filter(({ rank }) => rank < winnerRank);
     const hasRelevantTypeMismatch = typeMismatchRanks.some((rank) => rank < winnerRank);
     for (const { fault } of relevant) {
-        warnUnusableInput({ reason: UNUSABLE_REASON.CONFIG_UNREADABLE, source: fault.path });
+        warn({ reason: UNUSABLE_REASON.CONFIG_UNREADABLE, source: fault.path });
     }
     const faultReason = relevant.length > 0 ? relevant[0].fault.reason : null;
     const mismatchReason = hasRelevantTypeMismatch ? CONFIG_REASON.CONFIG_TYPE_MISMATCH : null;

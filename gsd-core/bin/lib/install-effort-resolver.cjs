@@ -36,6 +36,9 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 const node_fs_1 = __importDefault(require("node:fs"));
 const node_path_1 = __importDefault(require("node:path"));
 const runtime_homes_cjs_1 = require("./runtime-homes.cjs");
+// eslint-disable-next-line @typescript-eslint/no-require-imports -- #6030 CJS interop import, as in the sibling config modules
+const configLoader = require("./config-loader.cjs");
+const { _deepMergeConfig, globalDefaultsPath } = configLoader;
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- config-file-read.cjs is an export= CommonJS module
 const configFileReadMod = require("./config-file-read.cjs");
 const { unboundedConfigFileReason, printablePath, readConfigFileBounded } = configFileReadMod;
@@ -150,7 +153,7 @@ function _getGsdEffortCatalog() {
 function _findAncestorGsdConfigPath(targetDir) {
     let probeDir = node_path_1.default.resolve(targetDir);
     for (let depth = 0; depth < 8; depth += 1) {
-        const candidate = node_path_1.default.join(probeDir, '.planning', 'config.json');
+        const candidate = configLoader.rootConfigPath(probeDir);
         if (installFs().existsSync(candidate))
             return candidate;
         const parent = node_path_1.default.dirname(probeDir);
@@ -174,7 +177,7 @@ function _findAncestorGsdConfigPath(targetDir) {
  * @param targetDir  Runtime install root (walks up to find .planning/).
  */
 function readGsdEffectiveEffortConfig(targetDir = null) {
-    const homeDefaults = _readGsdConfigFile(node_path_1.default.join((0, runtime_homes_cjs_1.resolveGsdHome)(), '.gsd', 'defaults.json'), '~/.gsd/defaults.json');
+    const homeDefaults = _readGsdConfigFile(globalDefaultsPath((0, runtime_homes_cjs_1.resolveGsdHome)()), '~/.gsd/defaults.json');
     let projectConfig = null;
     if (targetDir) {
         const candidate = _findAncestorGsdConfigPath(targetDir);
@@ -197,20 +200,15 @@ function readGsdEffectiveEffortConfig(targetDir = null) {
     // home block's `light`/`standard` entries (the top-level spread would
     // otherwise replace the whole block, the same defect class as the
     // manifest-replacement this change fixes).
-    return {
-        ...(homeEffort || {}),
-        ...(projectEffort || {}),
-        // Deep-merge agent_overrides (project wins per-key)
-        agent_overrides: {
-            ...((homeEffort && homeEffort.agent_overrides) || {}),
-            ...((projectEffort && projectEffort.agent_overrides) || {}),
-        },
-        // Deep-merge routing_tier_defaults (project wins per-tier)
-        routing_tier_defaults: {
-            ...((homeEffort && homeEffort.routing_tier_defaults) || {}),
-            ...((projectEffort && projectEffort.routing_tier_defaults) || {}),
-        },
-    };
+    // One merge owner (#6030): the loader's deep merge, with both blocks normalized first so a
+    // non-object `agent_overrides` or `routing_tier_defaults` is treated as absent here.
+    const block = (value) => value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+    const asBlocks = (effort) => ({
+        ...(effort || {}),
+        agent_overrides: block(effort && effort.agent_overrides),
+        routing_tier_defaults: block(effort && effort.routing_tier_defaults),
+    });
+    return _deepMergeConfig(asBlocks(homeEffort), asBlocks(projectEffort));
 }
 /**
  * #443 — Resolve install-time effort for a given agent, using the same

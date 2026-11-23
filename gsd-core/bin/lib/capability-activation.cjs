@@ -5,16 +5,12 @@
  * Shared by the Capability State Resolver and Loop Resolver so config-key
  * activation uses one precedence chain and one prototype-pollution guard.
  */
-var __importDefault = (this && this.__importDefault) || function (mod) {
-    return (mod && mod.__esModule) ? mod : { "default": mod };
-};
-const node_path_1 = __importDefault(require("node:path"));
-// eslint-disable-next-line @typescript-eslint/no-require-imports
-const planningWorkspaceMod = require("./planning-workspace.cjs");
-const { planningDir, planningRoot } = planningWorkspaceMod;
-// eslint-disable-next-line @typescript-eslint/no-require-imports -- config-file-read.cjs is an export= CommonJS module
-const configFileReadMod = require("./config-file-read.cjs");
-const { readConfigFileBounded } = configFileReadMod;
+// eslint-disable-next-line @typescript-eslint/no-require-imports -- #6030 CJS interop import, as in the sibling config modules
+const configValueResolver = require("./config-value-resolver.cjs");
+const { resolveConfigValue } = configValueResolver;
+// eslint-disable-next-line @typescript-eslint/no-require-imports -- #6030 CJS interop import, as in the sibling config modules
+const configLoader = require("./config-loader.cjs");
+const { honorsGlobalDefaults } = configLoader;
 function _getNestedConfigValue(config, dotKey) {
     const segments = dotKey.split('.');
     let current = config;
@@ -32,38 +28,6 @@ function _getNestedConfigValue(config, dotKey) {
         current = cur[seg];
     }
     return { found: true, value: current };
-}
-const _warnedRawConfigPaths = new Set();
-// #6332: per invocation, like the config-loader warning sets.
-// eslint-disable-next-line @typescript-eslint/no-require-imports -- invocation-scope.cjs is an export= CommonJS module
-const invocationScopeMod = require("./invocation-scope.cjs");
-invocationScopeMod.registerInvocationReset('capability-activation.warnedRawConfigPaths', () => { _warnedRawConfigPaths.clear(); });
-function _readRawConfigKey(filePath, dotKey, quiet = false) {
-    try {
-        // Bounded read (#5759): null is an absent file; a FIFO/device/oversized one throws to the
-        // catch below, which reports the key as not found.
-        const raw = readConfigFileBounded(filePath);
-        if (raw === null)
-            return { found: false, value: undefined };
-        let parsed;
-        try {
-            parsed = JSON.parse(raw);
-        }
-        catch {
-            if (!quiet && !_warnedRawConfigPaths.has(filePath)) {
-                _warnedRawConfigPaths.add(filePath);
-                try {
-                    process.stderr.write(`gsd-tools: warning: failed to parse ${filePath} as JSON — skipping for activation resolution\n`);
-                }
-                catch { /* stderr might be closed */ }
-            }
-            return { found: false, value: undefined };
-        }
-        return _getNestedConfigValue(parsed, dotKey);
-    }
-    catch {
-        return { found: false, value: undefined };
-    }
 }
 /**
  * Resolve the raw value for a dotted config key using the four-level precedence
@@ -89,17 +53,24 @@ function resolveConfigKey(dotKey, opts) {
     const fromConfig = _getNestedConfigValue(config, dotKey);
     if (fromConfig.found)
         return { found: true, value: fromConfig.value };
-    // Level 2 + 3: raw config.json files (only when cwd is available)
+    // Level 2 + 3 (+ the global defaults layer, #4071): the Config Value Resolution Module walks the
+    // workstream, root and global-defaults files (#6030, ADR-1411 Decision 5). Only a file layer
+    // counts here: a built-in or schema default must not make an unset switch look configured, and
+    // the injected registry below stays the schema-default source.
     if (cwd) {
-        const wsConfigPath = node_path_1.default.join(planningDir(cwd), 'config.json');
-        const rootConfigPath = node_path_1.default.join(planningRoot(cwd), 'config.json');
-        const fromWs = _readRawConfigKey(wsConfigPath, dotKey, quiet);
-        if (fromWs.found)
-            return { found: true, value: fromWs.value };
-        if (wsConfigPath !== rootConfigPath) {
-            const fromRoot = _readRawConfigKey(rootConfigPath, dotKey, quiet);
-            if (fromRoot.found)
-                return { found: true, value: fromRoot.value };
+        const rawSchema = registry['configSchema'];
+        const resolved = resolveConfigValue(dotKey, {
+            cwd,
+            quiet,
+            honorGlobal: honorsGlobalDefaults,
+            // A gate key the registry does not declare still resolves over the file layers (#6032).
+            allowUndeclared: true,
+            ...(rawSchema && typeof rawSchema === 'object' && !Array.isArray(rawSchema)
+                ? { configSchema: rawSchema }
+                : {}),
+        });
+        if (resolved.found && (resolved.layer === 'workstream' || resolved.layer === 'root' || resolved.layer === 'global-defaults')) {
+            return { found: true, value: resolved.value };
         }
     }
     // Level 4: registry configSchema default
@@ -148,7 +119,6 @@ function _resolvePointGate(pointFrom, point, config, cwd, registry) {
 }
 module.exports = {
     _getNestedConfigValue,
-    _readRawConfigKey,
     _resolveActivationValue,
     _resolvePointGate,
     resolveConfigKey,

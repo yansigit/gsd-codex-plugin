@@ -32,9 +32,11 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
  * injected via `withInstallFs`/`installRuntimeArtifacts(..., { fs })`,
  * exactly the class of bug those two modules were fixed for.
  */
-const node_path_1 = __importDefault(require("node:path"));
 const node_os_1 = __importDefault(require("node:os"));
 const runtime_homes_cjs_1 = require("./runtime-homes.cjs");
+// eslint-disable-next-line @typescript-eslint/no-require-imports -- #6030 CJS interop import, as in the sibling config modules
+const configLoader = require("./config-loader.cjs");
+const { _deepMergeConfig, globalDefaultsPath } = configLoader;
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- config-file-read.cjs is an export= CommonJS module
 const configFileReadMod = require("./config-file-read.cjs");
 const { unboundedConfigFileReason, printablePath, readConfigFileBounded } = configFileReadMod;
@@ -83,7 +85,7 @@ const { resolveTierEntry: gsdResolveTierEntry, resolveModelPolicy: gsdResolveMod
 function readGsdGlobalModelOverrides(options = {}) {
     try {
         const home = (0, runtime_homes_cjs_1.resolveGsdHome)(options.homedir ? options.homedir() : node_os_1.default.homedir());
-        const defaultsPath = node_path_1.default.join(home, '.gsd', 'defaults.json');
+        const defaultsPath = globalDefaultsPath(home);
         if (!installFs().existsSync(defaultsPath))
             return null;
         const raw = readInstallConfigText(defaultsPath, 'global defaults'); // #5759: never block on a planted FIFO
@@ -143,7 +145,7 @@ function readGsdEffectiveModelOverrides(targetDir = null, options = {}) {
     if (!global && !projectOverrides)
         return null;
     // Per-project wins on conflict; preserve non-conflicting global keys.
-    return { ...(global || {}), ...(projectOverrides || {}) };
+    return _deepMergeConfig(global || {}, projectOverrides || {});
 }
 function readGsdAgentTools(config) {
     const raw = config?.agent_tools;
@@ -171,7 +173,7 @@ function readGsdAgentTools(config) {
  */
 function readGsdEffectiveAgentTools(targetDir = null, options = {}) {
     const home = (0, runtime_homes_cjs_1.resolveGsdHome)(options.homedir ? options.homedir() : node_os_1.default.homedir());
-    const globalConfig = _readGsdConfigFile(node_path_1.default.join(home, '.gsd', 'defaults.json'), 'global defaults');
+    const globalConfig = _readGsdConfigFile(globalDefaultsPath(home), 'global defaults');
     let projectConfig = null;
     if (targetDir) {
         const candidate = _findAncestorGsdConfigPath(targetDir);
@@ -187,7 +189,7 @@ function readGsdEffectiveAgentTools(targetDir = null, options = {}) {
         return {};
     if (!global && !project)
         return null;
-    return { ...(global || {}), ...(project || {}) };
+    return _deepMergeConfig(global || {}, project || {});
 }
 /**
  * Build a runtime-aware tier resolver for the install path (#2517).
@@ -201,7 +203,7 @@ function readGsdEffectiveAgentTools(targetDir = null, options = {}) {
  * baked, letting the runtime's own default/session model govern).
  */
 function readGsdRuntimeProfileResolver(targetDir = null) {
-    const homeDefaults = _readGsdConfigFile(node_path_1.default.join((0, runtime_homes_cjs_1.resolveGsdHome)(), '.gsd', 'defaults.json'), '~/.gsd/defaults.json');
+    const homeDefaults = _readGsdConfigFile(globalDefaultsPath((0, runtime_homes_cjs_1.resolveGsdHome)()), '~/.gsd/defaults.json');
     // #2875 defect fix (Generative Fix Divergence): same shared walk as
     // readGsdEffectiveModelOverrides above — see that call site's comment.
     let projectConfig = null;
@@ -210,6 +212,10 @@ function readGsdRuntimeProfileResolver(targetDir = null) {
         if (candidate)
             projectConfig = _readGsdConfigFile(candidate, '.planning/config.json');
     }
+    // Each key is a whole value, not a field-by-field merge: the project's truthy value replaces
+    // the home value outright. A model policy or tier-override table assembled from both files
+    // would name a provider from one and budgets from the other, so these four stay a replace
+    // (#3705: model_policy follows the same project-wins-over-home precedence as the others).
     const merged = {
         runtime: (projectConfig && projectConfig.runtime) ||
             (homeDefaults && homeDefaults.runtime) ||
@@ -220,7 +226,6 @@ function readGsdRuntimeProfileResolver(targetDir = null) {
         model_profile_overrides: (projectConfig && projectConfig.model_profile_overrides) ||
             (homeDefaults && homeDefaults.model_profile_overrides) ||
             null,
-        // #3705: same project-wins-over-home precedence as every other key here.
         model_policy: (projectConfig && projectConfig.model_policy) ||
             (homeDefaults && homeDefaults.model_policy) ||
             null,

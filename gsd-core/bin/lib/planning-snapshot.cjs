@@ -303,7 +303,7 @@ function buildStateFields(statePath) {
  * rootBase-vs-wsBase split at cmdValidateHealth's top.
  */
 function buildConfigField(cwd) {
-    const configPath = node_path_1.default.join(planningRoot(cwd), 'config.json');
+    const configPath = planningWorkspace.rootConfigPath(cwd);
     try {
         // Bounded read (#5759): null is an absent file; a FIFO/device/oversized one throws and is
         // reported as present-but-unreadable below.

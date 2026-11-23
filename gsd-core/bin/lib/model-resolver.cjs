@@ -20,24 +20,20 @@
  *   - ./model-catalog.cjs    (MODEL_ALIAS_MAP, RUNTIME_PROFILE_MAP, PROVIDER_PRESETS, VALID_TIERS,
  *                             CLAUDE_AGENT_ALIASES — re-exported below for back-compat, #3241)
  */
-var __importDefault = (this && this.__importDefault) || function (mod) {
-    return (mod && mod.__esModule) ? mod : { "default": mod };
-};
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const configLoaderModule = require("./config-loader.cjs");
-const { loadConfig, readConfigFileBounded } = configLoaderModule;
+const { loadConfig } = configLoaderModule;
+// eslint-disable-next-line @typescript-eslint/no-require-imports -- #6030 CJS interop import, as in the sibling config modules
+const configValueResolver = require("./config-value-resolver.cjs");
+const { resolveConfigValue } = configValueResolver;
 // ─── Configuration Module (for CANONICAL_CONFIG_DEFAULTS used by effort/fast_mode resolvers) ─
 const configuration_cjs_1 = require("./configuration.cjs");
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const modelProfiles = require("./model-profiles.cjs");
 const { MODEL_PROFILES, AGENT_TO_PHASE_TYPE, AGENT_DEFAULT_TIERS, VALID_AGENT_TIERS, nextTier } = modelProfiles;
 const model_catalog_cjs_1 = require("./model-catalog.cjs");
-const node_path_1 = __importDefault(require("node:path"));
 const runtime_name_policy_cjs_1 = require("./runtime-name-policy.cjs");
 const runtime_slash_cjs_1 = require("./runtime-slash.cjs");
-// eslint-disable-next-line @typescript-eslint/no-require-imports
-const planningWorkspaceMod = require("./planning-workspace.cjs");
-const { planningDir } = planningWorkspaceMod;
 // ─── #2297: per-install runtime identity for the resolve_model_ids:"omit" gate ─
 //
 // The installer writes `resolve_model_ids:"omit"` into the SHARED
@@ -78,31 +74,11 @@ function hasNativeModelAliases(runtime) {
 // out-of-scope guard + #2517 finding #4): an explicit project "omit" is honored
 // regardless of runtime, whereas an "omit" that came only from the global
 // defaults is ignored by native-alias runtimes. Workstream/project-scope aware
-// via planningDir (mirrors loadConfig's precedence: workstream value wins over
-// root); a plain read avoids loadConfig's normalization side effects.
+// via the Config Value Resolution Module (#6030): the producing layer says whether the
+// "omit" came from the project (workstream or root) or only from the global defaults.
 function projectExplicitlySetsOmit(cwd) {
-    const wsDir = planningDir(cwd);
-    const rootDir = node_path_1.default.join(cwd, '.planning');
-    const layers = wsDir === rootDir ? [rootDir] : [wsDir, rootDir]; // workstream > root
-    for (const dir of layers) {
-        try {
-            // Same bounded regular-file reader as the loader (#5759): a FIFO/device/oversized
-            // layer throws instead of blocking, and an absent layer returns null.
-            const raw = readConfigFileBounded(node_path_1.default.join(dir, 'config.json'));
-            if (raw === null)
-                continue;
-            const parsed = JSON.parse(raw);
-            const value = parsed?.['resolve_model_ids'];
-            // First layer that sets the key wins (matches loadConfig's deep-merge
-            // precedence). A layer that omits the key falls through to the next.
-            if (value !== undefined)
-                return value === 'omit';
-        }
-        catch {
-            // Absent/unreadable layer — try the next.
-        }
-    }
-    return false;
+    const resolved = resolveConfigValue('resolve_model_ids', { cwd, family: 'A' });
+    return resolved.found && (resolved.layer === 'workstream' || resolved.layer === 'root') && resolved.value === 'omit';
 }
 /**
  * #2517 — Resolve the runtime-aware tier entry for (runtime, tier).
