@@ -186,6 +186,29 @@ const DOCS_GUARD_TESTS = {
     'docs/zh-CN/CONFIGURATION.md',
     'docs/zh-CN/INVENTORY.md',
   ],
+  // #6573: the same, for the batch 9 contracts (tests/text-contracts.batch9.test.cjs copies these docs).
+  'tests/text-contracts.batch9.test.cjs': [
+    'docs/CONFIGURATION.md',
+    'docs/CONTEXT-INDEX.json',
+    'docs/adr/550-spec-phase-probe-contract.md',
+    'docs/ja-JP/reference/state-md.md',
+    'docs/ko-KR/reference/state-md.md',
+    'docs/pt-BR/reference/state-md.md',
+    'docs/reference/plan-md.md',
+    'docs/reference/state-md.md',
+    'docs/zh-CN/reference/state-md.md',
+  ],
+  // #6577: the same, for the batch 10 contracts (tests/text-contracts.batch10.test.cjs copies these docs).
+  'tests/text-contracts.batch10.test.cjs': [
+    'docs/COMMANDS.md',
+    'docs/FEATURES.md',
+    'docs/contributor-standards.md',
+    'docs/ja-JP/COMMANDS.md',
+    'docs/ja-JP/FEATURES.md',
+    'docs/ko-KR/COMMANDS.md',
+    'docs/ko-KR/FEATURES.md',
+    'docs/reference/agents.md',
+  ],
   'tests/adr-612-bracket-new-project-config.test.cjs': ['docs/CONFIGURATION.md'],
   // Walks docs/adr/ as a directory (builds/reads docs/adr/README.md and
   // fixture ADRs throughout) and separately reads docs/contributor-standards.md.
@@ -233,17 +256,7 @@ const DOCS_GUARD_TESTS = {
   // #4974: doc/workflow content-parity checks read docs/CONFIGURATION.md's
   // Gate Settings section directly (see tests/gates-confirmation-toggle-config.test.cjs).
   'tests/gates-confirmation-toggle-config.test.cjs': ['docs/CONFIGURATION.md'],
-  'tests/context-index-sync.test.cjs': ['docs/CONTEXT-INDEX.json'],
   'tests/context-predicates-query.test.cjs': ['docs/contributor-standards.md'],
-  'tests/contributor-standards.test.cjs': ['docs/contributor-standards.md'],
-  'tests/cursor-reviewer.test.cjs': [
-    'docs/COMMANDS.md',
-    'docs/FEATURES.md',
-    'docs/ja-JP/COMMANDS.md',
-    'docs/ja-JP/FEATURES.md',
-    'docs/ko-KR/COMMANDS.md',
-    'docs/ko-KR/FEATURES.md',
-  ],
   'tests/discuss-mode.test.cjs': ['docs/workflow-discuss-mode.md'],
   // Walks docs/*.md and every docs/<locale>/*.md dir dynamically
   // (docs-parity-live-registry.test.cjs:42, 428) — deliberately generic.
@@ -262,15 +275,7 @@ const DOCS_GUARD_TESTS = {
     'docs/pt-BR/ARCHITECTURE.md',
     'docs/pt-BR/INVENTORY.md',
   ],
-  'tests/docs-state-md-locale-parity.test.cjs': [
-    'docs/reference/state-md.md',
-    'docs/ja-JP/reference/state-md.md',
-    'docs/zh-CN/reference/state-md.md',
-    'docs/ko-KR/reference/state-md.md',
-    'docs/pt-BR/reference/state-md.md',
-  ],
   'tests/drift-detection.test.cjs': ['docs/CONFIGURATION.md', 'docs/reference/agents.md'],
-  'tests/edge-probe-docs-fixtures.test.cjs': ['docs/adr/550-spec-phase-probe-contract.md'],
   'tests/edit-phase.test.cjs': [
     'docs/INVENTORY.md',
     'docs/INVENTORY-MANIFEST.json',
@@ -384,7 +389,6 @@ const DOCS_GUARD_TESTS = {
     'docs/USER-GUIDE.md',
     'docs/ARCHITECTURE.md',
   ],
-  'tests/planner-estimate-emission.test.cjs': ['docs/reference/plan-md.md', 'docs/CONFIGURATION.md'],
   'tests/precondition-element.test.cjs': ['docs/reference/plan-md.md'],
   'tests/product-name-purity.test.cjs': [
     'docs/README.md',
@@ -447,7 +451,6 @@ const DOCS_GUARD_TESTS = {
     'docs/pt-BR/how-to/design-a-ui-phase.md',
   ],
   'tests/verifier-behavior-unverified.test.cjs': ['docs/reference/planning-artifacts.md'],
-  'tests/verifier-coincidental-reliance.test.cjs': ['docs/reference/agents.md'],
   'tests/verify.test.cjs': ['docs/reference/plan-md.md'],
   // #5118 V43: asserts the deleted execute-phase/steps/stale-reverification.md
   // is absent from the generated inventory manifest.
