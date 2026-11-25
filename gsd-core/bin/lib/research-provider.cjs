@@ -14,7 +14,7 @@
 // ---------------------------------------------------------------------------
 const PROVIDER_WATERFALL = {
     docs: ['context7', 'ref', 'jina', 'websearch'],
-    web: ['exa', 'tavily', 'perplexity', 'brave', 'websearch'],
+    web: ['exa', 'tavily', 'perplexity', 'brave', 'serply', 'websearch'],
     scrape: ['firecrawl', 'jina'],
 };
 function authorityOf(provider) {
@@ -29,6 +29,7 @@ function authorityOf(provider) {
         case 'tavily':
         case 'perplexity':
         case 'brave':
+        case 'serply':
         case 'websearch':
             return 'web';
         default:
@@ -85,6 +86,7 @@ function providerAvailability(config) {
         firecrawl: Boolean(cfg.firecrawl),
         ref: Boolean(cfg.ref_search),
         perplexity: Boolean(cfg.perplexity),
+        serply: Boolean(cfg.serply_search),
     };
 }
 // ---------------------------------------------------------------------------

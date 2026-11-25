@@ -80,7 +80,9 @@ exports.CLI_SURFACE = deepFreeze({
         unknownFlagMessage: 'Unknown flag for config-new-project: {flag}',
     },
     'config-path': { positionals: 1 },
-    'migrate-config': { positionals: 1 },
+    'config-ensure-section': { positionals: 1, rejectShortFlags: true, unknownFlagMessage: 'Unknown flag for config-ensure-section: {flag}', rejectedGlobalFlags: ['pick', 'default'] },
+    'config-set-model-profile': { positionals: 2, rejectShortFlags: true, unknownFlagMessage: 'Unknown flag for config-set-model-profile: {flag}', rejectedGlobalFlags: ['pick', 'default'] },
+    'migrate-config': { positionals: 1, rejectShortFlags: true, unknownFlagMessage: 'Unknown flag for migrate-config: {flag}', rejectedGlobalFlags: ['pick', 'default'] },
     // ─── research ──────────────────────────────────────────────────────────────
     // The usage line names `[--kind <k>]` for get; the handler never reads it but callers pass it (research-cli tests).
     'research-store.get': { positionals: 3, valueFlags: ['kind'] },
@@ -379,9 +381,7 @@ exports.UNDECLARED_VERBS = deepFreeze([
     'check.decision-coverage-plan',
     'check.decision-coverage-verify',
     'claude-orchestration',
-    'config-ensure-section',
     'config-get',
-    'config-set-model-profile',
     'docs-init',
     'estimate-calibrate',
     'estimate-calibration',

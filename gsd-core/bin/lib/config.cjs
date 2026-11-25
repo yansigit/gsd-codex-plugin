@@ -281,6 +281,8 @@ function planNewProjectConfig(userChoices) {
     const hasPerplexity = !!(process.env['PERPLEXITY_API_KEY'] || node_fs_1.default.existsSync(perplexityKeyFile));
     const jinaKeyFile = node_path_1.default.join(gsdHome, '.gsd', 'jina_api_key');
     const hasJina = !!(process.env['JINA_API_KEY'] || node_fs_1.default.existsSync(jinaKeyFile));
+    const serplyKeyFile = node_path_1.default.join(gsdHome, '.gsd', 'serply_api_key');
+    const hasSerplySearch = !!(process.env['SERPLY_API_KEY'] || node_fs_1.default.existsSync(serplyKeyFile));
     // Load user-level defaults from $GSD_HOME/.gsd/defaults.json if available
     const globalDefaultsPath = configLoader.globalDefaultsPath(gsdHome);
     let userDefaults = {};
@@ -313,6 +315,7 @@ function planNewProjectConfig(userChoices) {
         ref_search: hasRefSearch,
         perplexity: hasPerplexity,
         jina: hasJina,
+        serply_search: hasSerplySearch,
         git: {
             branching_strategy: CONFIG_DEFAULTS.branching_strategy,
             create_tag: true,
