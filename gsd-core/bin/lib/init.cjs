@@ -103,7 +103,7 @@ const { resolveModelInternal, resolveGranularityInternal, assertValidGranularity
 const { phaseDirectoryOptions, findPhaseInternal, listMilestonePhaseDirs, listAllPhaseDirs, } = phaseLocator;
 const { getRoadmapPhaseInternal, getMilestoneInfo, stripShippedMilestones, extractCurrentMilestone, } = roadmapParser;
 const { pathExistsInternal, generateSlugInternal, toPosixPath } = coreUtils;
-const { comparePhaseNum, phaseDirectoryName, customPhaseQuery, customDirectoryOwner, phaseScanTokenSource, phaseNumberTokenSource, phaseKeyFromToken, phaseDirectoryContext, normalizePhaseName, stripProjectCodePrefix, PHASE_NUMBER_TOKEN_SOURCE, PHASE_DEP_REF_SOURCE, extractPhaseDependencyTokens, isForeignPrefixedPhaseQuery, isSentinelPhaseId, extractPhaseToken, scopeToPhase, renderPhaseBranchName, parsePhaseId, renderPhaseId, bracketQualifiedKey, phaseHeadingPrefixSrcFor, parsePhaseChecklistLine, PHASE_HEADING_BASELINE, buildPhaseHeadingScanRegex, } = phaseId;
+const { comparePhaseNum, phaseDirectoryName, customPhaseQuery, customDirectoryOwner, phaseScanTokenSource, phaseNumberTokenSource, phaseKeyFromToken, phaseDirectoryContext, normalizePhaseName, stripProjectCodePrefix, PHASE_NUMBER_TOKEN_SOURCE, PHASE_DEP_REF_SOURCE, extractPhaseDependencyTokens, isNegatedDependencyLead, isForeignPrefixedPhaseQuery, isSentinelPhaseId, extractPhaseToken, scopeToPhase, renderPhaseBranchName, parsePhaseId, renderPhaseId, bracketQualifiedKey, phaseHeadingPrefixSrcFor, parsePhaseChecklistLine, PHASE_HEADING_BASELINE, buildPhaseHeadingScanRegex, } = phaseId;
 const { phaseToken } = phaseIdDisplayMod;
 const { pruneOrphanedWorktrees } = worktreeSafety;
 const { planningPaths, planningDir, planningRoot, todosDir, listAvailableWorkstreams, peekActiveWorkstream, resolveEnvWorkstream, diagnoseUnresolvedActiveWorkstream, describeUnresolvedWorkstreamReason, findContextMdIn, findPhaseSpecIn, resolvePhaseIdConvention, worktreesOptedOut, } = planningWorkspace;
@@ -2958,9 +2958,22 @@ function cmdInitManager(cwd, raw) {
                 : null;
             const depNums = [];
             const seen = new Set();
-            const dependencyTokens = phaseIdConvention === 'bracket'
-                ? extractPhaseDependencyTokens(prose, phaseIdConvention)
-                : legacyManagerDependencyTokens(prose);
+            let dependencyTokens;
+            if (phaseIdConvention === 'bracket') {
+                // #6507: the shared owner returns [] for a Nothing/None lead itself.
+                dependencyTokens = extractPhaseDependencyTokens(prose, phaseIdConvention);
+            }
+            else if (isNegatedDependencyLead(prose)) {
+                // #6507: a lead negation is the writer's decision, not prose to mine —
+                // even "Nothing except Phase 1" resolves to no dependencies; guidance
+                // tells writers to use a plain list when a dependency exists. The gate
+                // stays inside this branch so the exact-none short-circuit above keeps
+                // its payload shape (no dep_phases key).
+                dependencyTokens = [];
+            }
+            else {
+                dependencyTokens = legacyManagerDependencyTokens(prose);
+            }
             for (const token of dependencyTokens) {
                 const identity = bracketIdentityKey(token);
                 if (identity) {

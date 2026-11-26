@@ -72,7 +72,7 @@ const modelCatalog = require("./model-catalog.cjs");
 const { MODEL_PROFILES: GSD_MODEL_PROFILES } = modelCatalog;
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- model-resolver.cjs is an export= CommonJS module
 const modelResolverModule = require("./model-resolver.cjs");
-const { resolveTierEntry: gsdResolveTierEntry, resolveModelPolicy: gsdResolveModelPolicy } = modelResolverModule;
+const { resolveTierEntry: gsdResolveTierEntry, resolveModelPolicy: gsdResolveModelPolicy, selectAgentModelOverride: gsdSelectAgentModelOverride, } = modelResolverModule;
 /**
  * Read `model_overrides` from `~/.gsd/defaults.json` at install time.
  * Returns an object mapping agent names to model IDs, or null if the file
@@ -295,9 +295,17 @@ function readGsdRuntimeProfileResolver(targetDir = null) {
  *   2. runtimeResolver.resolve(agentName)?.model
  *      (#2794 — tier-based model_profile_overrides.<runtime>.<tier>)
  *   3. null (omit — J7: the frontmatter key must not appear, not `null`/`""`)
+ *
+ * #4669: an object entry selects by `targetRuntime` (the runtime being INSTALLED); none given selects
+ * nothing; no usable key falls to step 2.
  */
-function resolveAgentModelOverride(agentName, modelOverrides, runtimeResolver) {
-    const explicit = modelOverrides ? modelOverrides[agentName] : undefined;
+function resolveAgentModelOverride(agentName, modelOverrides, runtimeResolver, targetRuntime) {
+    // Own-property guard: a prototype-chain agent name ("toString", "constructor") must not resolve
+    // an inherited member as if it were a configured override.
+    const entry = (modelOverrides && Object.hasOwn(modelOverrides, agentName))
+        ? modelOverrides[agentName]
+        : undefined;
+    const explicit = gsdSelectAgentModelOverride(entry, targetRuntime || null);
     if (explicit)
         return explicit;
     if (runtimeResolver) {

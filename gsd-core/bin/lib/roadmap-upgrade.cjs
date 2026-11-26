@@ -39,8 +39,12 @@ const markdownSectionizerMod = require("./markdown-sectionizer.cjs");
 const planScanMod = require("./plan-scan.cjs");
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const stateMod = require("./state.cjs");
+// eslint-disable-next-line @typescript-eslint/no-require-imports -- phase-id-display.cjs is an export= CommonJS module (#4751)
+const phaseIdDisplayMod = require("./phase-id-display.cjs");
 const planning_document_cjs_1 = require("./planning-document.cjs");
+const text_lines_cjs_1 = require("./text-lines.cjs");
 const { planningDir } = planningWorkspace;
+const { renderBracketPhaseDisplay } = phaseIdDisplayMod;
 const { listAllPhaseDirs } = phaseLocatorMod;
 const { SCOPE } = planningScopeMod;
 // #4698 Blocker 1 (round 2): reuse the shared frontmatter reader/writer
@@ -871,6 +875,89 @@ function buildBracketDirName(projectCode, mapping, slug, sourceDir) {
             + `from source directory ${JSON.stringify(sourceDir)}: ${err.message}`);
     }
 }
+// ─── Bracket cross-reference labels in STATE.md / PROJECT.md (#4751) ──────────
+const CROSS_REF_FILES = ['STATE.md', 'PROJECT.md'];
+// `Phase <token>:` with the token spelled as an M-NN or a legacy phase number (both from their grammar owners). Only the
+// capitalized word is a label; the case-insensitive flag exists for a lowercase token suffix, checked by the caller.
+const CROSS_REF_LABEL_RE = new RegExp(`(?<![A-Za-z0-9_])Phase[ \\t]+(${MNN_SOURCE_TOKEN_SOURCE}|${PHASE_NUMBER_TOKEN_SOURCE}):`, 'gi');
+/**
+ * Read one cross-reference file without ever blocking on it: only a regular file is read, so a FIFO or device
+ * named STATE.md cannot hang the planner. Absent (no such file) is not a failure; anything else unreadable is.
+ */
+function readCrossRefDocument(filePath) {
+    try {
+        if (!node_fs_1.default.statSync(filePath).isFile())
+            return { state: 'unreadable' };
+        return { state: 'ok', content: node_fs_1.default.readFileSync(filePath, 'utf8') };
+    }
+    catch (err) {
+        return err.code === 'ENOENT' ? { state: 'absent' } : { state: 'unreadable' };
+    }
+}
+/**
+ * The identity a source token answers to, for a mapping's heading token and a label's prose token alike so the two
+ * cannot drift: a hyphenated token is M-NN (compared by integer segments), anything else is a legacy number.
+ */
+function crossRefKey(token) {
+    return token.includes('-')
+        ? `mnn:${token.split('-').map((segment) => parseInt(segment, 10)).join('-')}`
+        : `legacy:${legacyLookupKey(token)}`;
+}
+/**
+ * #4751: the `Phase N:` labels in STATE.md and PROJECT.md that the bracket migration rewrites, each rendered through the
+ * canonical display (`[CODE.MM] NN:`, the shape the migrated ROADMAP heading has). A label is resolved through the
+ * planner's own mapping, never through a guessed milestone: a label whose number is carried by more than one phase
+ * (restarted numbering across milestones) is reported in `crossRefSkipped` and left byte-intact; a label no roadmap
+ * phase answers to is left alone. Only the exact `Phase <token>:` spelling is a label, matching the milestone-prefixed path.
+ */
+function computeBracketCrossRefs(pDir, projectCode, mappings) {
+    const crossRefEdits = [];
+    const crossRefSkipped = [];
+    const byKey = new Map();
+    for (const mapping of mappings) {
+        const key = crossRefKey(mapping.sourceToken);
+        byKey.set(key, [...(byKey.get(key) ?? []), mapping]);
+    }
+    for (const file of CROSS_REF_FILES) {
+        const doc = readCrossRefDocument(node_path_1.default.join(pDir, file));
+        if (doc.state === 'absent')
+            continue;
+        // A file the apply could not rewrite is reported now: `applyMigration` runs the same parse and would otherwise
+        // throw and roll everything back after a dry-run that looked clean.
+        if (doc.state === 'unreadable' || !(0, planning_document_cjs_1.parsePlanningDoc)(doc.content, file).ok) {
+            crossRefSkipped.push({ file, reason: 'file-unreadable' });
+            continue;
+        }
+        // Fenced lines are never rewritten, so they are neither scanned for labels nor reported as ambiguous.
+        const lines = (0, text_lines_cjs_1.splitLines)(doc.content);
+        const fenced = fencedLineIndices(lines);
+        const prose = lines.filter((_, index) => !fenced.has(index)).join('\n');
+        const seen = new Set();
+        for (const match of prose.matchAll(CROSS_REF_LABEL_RE)) {
+            const label = match[0];
+            // Only the capitalized word is a label; `phase 3:` in prose is left alone.
+            if (!label.startsWith('Phase') || seen.has(label))
+                continue;
+            seen.add(label);
+            const candidates = byKey.get(crossRefKey(match[1])) ?? [];
+            if (candidates.length === 0)
+                continue;
+            if (candidates.length > 1) {
+                crossRefSkipped.push({ file, from: label, reason: 'ambiguous-milestone' });
+                continue;
+            }
+            const display = renderBracketPhaseDisplay(candidates[0].milestoneInt, candidates[0].token, projectCode);
+            if (display === null) {
+                // The planner has already validated this identity (project code, milestone and token) for the heading it
+                // rewrites, so a null here is a broken invariant. Refuse before any write rather than skip it silently.
+                throw new Error(`Cannot render the bracket identity for ${JSON.stringify(label)} in ${file}: `
+                    + `milestone ${candidates[0].milestoneInt}, token ${JSON.stringify(candidates[0].token)}.`);
+            }
+            crossRefEdits.push({ file, from: label, to: `${display}:` });
+        }
+    }
+    return { crossRefEdits, crossRefSkipped };
+}
 function computeBracketPlan(cwd) {
     const pDir = planningDir(cwd);
     const roadmapPath = node_path_1.default.join(pDir, 'ROADMAP.md');
@@ -881,6 +968,7 @@ function computeBracketPlan(cwd) {
         phases: [],
         roadmapEdits: [],
         crossRefEdits: [],
+        crossRefSkipped: [],
         targetConvention: 'bracket',
     };
     let configData = {};
@@ -1601,15 +1689,15 @@ function computeBracketPlan(cwd) {
             to: replacement + line.slice(legacyChecklist[0].length),
         });
     }
-    // Bare STATE.md / PROJECT.md `Phase N` prose carries no milestone context in
-    // multi-milestone repositories. That emit concern remains deferred; guessing
-    // here would recreate the ambiguity this migration removes.
-    const crossRefEdits = [];
+    // Bare STATE.md / PROJECT.md `Phase N:` prose carries no milestone context of its own, so each label is resolved
+    // only through the mapping this planner just computed, and only when exactly one phase answers to it (#4751).
+    const { crossRefEdits, crossRefSkipped } = computeBracketCrossRefs(pDir, code, [...idMapping.values()]);
     return {
         alreadyMigrated: false,
         phases,
         roadmapEdits,
         crossRefEdits,
+        crossRefSkipped,
         targetConvention: 'bracket',
     };
 }

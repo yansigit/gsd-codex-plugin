@@ -264,6 +264,8 @@ function cmdListSeeds(cwd, statusFilter, raw) {
     // (`.toLowerCase()` on a non-string throws) or leak a raw object/array into the
     // JSON contract. Mirrors the existing `typeof fm.id === 'string'` guard below.
     const fmStr = (v) => (typeof v === 'string' ? v : '');
+    // `outcome_ref` is a requirement id or a phase number; a bare number may arrive as a number.
+    const fmRef = (v) => (typeof v === 'number' && Number.isFinite(v) ? String(v) : fmStr(v));
     let files;
     try {
         files = node_fs_1.default.readdirSync(seedsDir, { withFileTypes: true });
@@ -286,9 +288,12 @@ function cmdListSeeds(cwd, statusFilter, raw) {
         catch {
             continue;
         }
-        const content = (0, shell_command_projection_cjs_1.platformReadSync)(safeFilePath);
-        if (content === null)
+        const rawContent = (0, shell_command_projection_cjs_1.platformReadSync)(safeFilePath);
+        if (rawContent === null)
             continue;
+        // #4647: normalize at the read boundary, as `audit.scanSeeds` does. A CRLF-written seed otherwise parsed
+        // with no frontmatter here, so `list-seeds` showed a closed seed as `dormant` while `audit-open` skipped it.
+        const content = (0, text_lines_cjs_1.normalizeEol)(rawContent);
         const fm = extractFrontmatter(content, safeFilePath);
         const status = (fmStr(fm.status) || 'dormant').toLowerCase().trim() || 'dormant';
         // Match on the raw lowercased status (both sides already normalized);
@@ -319,6 +324,10 @@ function cmdListSeeds(cwd, statusFilter, raw) {
             planted: (0, security_cjs_1.sanitizeForDisplay)(fmStr(fm.planted)),
             title,
             path: toPosixPath(node_path_1.default.relative(cwd, safeFilePath)),
+            // #4647: what a closed seed became, as fields a tool can join on. Empty for an open seed.
+            outcome_kind: (0, security_cjs_1.sanitizeForDisplay)(fmStr(fm.outcome_kind)),
+            outcome_ref: (0, security_cjs_1.sanitizeForDisplay)(fmRef(fm.outcome_ref)),
+            outcome: (0, security_cjs_1.sanitizeForDisplay)(fmStr(fm.outcome)),
         });
     }
     // Stable order: by seed_id so output is deterministic across filesystems.

@@ -38,7 +38,7 @@ const gate_evidence_cjs_1 = require("./gate-evidence.cjs");
 const gate_evaluation_scope_cjs_1 = require("./gate-evaluation-scope.cjs");
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const frontmatterMod = require("./frontmatter.cjs");
-const { frontmatterKeyHasValue, extractFrontmatter } = frontmatterMod;
+const { frontmatterKeyHasValue, extractFrontmatter, rawFrontmatterMapping } = frontmatterMod;
 exports.TDD_ROW_REASON = {
     GREEN_BEFORE_RED: 'green_before_red',
 };
@@ -200,6 +200,46 @@ function evaluateTddReviewCheckpoint(input) {
             message: `No type:tdd plans found in phase ${phase}. TDD review skipped.`,
         });
     }
+    // #6451: a recorded, attributed acceptance can release a FAIL row. The record is read
+    // through the evidence envelope: ABSENT = today's behavior byte-identical; UNREADABLE or
+    // an unparseable frontmatter block = fail-closed `unreadable` verdict (an unreadable
+    // acceptance is never an acceptance — #5170); entries lacking a specific reason or an
+    // author are NOT acceptances and change nothing (no unrecorded bypass).
+    // Keyed by plan id: an acceptance releases that plan's FAIL row whatever its violation shape (the issue
+    // words the criterion "for each violating plan"); the entry's violation field is recorded context, not a match key.
+    const acceptedDeviations = new Map();
+    if (phaseDir) {
+        const recordPath = node_path_1.default.join(phaseDir, 'TDD-DEVIATIONS.md');
+        const record = (0, gate_evidence_cjs_1.readTextEvidence)(recordPath);
+        if (record.kind === 'unreadable') {
+            return unreadableReview(phase, tddPlanFiles.length, [{ source: recordPath, reason: record.reason }]);
+        }
+        if (record.kind === 'found') {
+            const mapping = rawFrontmatterMapping(record.value);
+            if (mapping === null) {
+                return unreadableReview(phase, tddPlanFiles.length, [{ source: recordPath, reason: 'unparseable deviation record' }]);
+            }
+            if (Object.prototype.hasOwnProperty.call(mapping, 'deviations')) {
+                const entries = mapping['deviations'];
+                if (!Array.isArray(entries)) {
+                    return unreadableReview(phase, tddPlanFiles.length, [{ source: recordPath, reason: 'deviations is not a list' }]);
+                }
+                for (const entry of entries) {
+                    if (!entry || typeof entry !== 'object' || Array.isArray(entry))
+                        continue;
+                    const e = entry;
+                    const plan = typeof e.plan === 'string' ? toPlanId(e.plan) : '';
+                    const reason = typeof e.reason === 'string' ? e.reason.trim() : '';
+                    const acceptedBy = typeof e.accepted_by === 'string' ? e.accepted_by.trim() : '';
+                    if (plan === '' || reason === '' || acceptedBy === '')
+                        continue;
+                    // One acceptance per plan: the first attributed entry wins; later entries for the same plan add nothing.
+                    if (!acceptedDeviations.has(plan))
+                        acceptedDeviations.set(plan, { reason, acceptedBy });
+                }
+            }
+        }
+    }
     // For each TDD plan, extract the plan ID (e.g. "01-02-PLAN.md" → "01-02") and check git log
     const rows = [];
     for (const planPath of tddPlanFiles) {
@@ -238,9 +278,10 @@ function evaluateTddReviewCheckpoint(input) {
             planId, red, green, refactor, status, missing,
             ...(reason ? { reason } : {}),
             ...(greenFrom.length > 0 ? { greenFrom } : {}),
+            ...(status === 'FAIL' && acceptedDeviations.has(planId) ? { deviationAccepted: true } : {}),
         });
     }
-    const violations = rows.filter(r => r.status === 'FAIL').length;
+    const violations = rows.filter((r) => r.status === 'FAIL' && !r.deviationAccepted).length;
     // Build review table
     const tableHeader = '| Plan | RED | GREEN | REFACTOR | Status |';
     const tableDivider = '|------|-----|-------|----------|--------|';
@@ -257,9 +298,14 @@ function evaluateTddReviewCheckpoint(input) {
     for (const r of rows.filter(row => row.greenFrom)) {
         table += `\n\nPlan ${r.planId} GREEN is supplied by dependent plan ${(r.greenFrom ?? []).join(', ')}.`;
     }
+    for (const r of rows.filter((row) => row.deviationAccepted)) {
+        const a = acceptedDeviations.get(r.planId);
+        if (a)
+            table += `\n\nPlan ${r.planId} FAIL accepted as a recorded deviation (accepted_by ${a.acceptedBy}: "${a.reason}").`;
+    }
     if (violations > 0) {
         table += '\n\n⚠ Gate violations are advisory — review before advancing.';
-        for (const r of rows.filter(row => row.status === 'FAIL')) {
+        for (const r of rows.filter((row) => row.status === 'FAIL' && !row.deviationAccepted)) {
             table += r.reason === exports.TDD_ROW_REASON.GREEN_BEFORE_RED
                 ? `\n  Plan ${r.planId} GREEN precedes RED: no ${GREEN_KINDS.map((k) => `${k}(...)`).join(' or ')} commit descends from a test(...) commit.`
                 : `\n  Plan ${r.planId} missing: ${r.missing.join(', ')} gate commit(s).`;

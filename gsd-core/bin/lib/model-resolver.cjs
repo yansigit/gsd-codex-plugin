@@ -415,14 +415,9 @@ function resolveTierFromConfig(config, agentType) {
     const modelOverrides = (rawOverrides && typeof rawOverrides === 'object' && !Array.isArray(rawOverrides))
         ? rawOverrides
         : null;
-    // Own-property guard: agentType is a caller-supplied string (the
-    // `resolve-model <agent-type>` CLI positional is not validated against a
-    // known agent list); a prototype-chain agentType ("toString",
-    // "constructor") against ANY model_overrides object — even `{}` — would
-    // otherwise return an inherited member instead of undefined.
-    const override = (modelOverrides && Object.hasOwn(modelOverrides, agentType))
-        ? modelOverrides[agentType]
-        : undefined;
+    // #4669: a runtime-keyed entry reports the tier of the value the ACTIVE runtime selects, so this
+    // report cannot name a different model than resolveModelInternal would spawn.
+    const override = agentOverrideFor(modelOverrides, agentType, () => (0, runtime_slash_cjs_1.resolveActiveRuntime)(config));
     if (override && typeof override === 'string') {
         if (model_catalog_cjs_1.CLAUDE_AGENT_ALIASES.has(override))
             return override;
@@ -473,6 +468,46 @@ function resolveTierFromConfig(config, agentType) {
     }
     return profileTier || 'unknown';
 }
+/**
+ * #4669 — the value one `model_overrides.<agent>` entry contributes for `runtime`.
+ *
+ * An entry is the long-standing string, or a runtime-keyed object
+ * (`{ "codex": "gpt-6-astra", "claude": "opus" }`, the `model_profile_overrides` shape). Only a plain
+ * object is interpreted: it yields the own-property value for `runtime` when that is a non-empty
+ * string, else `undefined`, which every caller reads as "no override here" and so falls through to
+ * tier resolution. Anything else (string, array, number, null) is returned unchanged, so the string
+ * form stays byte-identical. This is the single owner of that rule: dispatch and every install-time
+ * reader call it, and tests/model-overrides-runtime-key-install.test.cjs fails if they disagree.
+ * `runtime` is the runtime actually resolving or being installed, never the raw `config.runtime`
+ * key (#4505): that key is often absent, and wrong on a shared committed config.
+ */
+function selectAgentModelOverride(entry, runtime) {
+    if (entry === null || typeof entry !== 'object' || Array.isArray(entry))
+        return entry;
+    // Own-property guard: both levels are config-supplied plain objects, so an inherited member
+    // ("constructor", "toString") must not be selected as if it were a runtime key.
+    if (!runtime || !Object.hasOwn(entry, runtime))
+        return undefined;
+    const value = entry[runtime];
+    return typeof value === 'string' && value.length > 0 ? value : undefined;
+}
+/**
+ * The `model_overrides` entry for `agentType`, with a runtime-keyed object already resolved for the
+ * active runtime (see selectAgentModelOverride). The runtime is a thunk so the string form, which is
+ * every existing config, never pays for a runtime lookup it does not need.
+ */
+function agentOverrideFor(modelOverrides, agentType, activeRuntime) {
+    // Own-property guard: agentType is a caller-supplied string (the `resolve-model <agent-type>` CLI
+    // positional is not validated against a known agent list); a prototype-chain agentType
+    // ("toString", "constructor") against ANY model_overrides object, even `{}`, would otherwise
+    // return an inherited member instead of undefined.
+    const entry = (modelOverrides && Object.hasOwn(modelOverrides, agentType))
+        ? modelOverrides[agentType]
+        : undefined;
+    if (entry === null || typeof entry !== 'object' || Array.isArray(entry))
+        return entry;
+    return selectAgentModelOverride(entry, activeRuntime());
+}
 function resolveTierInternal(cwd, agentType) {
     return resolveTierFromConfig(loadConfig(cwd), agentType);
 }
@@ -483,14 +518,13 @@ function resolveTierInternal(cwd, agentType) {
  */
 function resolveModelOverride(config, agentType) {
     const modelOverrides = config['model_overrides'];
-    // Own-property guard (see resolveTierFromConfig): without it, an agentType of "toString" against
-    // `model_overrides: {}` returned the inherited Function.prototype.toString as the resolved "model".
-    const override = (modelOverrides && Object.hasOwn(modelOverrides, agentType))
-        ? modelOverrides[agentType]
-        : undefined;
+    // Resolved at most once: only an object entry or a found override needs the runtime.
+    let runtime;
+    const activeRuntime = () => (runtime ??= (0, runtime_slash_cjs_1.resolveActiveRuntime)(config));
+    const override = agentOverrideFor(modelOverrides, agentType, activeRuntime);
     if (!override)
         return null;
-    return mapClaudeOverrideForRuntime(override, (0, runtime_slash_cjs_1.resolveActiveRuntime)(config), agentType);
+    return mapClaudeOverrideForRuntime(override, activeRuntime(), agentType);
 }
 function resolveModelInternal(cwd, agentType) {
     const config = loadConfig(cwd);
@@ -821,13 +855,11 @@ function resolveModelForTier(cwd, agentType, attempt) {
     }
     const activeRuntime = (0, runtime_slash_cjs_1.resolveActiveRuntime)(config);
     const modelOverrides = config['model_overrides'];
-    // Own-property guard (see resolveTierFromConfig above): without it, an
-    // agentType of "toString" against `model_overrides: {}` returned the
-    // inherited Function.prototype.toString as the resolved "model" — verified
-    // reachable purely via the CLI, no override value needed.
-    const override = (modelOverrides && Object.hasOwn(modelOverrides, agentType))
-        ? modelOverrides[agentType]
-        : undefined;
+    // Own-property guard lives in agentOverrideFor (an agentType of "toString" against
+    // `model_overrides: {}` returned the inherited Function.prototype.toString as the resolved
+    // "model", verified reachable purely via the CLI). #4669: a runtime-keyed entry is resolved for
+    // the active runtime there too, so an escalated attempt honours the same pin the first spawn did.
+    const override = agentOverrideFor(modelOverrides, agentType, () => activeRuntime);
     if (override) {
         const mapped = mapClaudeOverrideForRuntime(override, activeRuntime, agentType);
         if (mapped !== null)
@@ -1104,6 +1136,7 @@ module.exports = {
     resolveModelPolicy,
     resolveModelInternal,
     resolveModelOverride,
+    selectAgentModelOverride,
     resolveTierInternal,
     resolveTierFromConfig,
     computeProfileTier,

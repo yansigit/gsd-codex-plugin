@@ -496,7 +496,11 @@ function _resolveNamedConverter(converterName, kindLabel) {
  * @param converterName name of converter function in Runtime Artifact Conversion exports
  * @param configDir     runtime config dir (for .gsd-source marker resolution)
  */
-function convertedAgentsKind(destSubpath, prefix, converterName, configDir, sourceContext, scope, excludeSuffixes) {
+function convertedAgentsKind(destSubpath, prefix, converterName, configDir, sourceContext, scope, excludeSuffixes, 
+// #4669: the runtime this layout is being resolved for. A runtime-keyed `model_overrides` entry is
+// selected by it, not by the static `config.runtime` key, which on a shared committed config is
+// right for at most one of the hosts installing from it.
+runtime) {
     return {
         kind: 'agents',
         destSubpath,
@@ -543,7 +547,7 @@ function convertedAgentsKind(destSubpath, prefix, converterName, configDir, sour
                     : null;
                 converter = (content, _isGlobal, meta) => {
                     const modelOverride = meta
-                        ? installModelOverrideResolver.resolveAgentModelOverride(meta.agentName, modelOverrides, runtimeResolver)
+                        ? installModelOverrideResolver.resolveAgentModelOverride(meta.agentName, modelOverrides, runtimeResolver, runtime)
                         : null;
                     // The universal level is NOT emitted raw. `clampEffortForHost` is the
                     // declared OpenCode effort capability (EFFORT_ARGV.opencode: its own
@@ -719,7 +723,7 @@ function dispatchKindEntry(entry, runtime, configDir, scope, capabilityRegistry,
         case 'agents':
             result = converter == null
                 ? agentsKind(destSubpath, prefix, configDir, sourceContext)
-                : convertedAgentsKind(destSubpath, prefix, converter, configDir, sourceContext, scope, entry.excludeSuffixes);
+                : convertedAgentsKind(destSubpath, prefix, converter, configDir, sourceContext, scope, entry.excludeSuffixes, runtime);
             break;
         case 'skills':
             if (converter == null) {

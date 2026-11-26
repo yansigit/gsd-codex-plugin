@@ -676,7 +676,11 @@ function scanSeeds(planDir) {
             continue;
         const content = normalizeLineEndings(rawContent);
         const fm = extractFrontmatter(content, safeFilePath);
-        const status = (fm.status || 'dormant').toLowerCase();
+        // #4647: a bare `status:` line parses to `{}`, not a string. Reading it as one threw, and the throw
+        // degraded the WHOLE seeds category to a single scan_error, hiding every other open seed. A
+        // non-string status is a missing status, read as `dormant` like `cmdListSeeds` reads it.
+        const rawStatus = typeof fm.status === 'string' ? fm.status.trim() : '';
+        const status = (rawStatus || 'dormant').toLowerCase();
         if (!unimplementedStatuses.has(status))
             continue;
         if (isAuditItemAcknowledged(fm, { snapshotKey: 'status', currentValue: status })) {
@@ -695,7 +699,8 @@ function scanSeeds(planDir) {
         const derived = commandsModule.deriveSeedIdentity(stem, fm.id);
         const seed_id = seedIdMatchRawName(entry.name) ? derived.seed_id : stem;
         const slug = (0, security_cjs_1.sanitizeLabel)(derived.slug);
-        let title = (0, security_cjs_1.sanitizeForDisplay)(fm.title || '');
+        // #4647: a bare `title:` parses to `{}`; coerce like `status` above so no raw object reaches the JSON.
+        let title = (0, security_cjs_1.sanitizeForDisplay)(typeof fm.title === 'string' ? fm.title : '');
         if (!title) {
             const headingMatch = content.match(/^#\s*(.+)$/m);
             if (headingMatch)
