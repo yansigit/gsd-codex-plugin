@@ -4131,6 +4131,23 @@ function cmdAgentSkills(cwd, agentType, raw, jsonMode, skillsOnly = false) {
     // writeAllSync and returns, letting the event loop drain naturally.
     output(block || '', true, block || '');
 }
+/**
+ * A directory entry that is a directory, or a symlink that resolves to one (#6719): a skill pack
+ * installed through a link is still a skill directory. A dangling link or a link to a file is not,
+ * and is skipped rather than thrown on.
+ */
+function isDirectoryEntry(parent, entry) {
+    if (entry.isDirectory())
+        return true;
+    if (!entry.isSymbolicLink())
+        return false;
+    try {
+        return node_fs_1.default.statSync(node_path_1.default.join(parent, entry.name)).isDirectory();
+    }
+    catch {
+        return false;
+    }
+}
 function buildSkillManifest(cwd, skillsDir = null) {
     const canonicalRoots = skillsDir
         ? [
@@ -4299,7 +4316,8 @@ function buildSkillManifest(cwd, skillsDir = null) {
         }
         let skillCount = 0;
         for (const entry of entries) {
-            if (!entry.isDirectory())
+            // #6719: a skill installed through a directory symlink is a skill directory too.
+            if (!isDirectoryEntry(rootPath, entry))
                 continue;
             const skillMdPath = node_path_1.default.join(rootPath, entry.name, 'SKILL.md');
             const content = capabilityLedger.readSkillFile(skillMdPath);

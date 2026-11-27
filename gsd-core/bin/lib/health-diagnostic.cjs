@@ -56,7 +56,7 @@ const { SEVERITY, REMEDY_ACTION, REMEDY_RISK } = healthDiagnosticTypesMod;
 // Populated by concatenating each rule group's exported `RULES` array (design
 // doc, "Rule table organization" section) — the rule functions extracted
 // from `cmdValidateHealth` in `src/verify.cts`, plus the rules added since
-// (W028, W029, W030, W031, W032). The count is asserted only by
+// (W028, W029, W030, W031, W032, W033). The count is asserted only by
 // `tests/health-diagnostic.test.cjs`'s frozen RULES test;
 // `scripts/lint-health-diagnostic-rule-table.cjs` checks that every code is
 // unique, every severity is valid and every code has a fixture test (except
@@ -84,6 +84,8 @@ const consistencyMod = require("./health-diagnostic-rules/consistency.cjs");
 const installSurfaceShadowingMod = require("./health-diagnostic-rules/install-surface-shadowing.cjs");
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- #6430 context-bridge.cjs is an export= CommonJS module
 const contextBridgeMod = require("./health-diagnostic-rules/context-bridge.cjs");
+// eslint-disable-next-line @typescript-eslint/no-require-imports -- #5249 project-skills-budget.cjs is an export= CommonJS module
+const projectSkillsBudgetMod = require("./health-diagnostic-rules/project-skills-budget.cjs");
 const RULES = [
     ...rootExistenceMod.RULES,
     ...stateConsistencyMod.RULES,
@@ -95,6 +97,7 @@ const RULES = [
     ...milestoneArchiveHygieneMod.RULES,
     ...installSurfaceShadowingMod.RULES,
     ...contextBridgeMod.RULES,
+    ...projectSkillsBudgetMod.RULES,
 ];
 /**
  * `validate.consistency`'s own rule set (Phase 12, #3310, ADR-3180 §8.4,

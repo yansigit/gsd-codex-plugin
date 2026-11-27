@@ -89,7 +89,19 @@ function resolveConfigKey(dotKey, opts) {
 }
 function _resolveActivationValue(dotKey, config, cwd, registry) {
     const r = resolveConfigKey(dotKey, { config, cwd, registry });
-    return r.found ? Boolean(r.value) : false;
+    return r.found ? isActivationValueOn(r.value) : false;
+}
+/**
+ * A hand-edited config can carry a boolean switch as a string. `Boolean("false")` is true, which would
+ * turn a switch ON that the file says is off, so a string is read for its meaning: empty, "false", "0",
+ * "no" and "off" (any case, surrounding whitespace ignored) are off; every other string is on. A non-string
+ * keeps plain truthiness, so numbers, booleans and objects behave as before.
+ */
+const OFF_STRINGS = new Set(['', 'false', '0', 'no', 'off']);
+function isActivationValueOn(value) {
+    if (typeof value === 'string')
+        return !OFF_STRINGS.has(value.trim().toLowerCase());
+    return Boolean(value);
 }
 /**
  * Resolve a step's optional `pointFrom` gate (#3661): a step declaring
